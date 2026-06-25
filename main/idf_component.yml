@@ -1,0 +1,9 @@
+dependencies:
+  espressif/esp-brookesia:
+    version: '*'
+  waveshare/esp32_p4_wifi6_touch_lcd_4b:
+    version: '*'
+  espressif/esp_codec_dev:
+    version: ^1.3.4
+  idf:
+    version: '>=5.3'
