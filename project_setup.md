@@ -6,7 +6,7 @@
 - **MIPI CSI** 摄像头 (OV5647, ISP 处理 RAW8→RGB565)
 - **SDMMC** SD 卡 (4-bit 模式, FAT 文件系统)
 - **音频输入/输出** (ES8311 DAC + ES7210 ADC, I2S)
-- **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 3 个自定义 App
+- **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
 
 ### ESP-Brookesia App 列表
 
@@ -14,8 +14,6 @@
 |-----|------|------|
 | 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, MIPI CSI + ISP, 800×800 → 720×720 显示 |
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 (不输出 Speaker, 无回声) |
-| ⚙ Settings | `PhoneAppSimpleConf` | ESP-Brookesia 内置简单设置 |
-| 📊 Complex | `PhoneAppComplexConf` | ESP-Brookesia 内置复杂设置 |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 
 ## 开发环境
@@ -132,8 +130,8 @@ app_main()
   │      → ST7703 720×720 LCD + GT911 Touch
   │      → LVGL taskLVGL 创建
   │
-  ├─ 2. ESP-Brookesia Phone UI (5 apps installed)
-  │      → PhoneAppSimpleConf, PhoneAppComplexConf, PhoneAppSquareline
+  ├─ 2. ESP-Brookesia Phone UI (4 apps installed)
+  │      → PhoneAppSquareline
   │      → PhoneAppCamera, PhoneAppAudio
   │
   ├─ 3. SDMMC SD Card (4-bit, FAT)

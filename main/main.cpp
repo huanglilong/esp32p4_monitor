@@ -117,14 +117,6 @@ static void monitor_init_brookesia(lv_display_t *disp)
     phone->registerLvUnlockCallback((ESP_Brookesia_GUI_UnlockCallback_t)(bsp_display_unlock));
     ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->begin(), "Begin failed");
 
-    PhoneAppSimpleConf *app_simple_conf = new PhoneAppSimpleConf();
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_simple_conf, "Create app simple conf failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_simple_conf) >= 0), "Install app simple conf failed");
-
-    PhoneAppComplexConf *app_complex_conf = new PhoneAppComplexConf();
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_complex_conf, "Create app complex conf failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_complex_conf) >= 0), "Install app complex conf failed");
-
     PhoneAppSquareline *app_squareline = PhoneAppSquareline::getInstance();
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_squareline, "Create app squareline failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_squareline) >= 0), "Install app squareline failed");
