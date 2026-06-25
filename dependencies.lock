@@ -238,6 +238,6 @@ direct_dependencies:
 - idf
 - lvgl/lvgl
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 593b62f9ef8d21afdd4bb31f81a27dcab3bafe093def3a8995e6e80606886ee8
+manifest_hash: 3d0b30be9e6b9f14eb9ba98565a355a01ee64155573995a8cf92255ed6c5ba7c
 target: esp32p4
 version: 3.0.0

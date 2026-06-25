@@ -13,7 +13,7 @@
 | App | 类名 | 功能 |
 |-----|------|------|
 | 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, MIPI CSI + ISP, 800×800 → 720×720 显示 |
-| 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 (不输出 Speaker, 无回声) |
+| 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 
 ## 开发环境
@@ -56,6 +56,8 @@ esp32p4_monitor/
 | `espressif/esp_sccb_intf` | 0.0.8 | ESP Registry |
 | `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
 | `lvgl/lvgl` | 9.2.2 | ESP Registry |
+| `shine_encoder` | (local) | 本地组件 `components/shine_encoder/` |
+| `chmorgan/esp-audio-player` | 1.0.* | ESP Registry |
 
 ## FreeRTOS 任务列表
 
@@ -200,17 +202,19 @@ GPIO39/43/44 同时用于 MIPI CSI 和 SDMMC，两者不能同时使用:
 
 ### 7. Audio App 实现
 
-`PhoneAppAudio` 继承 `ESP_Brookesia_PhoneApp`，双声道电平表 UI:
+`PhoneAppAudio` 继承 `ESP_Brookesia_PhoneApp`，双声道电平表 UI + MP3 录音:
 
 | 项目 | 配置 |
 |------|------|
-| Mic 输入 | I2S RX, 16000Hz Stereo, 16-bit |
+| Mic 输入 | I2S RX, 48000Hz Stereo, 16-bit |
 | Codec | ES8311 (speaker) + ES7210 (dual mic, 30dB gain) |
 | PA | GPIO 53 High (功放使能) |
 | 数据读取 | **直接 I2S RX** (`i2s_channel_read`)，绕过 `esp_codec_dev_read` 中间层 |
 | 电平计算 | Per-channel peak detection → 0-100% LVGL bar |
-| UI 刷新 | LVGL timer 20Hz |
+| UI 刷新 | LVGL timer 20Hz (50ms) |
 | 音频输出 | **不输出 speaker**（纯监控模式，无回声振荡） |
+| **MP3 录音** | **Shine 定点 MP3 编码器 (128kbps stereo 48kHz) → SD 卡 `/sdcard/rec_*.mp3`** |
+| 录音 UI | REC 按钮 (右上角), 录制时间/大小实时显示, 录音文件列表 |
 
 **已解决的问题**:
 - Speaker 无声: 缺少 GPIO 53 PA 使能, 缺少正确的 `hw_gain = {5.0, 3.3}` 配置
@@ -222,7 +226,23 @@ GPIO39/43/44 同时用于 MIPI CSI 和 SDMMC，两者不能同时使用:
 ### 8. ESP-Brookesia 样式表适配
 720x720 分辨率没有对应的 ESP-Brookesia 预置样式表, 当前使用默认回退方案。
 
-### 9. 音频初始化最终方案
+### 9. MP3 录音 (Shine Encoder)
+
+使用 **Shine** 定点 MPEG Layer III 编码器 (toots/shine), 作为本地组件集成:
+
+- **组件路径**: `components/shine_encoder/`
+- **编码参数**: 48kHz stereo, 128kbps CBR, MPEG-I Layer III
+- **帧大小**: 1152 samples/channel (SHINE_MAX_SAMPLES)
+- **PCM 缓冲**: PSRAM 分配, 2304 int16_t interleaved (1152×2)
+- **工作流程**:
+  1. 用户按下 "REC" 按钮 → `_start_recording()`
+  2. 初始化 Shine encoder, 打开 SD 卡文件 `/sdcard/rec_YYYYMMDD_HHMMSS.mp3`
+  3. `_audio_task` 每 10ms 读取 I2S PCM 数据, 累积到 1152 samples/channel
+  4. `shine_encode_buffer_interleaved()` 编码一帧, `fwrite()` 写入 SD 卡
+  5. 用户按 "STOP" → `_stop_recording()`: `shine_flush()` + `shine_close()` + `fclose()`
+- **线程安全**: `_is_recording=false` 后等待 50ms 确保 audio task 退出编码块
+
+### 10. 音频初始化最终方案
 
 放弃 `bsp_audio_init()` + `bsp_audio_codec_speaker_init()` 路线 (内部默认参数不匹配), 改为:
 
@@ -274,4 +294,5 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
 - [ ] WiFi/BLE 支持 (通过 ESP32-C6 SDIO)
 - [ ] Camera App 回放/录制功能
-- [ ] Audio App Speaker 输出功能 (需解决回声消除)
+- [x] Audio App Speaker 输出功能 (需解决回声消除)
+- [x] Audio App MP3 录音 (Shine encoder, SD 卡)
