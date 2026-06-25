@@ -270,7 +270,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] Camera App 打开/关闭/重新打开 生命周期
 - [x] CSI/ISP 正确释放 (stop→disable→del 顺序)
 - [ ] Camera 在 LCD 显示有问题, 红色显示成绿色
-- [ ] Camera App 关闭后重新挂载 SD 卡
+- [x] Camera App 关闭后重新挂载 SD 卡
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
 - [ ] WiFi/BLE 支持 (通过 ESP32-C6 SDIO)
 - [ ] Camera App 回放/录制功能

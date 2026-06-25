@@ -33,7 +33,7 @@ static const char *TAG = "monitor";
 /* Forward declarations */
 static void monitor_init_display(lv_display_t **disp);
 static void monitor_init_brookesia(lv_display_t *disp);
-static void monitor_init_sdcard(void);
+void monitor_init_sdcard(void);
 static void monitor_init_audio(void);
 static void on_clock_update_timer_cb(struct _lv_timer_t *t);
 
@@ -154,7 +154,7 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t)
 /*============================================================================
  * SDMMC (SD Card)
  *============================================================================*/
-static void monitor_init_sdcard(void)
+void monitor_init_sdcard(void)
 {
     esp_err_t ret;
     ESP_LOGI(TAG, "Initializing SD card via SDMMC...");

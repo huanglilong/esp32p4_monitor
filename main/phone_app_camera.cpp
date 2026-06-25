@@ -20,8 +20,9 @@ extern "C" {
 
 static const char *TAG = "PhoneAppCamera";
 
-/* External SD card state from main.cpp */
+/* External SD card state and init function from main.cpp */
 extern sdmmc_card_t *s_card;
+extern void monitor_init_sdcard(void);
 
 /* Use built-in brookesia launcher icon for camera */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
@@ -107,6 +108,11 @@ bool PhoneAppCamera::close(void)
         _refresh_timer = nullptr;
     }
     _deinit_camera();
+
+    /* Re-mount SD card (was unmounted due to GPIO pin conflict with CSI) */
+    ESP_LOGI(TAG, "Re-mounting SD card...");
+    monitor_init_sdcard();
+
     ESP_LOGI(TAG, "Camera app closed");
     return true;
 }
