@@ -14,7 +14,7 @@ extern i2s_chan_handle_t s_rx_handle;              // I2S RX for mic
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
 /* Audio buffer: 160 samples * 2 channels * 2 bytes = 640 bytes ~10ms @16kHz */
-#define AUDIO_BUF_SAMPLES   160
+#define AUDIO_BUF_SAMPLES   480
 #define AUDIO_BUF_BYTES     (AUDIO_BUF_SAMPLES * 2 * sizeof(int16_t))
 
 PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :

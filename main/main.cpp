@@ -25,6 +25,7 @@
 #include "private/esp_brookesia_utils.h"
 #include "phone_app_camera.hpp"
 #include "phone_app_audio.hpp"
+#include "phone_app_music.hpp"
 #include "example_config.h"
 
 static const char *TAG = "monitor";
@@ -50,7 +51,7 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t);
 esp_codec_dev_handle_t s_codec_handle = NULL;     // Speaker (ES8311)
 esp_codec_dev_handle_t s_codec_mic_handle = NULL; // Microphone (ES7210)
 i2s_chan_handle_t s_rx_handle = NULL;             // I2S RX (for direct mic read)
-static i2s_chan_handle_t s_tx_handle = NULL;      // I2S TX (internal)
+i2s_chan_handle_t s_tx_handle = NULL;             // I2S TX (for music playback)
 
 /* SD card */
 sdmmc_card_t *s_card = NULL;
@@ -135,6 +136,10 @@ static void monitor_init_brookesia(lv_display_t *disp)
     PhoneAppAudio *app_audio = new PhoneAppAudio(false, false);
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_audio, "Create audio app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_audio) >= 0), "Install audio app failed");
+
+    PhoneAppMusic *app_music = new PhoneAppMusic(false, false);
+    ESP_BROOKESIA_CHECK_NULL_EXIT(app_music, "Create music app failed");
+    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_music) >= 0), "Install music app failed");
 
     lv_timer_create(on_clock_update_timer_cb, 1000, phone);
     bsp_display_unlock();
@@ -237,14 +242,21 @@ static void monitor_init_audio(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_handle));
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx_handle));
 
-    /* Shared I2S data interface */
-    audio_codec_i2s_cfg_t i2s_cfg = {
+    /* Shared I2S data interface - SEPARATE out/in to avoid direction conflict */
+    audio_codec_i2s_cfg_t i2s_out_cfg = {
         .port = 0,
-        .rx_handle = s_rx_handle,
+        .rx_handle = NULL,
         .tx_handle = s_tx_handle,
     };
-    const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_cfg);
-    assert(data_if);
+    audio_codec_i2s_cfg_t i2s_in_cfg = {
+        .port = 0,
+        .rx_handle = s_rx_handle,
+        .tx_handle = NULL,
+    };
+    const audio_codec_data_if_t *data_out = audio_codec_new_i2s_data(&i2s_out_cfg);
+    const audio_codec_data_if_t *data_in  = audio_codec_new_i2s_data(&i2s_in_cfg);
+    assert(data_out);
+    assert(data_in);
 
     i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
     const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
@@ -258,10 +270,10 @@ static void monitor_init_audio(void)
         .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
         .pa_pin = 53, .master_mode = false, .use_mclk = true,
         .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
-        .mclk_div = 384,
+        .mclk_div = I2S_MCLK_MULTIPLE_256,
     };
     esp_codec_dev_cfg_t dev_dac = {
-        .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_if
+        .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
     };
     s_codec_handle = esp_codec_dev_new(&dev_dac);
     assert(s_codec_handle);
@@ -272,10 +284,10 @@ static void monitor_init_audio(void)
     es7210_codec_cfg_t es7210_cfg = {
         .ctrl_if = ctrl_adc, .master_mode = false,
         .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2,
-        .mclk_src = ES7210_MCLK_FROM_PAD, .mclk_div = 384,
+        .mclk_src = ES7210_MCLK_FROM_PAD, .mclk_div = I2S_MCLK_MULTIPLE_256,
     };
     esp_codec_dev_cfg_t dev_adc = {
-        .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es7210_codec_new(&es7210_cfg), .data_if = data_if
+        .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es7210_codec_new(&es7210_cfg), .data_if = data_in
     };
     s_codec_mic_handle = esp_codec_dev_new(&dev_adc);
     assert(s_codec_mic_handle);
@@ -286,10 +298,6 @@ static void monitor_init_audio(void)
     esp_codec_dev_set_out_vol(s_codec_handle, EXAMPLE_VOICE_VOLUME);
     ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_mic_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
     esp_codec_dev_set_in_gain(s_codec_mic_handle, 30);
-
-    /* Re-enable TX after codec opens */
-    i2s_channel_disable(s_tx_handle);
-    i2s_channel_enable(s_tx_handle);
 
     ESP_LOGI(TAG, "Audio initialized: ES8311 + ES7210, vol=%d", EXAMPLE_VOICE_VOLUME);
 }

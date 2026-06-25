@@ -1,8 +1,8 @@
 idf_component_register(
-    SRCS "main.cpp" "phone_app_camera.cpp" "phone_app_audio.cpp"
+    SRCS "main.cpp" "phone_app_camera.cpp" "phone_app_audio.cpp" "phone_app_music.cpp"
     INCLUDE_DIRS "."
     REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c fatfs
-    PRIV_REQUIRES esp_driver_sdmmc)
+    PRIV_REQUIRES esp_driver_i2s esp_driver_sdmmc)
 
 target_compile_options(${COMPONENT_LIB} PUBLIC -Wno-missing-field-initializers)
 
