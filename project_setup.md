@@ -27,7 +27,9 @@ esp32p4_monitor/
 │   ├── idf_component.yml       # 组件依赖声明
 │   ├── Kconfig.projbuild       # 项目 Kconfig 菜单
 │   ├── example_config.h        # 引脚和参数宏定义
-│   └── main.cpp                # 主程序 (C++)
+│   ├── main.cpp                # 主程序 (C++)
+│   ├── phone_app_camera.hpp    # 摄像头 App 头文件
+│   └── phone_app_camera.cpp    # 摄像头 App 实现
 ├── components/
 │   └── espressif__esp_lvgl_port/   # 本地补丁版 esp_lvgl_port
 └── project_setup.md            # 本文档
@@ -116,9 +118,28 @@ esp32p4_monitor/
 **说明**: GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (GPIO7/8)。BSP 初始化 I2C_NUM_0 (`bsp_display_start` 内调用 `bsp_i2c_init`),音频和摄像头复用 BSP 的 I2C 句柄 (`bsp_i2c_get_handle()`),避免重复初始化冲突。
 
 ### 6. MIPI CSI 与 SDMMC 引脚冲突
-**说明**: GPIO39/43/44 同时用于 MIPI CSI 和 SDMMC。两者不能同时使用。当前代码默认启用 SDMMC,摄像头初始化代码已保留但被注释 (`monitor_init_camera()`)。如需使用摄像头,需禁用 SDMMC。
+**说明**: GPIO39/43/44 同时用于 MIPI CSI 和 SDMMC。两者不能同时使用。
+- 默认启用 SDMMC (SD 卡已挂载)
+- 打开 Camera App 时自动卸载 SD 卡并初始化摄像头
+- 关闭 Camera App 后不自动重新挂载 SD 卡（可手动重新挂载）
 
-### 7. ESP-Brookesia 样式表适配
+### 7. ESP-Brookesia 摄像头 App
+**实现**: 自定义 `PhoneAppCamera` 类，继承 `ESP_Brookesia_PhoneApp`。
+
+**架构**:
+- App 运行时初始化 MIPI CSI (2-lane, 200Mbps) + ISP (RAW8→RGB565)
+- 分配 PSRAM 帧缓冲 (800×800×2 bytes)
+- 通过 LVGL `lv_image` 显示实时帧，30fps 定时器刷新
+- 全屏摄像头预览 + 左上角返回按钮
+- 关闭时自动释放 CSI/ISP 资源
+- 注：OV5647 传感器 I2C 初始化需后续补充
+
+**App 生命周期**:
+- `run()`: 初始化 CSI+ISP 硬件，创建 LVGL 预览界面，启动帧刷新定时器
+- `back()` / `close()`: 停止摄像头，释放帧缓冲和 CSI/ISP 资源
+- Launcher 图标使用 ESP-Brookesia 内置默认图标
+
+### 8. ESP-Brookesia 样式表适配
 **说明**: 720x720 分辨率没有对应的 ESP-Brookesia 预置样式表。当前使用 480x480 样式表作为回退方案。需要自定义 720x720 样式表以获得最佳显示效果。
 
 ## 构建和烧录
@@ -137,8 +158,9 @@ idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
 ## 待完成事项
+- [x] Camera App 框架 (PhoneAppCamera 类 + CSI/ISP 管线)
+- [ ] OV5647 传感器 I2C 初始化 (需补充 `espressif/esp_cam_sensor` 依赖)
+- [ ] Camera App 关闭后重新挂载 SD 卡
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
-- [ ] OV5647 传感器初始化 (需接入 I2C 总线的传感器驱动)
 - [ ] ES7210 ADC 独立初始化配置
 - [ ] WiFi/BLE 支持 (通过 ESP32-C6 SDIO)
-- [ ] 摄像头与 SDMMC 动态切换

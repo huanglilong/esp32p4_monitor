@@ -11,10 +11,7 @@
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
-#include "driver/isp.h"
 #include "driver/sdmmc_host.h"
-#include "esp_cam_ctlr_csi.h"
-#include "esp_cam_ctlr.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "esp_lcd_mipi_dsi.h"
@@ -27,6 +24,7 @@
 #include "bsp/display.h"
 #include "esp_brookesia.hpp"
 #include "private/esp_brookesia_utils.h"
+#include "phone_app_camera.hpp"
 #include "example_config.h"
 
 static const char *TAG = "monitor";
@@ -34,7 +32,6 @@ static const char *TAG = "monitor";
 /* Forward declarations */
 static void monitor_init_display(lv_display_t **disp);
 static void monitor_init_brookesia(lv_display_t *disp);
-static void monitor_init_camera(void);
 static void monitor_init_sdcard(void);
 static void monitor_init_audio(void);
 static void monitor_init_audio_es8311_es7210(void);
@@ -50,17 +47,13 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t);
         .timer_period_ms = 5,     \
     }
 
-/* CSI camera handles */
-static esp_cam_ctlr_handle_t s_cam_handle = NULL;
-static isp_proc_handle_t s_isp_proc = NULL;
-
 /* Audio handles */
 static i2s_chan_handle_t s_tx_handle = NULL;
 static i2s_chan_handle_t s_rx_handle = NULL;
 static esp_codec_dev_handle_t s_codec_handle = NULL;
 
 /* SD card */
-static sdmmc_card_t *s_card = NULL;
+sdmmc_card_t *s_card = NULL;
 
 /*============================================================================
  * MIPI DSI Display + ESP-Brookesia
@@ -135,6 +128,10 @@ static void monitor_init_brookesia(lv_display_t *disp)
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_squareline, "Create app squareline failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_squareline) >= 0), "Install app squareline failed");
 
+    PhoneAppCamera *app_camera = new PhoneAppCamera(false, false);
+    ESP_BROOKESIA_CHECK_NULL_EXIT(app_camera, "Create camera app failed");
+    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_camera) >= 0), "Install camera app failed");
+
     lv_timer_create(on_clock_update_timer_cb, 1000, phone);
     bsp_display_unlock();
     ESP_LOGI(TAG, "ESP-Brookesia Phone UI initialized");
@@ -151,95 +148,6 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t)
         phone->getHome().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min),
         "Refresh status bar failed"
     );
-}
-
-/*============================================================================
- * MIPI CSI Camera (OV5647)
- * NOTE: CSI and SDMMC share GPIO39/43/44 on this board.
- * Only one can be active at a time. Disable SDMMC when using camera.
- *============================================================================*/
-static bool s_camera_get_new_vb(esp_cam_ctlr_handle_t handle, esp_cam_ctlr_trans_t *trans, void *user_data)
-{
-    esp_cam_ctlr_trans_t *new_trans = (esp_cam_ctlr_trans_t *)user_data;
-    trans->buffer = new_trans->buffer;
-    trans->buflen = new_trans->buflen;
-    return false;
-}
-
-static bool s_camera_get_finished_trans(esp_cam_ctlr_handle_t handle, esp_cam_ctlr_trans_t *trans, void *user_data)
-{
-    return false;
-}
-
-static void monitor_init_camera(void)
-{
-    esp_err_t ret = ESP_FAIL;
-    size_t frame_buffer_size = EXAMPLE_DISP_HRES * EXAMPLE_DISP_VRES * EXAMPLE_RGB565_BYTES_PER_PIXEL;
-
-    /* Allocate frame buffer in PSRAM for camera */
-    void *frame_buffer = heap_caps_calloc(1, frame_buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!frame_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate camera frame buffer");
-        return;
-    }
-    ESP_LOGI(TAG, "Camera frame buffer: %dx%d, size: %zu, ptr: %p",
-             EXAMPLE_DISP_HRES, EXAMPLE_DISP_VRES, frame_buffer_size, frame_buffer);
-
-    /* NOTE: OV5647 sensor init requires I2C communication via BSP I2C bus.
-     * Full sensor init via esp_cam_sensor component will be added when
-     * camera support is enabled. Currently CSI + ISP are initialized
-     * to validate the driver integration at build time. */
-
-    /* CSI configuration */
-    esp_cam_ctlr_csi_config_t csi_config = {
-        .ctlr_id = 0,
-        .clk_src = MIPI_CSI_PHY_CLK_SRC_DEFAULT,
-        .h_res = EXAMPLE_CAM_SENSOR_HRES,
-        .v_res = EXAMPLE_CAM_SENSOR_VRES,
-        .data_lane_num = 2,
-        .lane_bit_rate_mbps = EXAMPLE_MIPI_CSI_LANE_BITRATE_MBPS,
-        .input_data_color_type = CAM_CTLR_COLOR_RAW8,
-        .output_data_color_type = CAM_CTLR_COLOR_RAW8,
-        .data_type = {0},
-        .queue_items = 1,
-    };
-    ret = esp_cam_new_csi_ctlr(&csi_config, &s_cam_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "CSI init failed: %d", ret);
-        free(frame_buffer);
-        return;
-    }
-
-    esp_cam_ctlr_trans_t new_trans = {
-        .buffer = frame_buffer,
-        .buflen = frame_buffer_size,
-    };
-    esp_cam_ctlr_evt_cbs_t cbs = {
-        .on_get_new_trans = s_camera_get_new_vb,
-        .on_trans_finished = s_camera_get_finished_trans,
-    };
-    ESP_ERROR_CHECK(esp_cam_ctlr_register_event_callbacks(s_cam_handle, &cbs, &new_trans));
-    ESP_ERROR_CHECK(esp_cam_ctlr_enable(s_cam_handle));
-
-    /* ISP configuration: RAW8 -> RGB565 */
-    esp_isp_processor_cfg_t isp_config = {
-        .clk_hz = 80 * 1000 * 1000,
-        .input_data_source = ISP_INPUT_DATA_SOURCE_CSI,
-        .input_data_color_type = ISP_COLOR_RAW8,
-        .output_data_color_type = ISP_COLOR_RGB565,
-        .has_line_start_packet = false,
-        .has_line_end_packet = false,
-        .h_res = EXAMPLE_CAM_SENSOR_HRES,
-        .v_res = EXAMPLE_CAM_SENSOR_VRES,
-    };
-    ESP_ERROR_CHECK(esp_isp_new_processor(&isp_config, &s_isp_proc));
-    ESP_ERROR_CHECK(esp_isp_enable(s_isp_proc));
-
-    /* Init frame buffer to white */
-    memset(frame_buffer, 0xFF, frame_buffer_size);
-    esp_cache_msync((void *)frame_buffer, frame_buffer_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-
-    ESP_LOGI(TAG, "MIPI CSI camera (OV5647) initialized (sensor init pending)");
 }
 
 /*============================================================================
@@ -402,8 +310,8 @@ extern "C" void app_main(void)
     /* 2. ESP-Brookesia Phone UI */
     monitor_init_brookesia(disp);
 
-    /* 3. MIPI CSI Camera - NOTE: shares GPIO39/43/44 with SDMMC */
-    // monitor_init_camera();  // Uncomment when camera is needed
+    /* 3. MIPI CSI Camera - available via Camera app on launcher */
+    /* (Camera init is handled by PhoneAppCamera, not here) */
 
     /* 4. SDMMC SD Card */
     monitor_init_sdcard();

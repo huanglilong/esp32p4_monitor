@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.cpp"
+    SRCS "main.cpp" "phone_app_camera.cpp"
     INCLUDE_DIRS "."
     REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c fatfs
     PRIV_REQUIRES esp_driver_i2s esp_driver_gpio esp_driver_sdmmc)
