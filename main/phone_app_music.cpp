@@ -2,6 +2,7 @@
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
 #include "esp_codec_dev.h"
+#include "nvs.h"
 #include "bsp/display.h"
 #include <string.h>
 #include <strings.h>
@@ -159,6 +160,20 @@ bool PhoneAppMusic::run(void)
         return false;
     }
     esp_audio_simple_player_set_event(_asp_handle, _asp_event_cb, this);
+
+    /* Load volume from NVS if available, otherwise use default */
+    {
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+            int32_t saved_vol = (int32_t)_volume;
+            if (nvs_get_i32(nvs_h, "volume", &saved_vol) == ESP_OK) {
+                if (saved_vol >= 0 && saved_vol <= 100) {
+                    _volume = (int)saved_vol;
+                }
+            }
+            nvs_close(nvs_h);
+        }
+    }
 
     /* Set initial volume on codec */
     if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, _volume);

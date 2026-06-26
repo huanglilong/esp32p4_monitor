@@ -15,6 +15,8 @@
 | 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, MIPI CSI + ISP, 800×800 → 720×720 显示 |
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
+| 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
+| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + NVS 持久化 (WiFi 待启用)** |
 
 ## 开发环境
 - **芯片**: ESP32-P4NRW32
@@ -35,11 +37,15 @@ esp32p4_monitor/
 │   ├── idf_component.yml       # 组件依赖声明
 │   ├── Kconfig.projbuild       # 项目 Kconfig 菜单
 │   ├── example_config.h        # 引脚和参数宏定义
-│   ├── main.cpp                # 主程序 (C++): BSP 外设初始化 + 3 个 App 安装
+│   ├── main.cpp                # 主程序 (C++): BSP 外设初始化 + 5 个 App 安装
 │   ├── phone_app_camera.hpp    # Camera App 头文件
 │   ├── phone_app_camera.cpp    # Camera App (MIPI CSI + ISP + OV5647 sensor)
 │   ├── phone_app_audio.hpp     # Audio App 头文件
-│   └── phone_app_audio.cpp     # Audio App (双 Mic 电平监控)
+│   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + MP3 录音)
+│   ├── phone_app_music.hpp     # Music App 头文件
+│   ├── phone_app_music.cpp     # Music App (MP3/WAV 播放器)
+│   ├── phone_app_settings.hpp  # Settings App 头文件
+│   └── phone_app_settings.cpp  # Settings App (音量/亮度 + NVS, WiFi 条件编译)
 ├── components/
 │   └── espressif__esp_lvgl_port/   # 本地补丁版 esp_lvgl_port
 └── project_setup.md            # 本文档
@@ -131,11 +137,12 @@ esp32p4_monitor/
 
 ```
 app_main()
+  ├─ 0. NVS Flash (nvs_flash_init + 亮度加载)
   ├─ 1. MIPI DSI Display (bsp_display_start_with_config)
   │      → ST7703 720×720 LCD + GT911 Touch
   │      → LVGL taskLVGL 创建
   │
-  ├─ 2. ESP-Brookesia Phone UI (4 apps installed)
+  ├─ 2. ESP-Brookesia Phone UI (5 apps installed)
   │      → PhoneAppSquareline
   │      → PhoneAppCamera, PhoneAppAudio
   │
@@ -270,6 +277,27 @@ esp_codec_dev_set_in_gain(s_codec_mic_handle, 30);
 // 5. 重新使能 TX (codec open 后 I2S 状态可能改变)
 i2s_channel_disable(tx); i2s_channel_enable(tx);
 ```
+
+### 11. Settings App (NVS 持久化)
+
+`PhoneAppSettings` 继承 `ESP_Brookesia_PhoneApp`，提供系统设置界面:
+
+| 设置项 | 控件 | NVS Key | 范围 | 默认值 |
+|--------|------|---------|------|--------|
+| 🔉 音量 | LVGL Slider | `volume` | 0-100 | 60 |
+| ☀️ 屏幕亮度 | LVGL Slider | `brightness` | 20-100 | 80 |
+| 📶 Wi-Fi | LVGL Switch + 扫描列表 + 密码输入 | `wifi_en`, `ssid`, `pass` | - | - |
+
+**NVS 命名空间**: `"settings"`
+
+**WiFi 说明**: WiFi 代码通过 `#ifdef SETTINGS_WIFI_ENABLED` 条件编译。ESP32-P4 使用 `CONFIG_ESP_HOST_WIFI_ENABLED=y`（而非 `CONFIG_ESP_WIFI_ENABLED`），因为 P4 本身没有内置 WiFi，需要 ESP32-C6 通过 SDIO 提供远程 WiFi 传输。
+
+**全局共享**:
+- 音量通过 `s_codec_handle` → `esp_codec_dev_set_out_vol()` 设置
+- 亮度通过 `bsp_display_brightness_set()` 设置
+- Music App 启动时从 NVS 读取音量
+- 主程序启动后从 NVS 读取并应用亮度
+- 所有更改立即保存到 NVS
 
 ## 构建和烧录
 

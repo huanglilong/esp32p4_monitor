@@ -12,6 +12,7 @@
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "driver/sdmmc_host.h"
+#include "driver/spi_common.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "esp_lcd_mipi_dsi.h"
@@ -19,6 +20,8 @@
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "es7210_adc.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "esp_brookesia.hpp"
@@ -26,6 +29,7 @@
 #include "phone_app_camera.hpp"
 #include "phone_app_audio.hpp"
 #include "phone_app_music.hpp"
+#include "phone_app_settings.hpp"
 #include "example_config.h"
 
 static const char *TAG = "monitor";
@@ -133,6 +137,10 @@ static void monitor_init_brookesia(lv_display_t *disp)
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_music, "Create music app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_music) >= 0), "Install music app failed");
 
+    PhoneAppSettings *app_settings = new PhoneAppSettings(false, false);
+    ESP_BROOKESIA_CHECK_NULL_EXIT(app_settings, "Create settings app failed");
+    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_settings) >= 0), "Install settings app failed");
+
     lv_timer_create(on_clock_update_timer_cb, 1000, phone);
     bsp_display_unlock();
     ESP_LOGI(TAG, "ESP-Brookesia Phone UI initialized");
@@ -152,12 +160,14 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t)
 }
 
 /*============================================================================
- * SDMMC (SD Card)
+ * SD Card (SPI mode — SDMMC peripheral blocked by esp_hosted C6 WiFi)
  *============================================================================*/
+static bool s_spi_bus_initialized = false;
+
 void monitor_init_sdcard(void)
 {
     esp_err_t ret;
-    ESP_LOGI(TAG, "Initializing SD card via SDMMC...");
+    ESP_LOGI(TAG, "Initializing SD card via SPI...");
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
@@ -166,25 +176,31 @@ void monitor_init_sdcard(void)
     };
     const char mount_point[] = SDMMC_MOUNT_POINT;
 
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.unaligned_multi_block_rw_max_chunk_size = 8;
-#if CONFIG_EXAMPLE_SDMMC_SPEED_HS
-    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
-#endif
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI2_HOST;
 
-    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.width = 4;
-#ifdef CONFIG_SOC_SDMMC_USE_GPIO_MATRIX
-    slot_config.clk = (gpio_num_t)CONFIG_EXAMPLE_PIN_CLK;
-    slot_config.cmd = (gpio_num_t)CONFIG_EXAMPLE_PIN_CMD;
-    slot_config.d0 = (gpio_num_t)CONFIG_EXAMPLE_PIN_D0;
-    slot_config.d1 = (gpio_num_t)CONFIG_EXAMPLE_PIN_D1;
-    slot_config.d2 = (gpio_num_t)CONFIG_EXAMPLE_PIN_D2;
-    slot_config.d3 = (gpio_num_t)CONFIG_EXAMPLE_PIN_D3;
-#endif
-    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs   = GPIO_NUM_42;  /* CS: D3 */
+    slot_config.host_id   = SPI2_HOST;
 
-    ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &s_card);
+    if (!s_spi_bus_initialized) {
+        spi_bus_config_t bus_cfg = {
+            .mosi_io_num = GPIO_NUM_40,  /* MOSI: D1 */
+            .miso_io_num = GPIO_NUM_39,  /* MISO: D0 */
+            .sclk_io_num = GPIO_NUM_43,  /* CLK: CLK */
+            .quadwp_io_num = -1,
+            .quadhd_io_num = -1,
+            .max_transfer_sz = 4000,
+        };
+        ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
+            return;
+        }
+        s_spi_bus_initialized = true;
+    }
+
+    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &s_card);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SD card mount failed (%s), continuing without SD", esp_err_to_name(ret));
         return;
@@ -301,9 +317,32 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== ESP32-P4 Monitor Starting ===");
 
+    /* 0. NVS init (for persistent settings) */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+    ESP_LOGI(TAG, "NVS initialized");
+
     /* 1. MIPI DSI Display */
     lv_display_t *disp = NULL;
     monitor_init_display(&disp);
+
+    /* Apply saved brightness from NVS (if available) */
+    {
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+            int32_t brightness = 80; /* default */
+            nvs_get_i32(nvs_h, "brightness", &brightness);
+            if (brightness < 20) brightness = 20;
+            if (brightness > 100) brightness = 100;
+            bsp_display_brightness_set((int)brightness);
+            ESP_LOGI(TAG, "Brightness loaded from NVS: %ld", brightness);
+            nvs_close(nvs_h);
+        }
+    }
 
     /* 2. ESP-Brookesia Phone UI */
     monitor_init_brookesia(disp);
