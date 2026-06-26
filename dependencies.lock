@@ -1,38 +1,4 @@
 dependencies:
-  chmorgan/esp-audio-player:
-    component_hash: c8ac1998e9af863bc41b57e592f88d1a5791a0f891485122336ddabbf7a65033
-    dependencies:
-    - name: chmorgan/esp-libhelix-mp3
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=1.0.0,<2.0.0'
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.0.7
-  chmorgan/esp-file-iterator:
-    component_hash: 327091394b9ef5c2cd395a960ab70ae64479e0a8831cbd9925e38895fad93719
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.1.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.0.0
-  chmorgan/esp-libhelix-mp3:
-    component_hash: cbb76089dc2c5749f7b470e2e70aedc44c9da519e04eb9a67d4c7ec275229e53
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.1.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.0.3
   espressif/cmake_utilities:
     component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
@@ -71,6 +37,53 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.2.3
+  espressif/esp_asrc:
+    component_hash: 83021b6888ba94966bb3a954d435ca031952ddb7f2b873886bd7a0da94bc1108
+    dependencies:
+    - name: espressif/esp_audio_effects
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~1.3
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.1
+  espressif/esp_audio_codec:
+    component_hash: 16e2880dbdd5a72264051f750f33a6e5a38fd25621c83e3a32a85a152d2d2643
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 2.5.0
+  espressif/esp_audio_effects:
+    component_hash: 6ad72ee106e25b07c9ae5b8ec77b566ef8d697473095f1c982e13247005b9ba6
+    dependencies:
+    - name: espressif/gmf_fft
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~1.0
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.3.0~1
+  espressif/esp_audio_simple_player:
+    component_hash: 26bc2b64341b39c6913807b6231780fdc5a23762817cbe327f7194753ca4cf52
+    dependencies:
+    - name: espressif/gmf_audio
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.0
+    - name: espressif/gmf_io
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.0
   espressif/esp_cam_sensor:
     component_hash: db5b1c725799dced61e7b100dc027e1e59558c9973d7e1ed8ce42a5ec89da31c
     dependencies:
@@ -136,6 +149,13 @@ dependencies:
       path: components/espressif__esp_lvgl_port
       type: local
     version: 2.8.0~1
+  espressif/esp_muxer:
+    component_hash: 390a00633bdd35cf90bdfc55cdfe895a937546e86c63cee18989bf0c1ff194bc
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.2.2
   espressif/esp_sccb_intf:
     component_hash: c071b189e49f40940722aea01a5489f873385cc39cd5b14012341135b85d1a9d
     dependencies:
@@ -146,6 +166,62 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.0.8
+  espressif/gmf_audio:
+    component_hash: b04b6559d2a1c1cbd66f5297c27a7aa75cecd44d2c5552b4030fd99f02442833
+    dependencies:
+    - name: espressif/esp_asrc
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~1.0
+    - name: espressif/esp_audio_codec
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~2.5
+    - name: espressif/esp_audio_effects
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~1.3
+    - name: espressif/esp_muxer
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~1.2
+    - name: espressif/gmf_core
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.0
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.0
+  espressif/gmf_core:
+    component_hash: f242674fc224543cc8df3608730b039b3bc1fd7639741bfc4815d13df5a993fc
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.0
+  espressif/gmf_fft:
+    component_hash: b59451ef2f96d22b80c27a162515b21f1b85954dda434c0b092172164028779d
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.0
+  espressif/gmf_io:
+    component_hash: aa1f68942e64ca538bb9d01e59d8f7563314c681183959bf62f180fa2b0a3c55
+    dependencies:
+    - name: espressif/esp_codec_dev
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.4
+    - name: espressif/gmf_core
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.0
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.0
   espressif/usb:
     component_hash: 1d90d7c7b0682dbfcc36f47cf5acf224a5cfb850a62f39cd86d3159cfec12a81
     dependencies:
@@ -229,15 +305,14 @@ dependencies:
     - esp32p4
     version: 2.0.0
 direct_dependencies:
-- chmorgan/esp-audio-player
-- chmorgan/esp-file-iterator
 - espressif/esp-brookesia
+- espressif/esp_audio_simple_player
 - espressif/esp_cam_sensor
 - espressif/esp_codec_dev
 - espressif/esp_sccb_intf
 - idf
 - lvgl/lvgl
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 3d0b30be9e6b9f14eb9ba98565a355a01ee64155573995a8cf92255ed6c5ba7c
+manifest_hash: bd49809168f514a1dc6c40bafc73ce7900ec3703b2233b776c46d975b73a213d
 target: esp32p4
 version: 3.0.0

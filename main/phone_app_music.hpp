@@ -1,7 +1,8 @@
 #pragma once
 
 #include "esp_brookesia.hpp"
-#include "audio_player.h"
+#include "esp_audio_simple_player.h"
+#include "esp_gmf_err.h"
 
 #include <string.h>
 
@@ -17,8 +18,8 @@ public:
     bool close(void) override;
 
 private:
-    static void _player_event_cb_static(audio_player_cb_ctx_t *ctx);
-    static void _playback_task(void *arg);
+    static int _asp_event_cb(esp_asp_event_pkt_t *pkt, void *ctx);
+    static int _asp_output_cb(uint8_t *data, int data_size, void *ctx);
 
     void _scan_files(void);
     void _play(int index);
@@ -31,9 +32,8 @@ private:
     volatile int        _current_track;   // -1 = stopped, >=0 = playing
     volatile bool       _is_playing;
     int                 _track_count;
+    esp_asp_handle_t    _asp_handle;      // Audio simple player handle
 
-    /* File iterator */
-    void               *_file_iter;        // Unused now, kept for compatibility
     char               *_file_names[MAX_TRACKS]; // Track file names
 
     /* LVGL objects */

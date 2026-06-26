@@ -1,9 +1,7 @@
 #include "phone_app_music.hpp"
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
-#include "driver/i2s_std.h"
 #include "esp_codec_dev.h"
-#include "audio_player.h"
 #include "bsp/display.h"
 #include <string.h>
 #include <strings.h>
@@ -22,16 +20,11 @@ extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_1
 #define MUSIC_DIR  "/sdcard"
 #define MAX_TRACKS 50
 
-/* Forward decls for audio player callbacks */
-static esp_err_t _player_mute_cb(AUDIO_PLAYER_MUTE_SETTING setting);
-static esp_err_t _player_write_cb(void *audio_buffer, size_t len, size_t *bytes_written, uint32_t timeout_ms);
-static esp_err_t _player_clk_set_cb(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch);
-
 PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Music", &esp_brookesia_image_large_app_launcher_default_112_112,
                            true, use_status_bar, use_navigation_bar),
     _current_track(-1), _is_playing(false), _track_count(0),
-    _file_iter(nullptr),
+    _asp_handle(nullptr),
     _btn_back(nullptr), _label_title(nullptr), _label_status(nullptr),
     _btn_prev(nullptr), _btn_play(nullptr), _btn_next(nullptr),
     _list_tracks(nullptr), _label_no_files(nullptr),
@@ -150,16 +143,22 @@ bool PhoneAppMusic::run(void)
     lv_obj_set_size(_list_tracks, BSP_LCD_H_RES - 20, BSP_LCD_V_RES - 180);
     lv_obj_align(_list_tracks, LV_ALIGN_TOP_MID, 0, 60);
 
-    /* Init audio player */
-    audio_player_config_t cfg = {
-        .mute_fn = _player_mute_cb,
-        .clk_set_fn = _player_clk_set_cb,
-        .write_fn = _player_write_cb,
-        .priority = 5,
-        .coreID = 0,
+    /* Init audio simple player (ESP-GMF based) */
+    esp_asp_cfg_t asp_cfg = {
+        .out = { .cb = _asp_output_cb, .user_ctx = this },
+        .task_prio = 5,
+        .task_stack = 4096,
+        .task_core = 0,
+        .task_stack_in_ext = false,
+        .prev = NULL,
+        .prev_ctx = NULL,
     };
-    audio_player_new(cfg);
-    audio_player_callback_register(PhoneAppMusic::_player_event_cb_static, this);
+    esp_gmf_err_t ret = esp_audio_simple_player_new(&asp_cfg, &_asp_handle);
+    if (ret != ESP_GMF_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to create audio player: %d", ret);
+        return false;
+    }
+    esp_audio_simple_player_set_event(_asp_handle, _asp_event_cb, this);
 
     /* Set initial volume on codec */
     if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, _volume);
@@ -194,7 +193,10 @@ bool PhoneAppMusic::close(void)
     for (int i = 0; i < _track_count; i++) {
         if (_file_names[i]) { free(_file_names[i]); _file_names[i] = nullptr; }
     }
-    audio_player_delete();
+    if (_asp_handle) {
+        esp_audio_simple_player_destroy(_asp_handle);
+        _asp_handle = nullptr;
+    }
     ESP_LOGI(TAG, "Music app closed");
     return true;
 }
@@ -254,20 +256,34 @@ void PhoneAppMusic::_play(int index)
     _current_track = index;
 
     const char *name = _file_names[index];
-    char path[256];
-    snprintf(path, sizeof(path), MUSIC_DIR "/%s", name);
+    char uri[320];
+    /* GMF file IO uses the URI path directly with fopen() via get_mount_path().
+     * file://sdcard/xxx.mp3 → get_mount_path strips "file://" → "/sdcard/xxx.mp3"
+     * Spaces in filenames are fine for fopen() on FAT32. */
+    snprintf(uri, sizeof(uri), "file://sdcard/%s", name);
 
-    ESP_LOGI(TAG, "Playing: %s", path);
+    ESP_LOGI(TAG, "Playing: %s", uri);
     lv_label_set_text(_label_title, name);
 
-    FILE *fp = fopen(path, "rb");
-    if (!fp) {
-        ESP_LOGE(TAG, "Failed to open: %s", path);
-        lv_label_set_text(_label_status, "Open failed");
+    /* Retry: if player is still finishing previous pipeline, stop and retry */
+    esp_gmf_err_t ret;
+    for (int retry = 0; retry < 3; retry++) {
+        ret = esp_audio_simple_player_run(_asp_handle, uri, NULL);
+        if (ret == ESP_GMF_ERR_OK) break;
+        if (ret == ESP_GMF_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Player state conflict, stopping and retrying...");
+            esp_audio_simple_player_stop(_asp_handle);
+            vTaskDelay(pdMS_TO_TICKS(30));
+        } else {
+            break;
+        }
+    }
+    if (ret != ESP_GMF_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to play %s: %d", uri, ret);
+        lv_label_set_text(_label_status, "Play failed");
+        _current_track = -1;
         return;
     }
-
-    audio_player_play(fp);
     _is_playing = true;
     lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
     lv_label_set_text(btn, LV_SYMBOL_PAUSE);
@@ -284,12 +300,12 @@ void PhoneAppMusic::_pause_resume(void)
         return;
     }
     if (_is_playing) {
-        audio_player_pause();
+        esp_audio_simple_player_pause(_asp_handle);
         _is_playing = false;
         lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
         lv_label_set_text(btn, LV_SYMBOL_PLAY);
     } else {
-        audio_player_resume();
+        esp_audio_simple_player_resume(_asp_handle);
         _is_playing = true;
         lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
         lv_label_set_text(btn, LV_SYMBOL_PAUSE);
@@ -298,8 +314,8 @@ void PhoneAppMusic::_pause_resume(void)
 
 void PhoneAppMusic::_stop(void)
 {
-    if (_current_track >= 0) {
-        audio_player_stop();
+    if (_current_track >= 0 && _asp_handle) {
+        esp_audio_simple_player_stop(_asp_handle);
         _is_playing = false;
         _current_track = -1;
         lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
@@ -323,57 +339,41 @@ void PhoneAppMusic::_prev(void)
 }
 
 /*============================================================================
- * Audio Player Callbacks
+ * ESP Audio Simple Player Callbacks (static members)
  *============================================================================*/
 
-static esp_err_t _player_mute_cb(AUDIO_PLAYER_MUTE_SETTING setting)
+/* Output callback: receives decoded PCM data, writes to ES8311 codec */
+int PhoneAppMusic::_asp_output_cb(uint8_t *data, int data_size, void *ctx)
 {
-    if (s_codec_handle) {
-        esp_codec_dev_set_out_mute(s_codec_handle, (setting == AUDIO_PLAYER_MUTE));
-    }
-    return ESP_OK;
+    (void)ctx;
+    if (!s_codec_handle || data_size <= 0) return -1;
+    int ret = esp_codec_dev_write(s_codec_handle, data, data_size);
+    return (ret == ESP_CODEC_DEV_OK) ? data_size : -1;
 }
 
-static esp_err_t _player_write_cb(void *audio_buffer, size_t len, size_t *bytes_written, uint32_t timeout_ms)
+/* Event callback: handles state transitions */
+int PhoneAppMusic::_asp_event_cb(esp_asp_event_pkt_t *pkt, void *ctx)
 {
-    if (!s_codec_handle) {
-        *bytes_written = 0;
-        return ESP_FAIL;
+    PhoneAppMusic *app = (PhoneAppMusic *)ctx;
+    if (pkt->type == ESP_ASP_EVENT_TYPE_STATE) {
+        esp_asp_state_t state = *(esp_asp_state_t *)pkt->payload;
+        switch (state) {
+        case ESP_ASP_STATE_FINISHED:
+            ESP_LOGI(TAG, "Playback finished, advancing to next track");
+            app->_is_playing = false;
+            app->_next();
+            break;
+        case ESP_ASP_STATE_ERROR:
+            ESP_LOGW(TAG, "Playback error, skipping to next");
+            app->_is_playing = false;
+            app->_next();
+            break;
+        case ESP_ASP_STATE_STOPPED:
+            // User-initiated stop, already handled in _stop()
+            break;
+        default:
+            break;
+        }
     }
-    int ret = esp_codec_dev_write(s_codec_handle, audio_buffer, (int)len);
-    /* esp_codec_dev_write returns ESP_CODEC_DEV_OK (0) on success, not byte count */
-    if (ret == ESP_CODEC_DEV_OK) {
-        if (bytes_written) *bytes_written = len;
-        return ESP_OK;
-    }
-    ESP_LOGW(TAG, "codec write err: %d", ret);
-    *bytes_written = 0;
-    return ESP_FAIL;
-}
-
-static esp_err_t _player_clk_set_cb(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)
-{
-    /* Keep I2S at fixed 48kHz. Helix MP3 decoder handles rate mismatch internally.
-     * Per-file reconfig causes DMA disruption → decoder error -9. */
-    ESP_LOGI(TAG, "Clock set request: %luHz (keeping 48000Hz)", rate);
-    return ESP_OK;
-}
-
-void PhoneAppMusic::_player_event_cb_static(audio_player_cb_ctx_t *ctx)
-{
-    PhoneAppMusic *app = (PhoneAppMusic *)ctx->user_ctx;
-    switch (ctx->audio_event) {
-    case AUDIO_PLAYER_CALLBACK_EVENT_IDLE:
-    case AUDIO_PLAYER_CALLBACK_EVENT_PLAYING:
-    case AUDIO_PLAYER_CALLBACK_EVENT_PAUSE:
-    case AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN:
-        break;  // States handled by UI timer
-    case AUDIO_PLAYER_CALLBACK_EVENT_COMPLETED_PLAYING_NEXT:
-        break;  // Manual track selection only
-    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE:
-        ESP_LOGW(TAG, "Unknown file type - skipping");
-        break;
-    default:
-        break;
-    }
+    return 0;
 }
