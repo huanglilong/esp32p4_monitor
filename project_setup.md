@@ -57,7 +57,10 @@ esp32p4_monitor/
 | `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
 | `lvgl/lvgl` | 9.2.2 | ESP Registry |
 | `shine_encoder` | (local) | 本地组件 `components/shine_encoder/` |
-| `espressif/esp_audio_simple_player` | ^1.0.0 | ESP Registry (替代 chmorgan/esp-audio-player) |
+| `espressif/esp_audio_simple_player` | ^1.0.0 | ESP Registry |
+| `espressif/gmf_core` | ^1.0 | (间接依赖, 自动拉入) |
+| `espressif/gmf_audio` | ^1.0 | (间接依赖, 自动拉入) |
+| `espressif/gmf_io` | ^1.0 | (间接依赖, 自动拉入) |
 
 ## FreeRTOS 任务列表
 

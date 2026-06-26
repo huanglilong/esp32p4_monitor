@@ -4,8 +4,6 @@
 #include "esp_audio_simple_player.h"
 #include "esp_gmf_err.h"
 
-#include <string.h>
-
 #define MAX_TRACKS 50
 
 class PhoneAppMusic : public ESP_Brookesia_PhoneApp {

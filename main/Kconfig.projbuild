@@ -63,19 +63,10 @@ menu "Monitor Example Configuration"
         default 42
 
     # Audio
-    config EXAMPLE_MODE_MUSIC
-        bool "Audio music playback mode"
-        default y
-    config EXAMPLE_MODE_ECHO
-        bool "Audio echo mode"
-        default n
     config EXAMPLE_VOICE_VOLUME
         int "Speaker output volume"
         default 80
         range 0 100
-    config EXAMPLE_PA_CTRL_IO
-        int "PA control GPIO (-1 for none)"
-        default -1
     config EXAMPLE_I2C_SCL_IO
         int "I2C SCL GPIO"
         default 8
