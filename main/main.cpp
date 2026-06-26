@@ -160,7 +160,8 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t)
 }
 
 /*============================================================================
- * SD Card (SPI mode — SDMMC peripheral blocked by esp_hosted C6 WiFi)
+ * SD Card (SPI mode — SDMMC slot 0 blocked by esp_hosted C6 WiFi on slot 1)
+ * SPI pins: CS=GPIO42(D3), MOSI=GPIO44(CMD), SCLK=GPIO43(CLK), MISO=GPIO39(D0)
  *============================================================================*/
 static bool s_spi_bus_initialized = false;
 
@@ -180,14 +181,14 @@ void monitor_init_sdcard(void)
     host.slot = SPI2_HOST;
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs   = GPIO_NUM_42;  /* CS: D3 */
+    slot_config.gpio_cs   = GPIO_NUM_42;  /* D3 → CS */
     slot_config.host_id   = SPI2_HOST;
 
     if (!s_spi_bus_initialized) {
         spi_bus_config_t bus_cfg = {
-            .mosi_io_num = GPIO_NUM_40,  /* MOSI: D1 */
-            .miso_io_num = GPIO_NUM_39,  /* MISO: D0 */
-            .sclk_io_num = GPIO_NUM_43,  /* CLK: CLK */
+            .mosi_io_num = GPIO_NUM_44,  /* CMD → MOSI (DI) */
+            .miso_io_num = GPIO_NUM_39,  /* D0  → MISO (DO) */
+            .sclk_io_num = GPIO_NUM_43,  /* CLK → SCLK */
             .quadwp_io_num = -1,
             .quadhd_io_num = -1,
             .max_transfer_sz = 4000,
