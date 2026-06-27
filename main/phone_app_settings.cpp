@@ -66,16 +66,6 @@ bool PhoneAppSettings::init(void)
     getNvsStr(NVS_KEY_WIFI_SSID, _wifi_ssid, sizeof(_wifi_ssid));
     getNvsStr(NVS_KEY_WIFI_PASS, _wifi_password, sizeof(_wifi_password));
 
-    /* Set default WiFi credentials on first boot if none saved */
-    if (strlen(_wifi_ssid) == 0) {
-        strcpy(_wifi_ssid, "503");
-        strcpy(_wifi_password, "15210627603");
-        setNvsStr(NVS_KEY_WIFI_SSID, _wifi_ssid);
-        setNvsStr(NVS_KEY_WIFI_PASS, _wifi_password);
-        setNvsParam(NVS_KEY_WIFI_EN, 1);
-        _nvs_param_map[NVS_KEY_WIFI_EN] = 1;
-        ESP_LOGI(TAG, "Set default WiFi credentials: SSID=%s", _wifi_ssid);
-    }
     applySettings();
     return true;
 }
