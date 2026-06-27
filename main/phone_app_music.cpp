@@ -2,6 +2,7 @@
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
 #include "esp_codec_dev.h"
+#include "esp_lvgl_port.h"
 #include "nvs.h"
 #include "bsp/display.h"
 #include <string.h>
@@ -376,12 +377,18 @@ int PhoneAppMusic::_asp_event_cb(esp_asp_event_pkt_t *pkt, void *ctx)
         case ESP_ASP_STATE_FINISHED:
             ESP_LOGI(TAG, "Playback finished, advancing to next track");
             app->_is_playing = false;
-            app->_next();
+            if (lvgl_port_lock(0)) {
+                app->_next();
+                lvgl_port_unlock();
+            }
             break;
         case ESP_ASP_STATE_ERROR:
             ESP_LOGW(TAG, "Playback error, skipping to next");
             app->_is_playing = false;
-            app->_next();
+            if (lvgl_port_lock(0)) {
+                app->_next();
+                lvgl_port_unlock();
+            }
             break;
         case ESP_ASP_STATE_STOPPED:
             // User-initiated stop, already handled in _stop()

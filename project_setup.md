@@ -278,7 +278,22 @@ esp_codec_dev_set_in_gain(s_codec_mic_handle, 30);
 i2s_channel_disable(tx); i2s_channel_enable(tx);
 ```
 
-### 11. Settings App (NVS 持久化)
+### 11. Music App LVGL 线程安全修复
+
+**问题**: 播放完一首歌后 GMF 音频管道回调 `_asp_event_cb` (运行在 GMF task, priority 5) 直接调用 `_next()` → `_play()` 更新 LVGL UI (`lv_label_set_text` 等)。如果此时 `taskLVGL` (priority 4) 正在渲染 (`lv_timer_handler`), 高优先级的 GMF task 会抢占并调用 `lv_inv_area()`, 触发 LVGL 断言 `!disp->rendering_in_progress` → 系统崩溃。
+
+**解决**: 在 `_asp_event_cb` 中调用 LVGL API 前加 `lvgl_port_lock(0)` / `lvgl_port_unlock()`。`lvgl_port_lock` 使用递归互斥锁:
+- GMF task 调用 `lvgl_port_lock(0)` → 阻塞等待 LVGL 释放锁
+- `taskLVGL` 渲染完毕后释放锁 → GMF task 安全更新 UI
+- 递归互斥锁允许 LVGL task 内嵌套调用（按钮点击 → `_play()` 等）
+
+### 12. Settings App LVGL 线程安全修复
+
+**问题**: `wifiConnectTaskHandler` FreeRTOS task (line 635-636) 在无锁保护下调用了 `lv_label_get_text()` 和 `lv_textarea_get_text()`，这两个函数读取 LVGL 对象内部字符串指针。如果 `taskLVGL` 并发渲染时修改了这些对象，可能导致悬空指针访问或 `lv_inv_area` 断言崩溃。
+
+**解决**: 在读取 UI 文本前加 `bsp_display_lock(0)`，将字符串复制到局部缓冲区后 `bsp_display_unlock()`，后续只使用局部副本。确保 LVGL 对象的内部指针不会在 taskLVGL 渲染期间被并发访问。
+
+### 13. Settings App (NVS 持久化)
 
 `PhoneAppSettings` 继承 `ESP_Brookesia_PhoneApp`，提供系统设置界面:
 
@@ -327,3 +342,5 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [ ] Camera App 回放/录制功能
 - [x] Audio App Speaker 输出功能 (需解决回声消除)
 - [x] Audio App MP3 录音 (Shine encoder, SD 卡)
+- [x] Music App LVGL 线程安全 (GMF 回调加 lvgl_port_lock)
+- [x] Settings App LVGL 线程安全 (wifiConnectTaskHandler 加 bsp_display_lock)

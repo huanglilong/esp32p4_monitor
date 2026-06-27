@@ -632,8 +632,23 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
 {
     PhoneAppSettings *app = (PhoneAppSettings *)arg;
     wifi_config_t wifi_cfg = {};
-    const char *ssid = lv_label_get_text(app->_label_pass_ssid);
-    const char *pass = lv_textarea_get_text(app->_ta_password);
+
+    /* Copy SSID and password from LVGL UI under lock to avoid race with rendering */
+    char ssid_buf[64] = {};
+    char pass_buf[64] = {};
+    bsp_display_lock(0);
+    const char *ssid_label = lv_label_get_text(app->_label_pass_ssid);
+    const char *pass_text = lv_textarea_get_text(app->_ta_password);
+    if (ssid_label) {
+        strncpy(ssid_buf, ssid_label, sizeof(ssid_buf) - 1);
+    }
+    if (pass_text) {
+        strncpy(pass_buf, pass_text, sizeof(pass_buf) - 1);
+    }
+    bsp_display_unlock();
+
+    const char *ssid = ssid_buf;
+    const char *pass = pass_buf;
     if (strncmp(ssid, "SSID: ", 6) == 0) ssid += 6;
 
     size_t slen = strlen(ssid);
