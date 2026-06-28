@@ -210,7 +210,19 @@ GPIO39/43/44 同时用于 MIPI CSI 和 SDMMC，两者不能同时使用:
 - SCCB 链接: ESL 头文件需 `extern "C"` 包裹
 - 音量振荡: 移除 mic→speaker 回声功能
 
-### 7. Audio App 实现
+### 7. Camera 红绿通道修正（Bayer + 字节序）
+
+**问题**: Camera 预览画面中红色显示为绿色。两个根本原因:
+
+1. **Bayer 模式不匹配**: OV5647 传感器输出 `GBRG` Bayer pattern (`ESP_CAM_SENSOR_BAYER_GBRG`)，但 ISP 配置为 `BGGR`（`COLOR_RAW_ELEMENT_ORDER_BGGR`）。ISP 去马赛克时通道分配错误，导致红色像素被当作绿色处理。
+
+2. **像素字节序不匹配**: ISP RAW8→RGB565 输出的默认字节序 (`byte_swap_en=0`，大端优先) 与 LE CPU + LVGL/LCD 期望的小端字节序不匹配。
+
+**解决**:
+- 将 ISP `bayer_order` 从 `COLOR_RAW_ELEMENT_ORDER_BGGR` 改为 `COLOR_RAW_ELEMENT_ORDER_GBRG`，匹配 OV5647 传感器的实际输出模式。
+- 设置 `flags.byte_swap_en = 1`，让 ISP 硬件自动输出小端字节序 RGB565，无需 CPU 手动字节交换（原软件 swap 存在 cache 一致性问题）。
+
+### 8. Audio App 实现
 
 `PhoneAppAudio` 继承 `ESP_Brookesia_PhoneApp`，双声道电平表 UI + MP3 录音:
 
@@ -335,7 +347,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] ES7210 ADC 初始化 + Mic Gain 配置
 - [x] Camera App 打开/关闭/重新打开 生命周期
 - [x] CSI/ISP 正确释放 (stop→disable→del 顺序)
-- [ ] Camera 在 LCD 显示有问题, 红色显示成绿色
+- [x] Camera 在 LCD 显示有问题, 红色显示成绿色 — 修复: ISP `byte_swap_en=1`
 - [x] Camera App 关闭后重新挂载 SD 卡
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
 - [ ] WiFi/BLE 支持 (通过 ESP32-C6 SDIO)

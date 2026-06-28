@@ -192,8 +192,11 @@ bool PhoneAppCamera::_init_camera(void)
         .has_line_end_packet = false,
         .h_res = EXAMPLE_CAM_SENSOR_HRES,
         .v_res = EXAMPLE_CAM_SENSOR_VRES,
-        .bayer_order = COLOR_RAW_ELEMENT_ORDER_BGGR,
+        .bayer_order = COLOR_RAW_ELEMENT_ORDER_GBRG,
         .intr_priority = 0,
+        .flags = {
+            .byte_swap_en = 1,
+        },
     };
     ESP_ERROR_CHECK(esp_isp_new_processor(&isp_config, (isp_proc_handle_t *)&_isp_proc));
     ESP_ERROR_CHECK(esp_isp_enable((isp_proc_handle_t)_isp_proc));
@@ -360,7 +363,8 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
         return;
     }
 
-    /* Sync cache before LVGL reads the buffer */
+    /* Sync cache: ISP DMA writes to PSRAM, ensure cache coherence for LVGL display DMA reads.
+     * byte_swap_en=1 in ISP config handles LE byte order for LVGL/LCD. */
     esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
     /* Trigger LVGL to redraw canvas from camera buffer */
