@@ -111,6 +111,17 @@ bool PhoneAppSettings::back(void)
 bool PhoneAppSettings::close(void)
 {
     stopWifiScan();
+
+    /* Clean up WiFi scan task and event group */
+    if (_wifi_scan_task) {
+        vTaskDelete(_wifi_scan_task);
+        _wifi_scan_task = nullptr;
+    }
+    if (_wifi_event_group) {
+        vEventGroupDelete(_wifi_event_group);
+        _wifi_event_group = nullptr;
+    }
+
     _is_ui_del = true;
     /* Null out LVGL pointers — widgets may be freed by framework */
     _scr_main = nullptr;
@@ -461,10 +472,11 @@ void PhoneAppSettings::startWifiScan(void)
     if (_wifi_scanning) return;
     if (_is_ui_del || !_list_wifi || !_spinner_wifi) return;
     _wifi_scanning = true;
-    bsp_display_lock(0);
-    lv_obj_clear_flag(_spinner_wifi, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clean(_list_wifi);
-    bsp_display_unlock();
+    if (bsp_display_lock(0)) {
+        lv_obj_clear_flag(_spinner_wifi, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clean(_list_wifi);
+        bsp_display_unlock();
+    }
 }
 
 void PhoneAppSettings::stopWifiScan(void)
@@ -472,9 +484,10 @@ void PhoneAppSettings::stopWifiScan(void)
     if (!_wifi_scanning) return;
     _wifi_scanning = false;
     if (!_is_ui_del && _spinner_wifi) {
-        bsp_display_lock(0);
-        lv_obj_add_flag(_spinner_wifi, LV_OBJ_FLAG_HIDDEN);
-        bsp_display_unlock();
+        if (bsp_display_lock(0)) {
+            lv_obj_add_flag(_spinner_wifi, LV_OBJ_FLAG_HIDDEN);
+            bsp_display_unlock();
+        }
     }
 }
 
@@ -491,7 +504,7 @@ void PhoneAppSettings::scanWifiAndUpdateUi(void)
     uint16_t num = (ap_count < WIFI_SCAN_MAX) ? ap_count : WIFI_SCAN_MAX;
     esp_wifi_scan_get_ap_records(&num, ap_info);
 
-    bsp_display_lock(0);
+    if (!bsp_display_lock(0)) return;  // LVGL rendering in progress, skip this cycle
     lv_obj_clean(_list_wifi);
 
     for (int i = 0; i < num; i++) {
@@ -530,7 +543,7 @@ void PhoneAppSettings::processWifiConnect(WifiConnectState state)
 {
     if (_is_ui_del || !_spinner_connect || !_label_connect_status) return;
 
-    bsp_display_lock(0);
+    if (!bsp_display_lock(0)) return;  // LVGL rendering in progress, skip
     switch (state) {
     case WIFI_CONNECT_RUNNING:
         lv_obj_clear_flag(_spinner_connect, LV_OBJ_FLAG_HIDDEN);
@@ -626,7 +639,7 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
     /* Copy SSID and password from LVGL UI under lock to avoid race with rendering */
     char ssid_buf[64] = {};
     char pass_buf[64] = {};
-    bsp_display_lock(0);
+    bsp_display_lock(portMAX_DELAY);
     const char *ssid_label = lv_label_get_text(app->_label_pass_ssid);
     const char *pass_text = lv_textarea_get_text(app->_ta_password);
     if (ssid_label) {
@@ -668,11 +681,12 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
         vTaskDelay(pdMS_TO_TICKS(1000));
         if (!app->_is_ui_del) {
             app->processWifiConnect(WIFI_CONNECT_HIDE);
-            bsp_display_lock(0);
-            lv_textarea_set_text(app->_ta_password, "");
-            app->_screen_index = SCREEN_WIFI_LIST;
-            lv_scr_load(app->_scr_wifi_list);
-            bsp_display_unlock();
+            if (bsp_display_lock(0)) {
+                lv_textarea_set_text(app->_ta_password, "");
+                app->_screen_index = SCREEN_WIFI_LIST;
+                lv_scr_load(app->_scr_wifi_list);
+                bsp_display_unlock();
+            }
         }
     } else {
         if (!app->_is_ui_del) {
@@ -752,6 +766,15 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
         if (app->_wifi_event_group &&
             (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
             esp_wifi_disconnect();
+        }
+        /* Clean up scan task and event group on WiFi OFF */
+        if (app->_wifi_scan_task) {
+            vTaskDelete(app->_wifi_scan_task);
+            app->_wifi_scan_task = nullptr;
+        }
+        if (app->_wifi_event_group) {
+            vEventGroupDelete(app->_wifi_event_group);
+            app->_wifi_event_group = nullptr;
         }
     }
 }

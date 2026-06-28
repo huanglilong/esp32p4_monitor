@@ -1,5 +1,7 @@
 # ESP32-P4 Monitor Project Setup
 
+> 📋 架构分析 & 潜在问题: 参见 [project_design.md](project_design.md)
+
 ## 项目概述
 基于 ESP32-P4 + Waveshare ESP32-P4-WiFi6-Touch-LCD-4B 开发板的综合监控项目,集成:
 - **MIPI DSI** 显示 (720x720, ST7703, 通过 Waveshare BSP)
