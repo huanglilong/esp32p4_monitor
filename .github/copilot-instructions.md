@@ -1,12 +1,12 @@
  ## Startup Procedure (CRITICAL)
  ALWAYS at the start of every session:
  1. Read README.md —— Understand hardware information
- 2. Read project_setup.md —— Understand software information
+ 2. Read PROJECT.md —— Understand software information
  3. Ensure both files have been read before processing user requests
  4. Schedule a plan before starting any work
  5. when finished all tasks
     - update README.md if necessary
-    - update project_setup.md if necessary
+    - update PROJECT.md if necessary
     - update copilot-instructions.md if necessary
     - give a summary of why and how at end, especially for issues and any other important information
 
