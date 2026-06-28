@@ -78,11 +78,17 @@ bool PhoneAppSettings::run(void)
     createWifiPasswordScreen();
     lv_scr_load(_scr_main);
 
-    /* Auto-start WiFi scan task if WiFi was enabled from NVS */
+    /* Auto-start WiFi scan task if WiFi was enabled from NVS.
+     * If task already running (kept alive from previous session by close()),
+     * reuse it — don't recreate. */
     if (_nvs_param_map[NVS_KEY_WIFI_EN] && _wifi_scan_task == NULL) {
         _wifi_event_group = xEventGroupCreate();
-        xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
-                    this, TASK_PRIO_WIFI_SCAN, &_wifi_scan_task);
+        if (_wifi_event_group) {
+            xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
+                        this, TASK_PRIO_WIFI_SCAN, &_wifi_scan_task);
+        }
+    } else if (_wifi_scan_task) {
+        ESP_LOGI(TAG, "Reusing existing WiFi background task");
     }
 
     return true;
@@ -111,19 +117,11 @@ bool PhoneAppSettings::back(void)
 bool PhoneAppSettings::close(void)
 {
     stopWifiScan();
-
-    /* Clean up WiFi scan task and event group */
-    if (_wifi_scan_task) {
-        vTaskDelete(_wifi_scan_task);
-        _wifi_scan_task = nullptr;
-    }
-    if (_wifi_event_group) {
-        vEventGroupDelete(_wifi_event_group);
-        _wifi_event_group = nullptr;
-    }
-
     _is_ui_del = true;
-    /* Null out LVGL pointers — widgets may be freed by framework */
+
+    /* Null out LVGL pointers — widgets may be freed by framework.
+     * WiFi task and event group: keep alive if connected (persistent connection),
+     * clean up only if WiFi is off or disconnected. */
     _scr_main = nullptr;
     _scr_wifi_list = nullptr;
     _list_wifi = nullptr;
@@ -131,6 +129,22 @@ bool PhoneAppSettings::close(void)
     _scr_wifi_pass = nullptr;
     _spinner_connect = nullptr;
     _label_connect_status = nullptr;
+
+    bool wifi_connected = _wifi_event_group &&
+        (xEventGroupGetBits(_wifi_event_group) & WIFI_CONNECTED_BIT);
+    if (!wifi_connected) {
+        if (_wifi_scan_task) {
+            vTaskDelete(_wifi_scan_task);
+            _wifi_scan_task = nullptr;
+        }
+        if (_wifi_event_group) {
+            vEventGroupDelete(_wifi_event_group);
+            _wifi_event_group = nullptr;
+        }
+    } else {
+        ESP_LOGI(TAG, "WiFi connected, keeping background task alive");
+    }
+
     return true;
 }
 
