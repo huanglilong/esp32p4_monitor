@@ -18,6 +18,7 @@ public:
 private:
     static int _asp_event_cb(esp_asp_event_pkt_t *pkt, void *ctx);
     static int _asp_output_cb(uint8_t *data, int data_size, void *ctx);
+    static void _auto_next_timer_cb(lv_timer_t *timer);
 
     void _scan_files(void);
     void _play(int index);
@@ -46,4 +47,8 @@ private:
     lv_obj_t           *_slider_vol;
     lv_obj_t           *_label_vol;
     int                 _volume;           // Current volume (0-100)
+
+    /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
+    volatile bool       _auto_next;
+    lv_timer_t         *_auto_next_timer;
 };

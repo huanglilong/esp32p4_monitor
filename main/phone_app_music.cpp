@@ -31,7 +31,8 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     _btn_prev(nullptr), _btn_play(nullptr), _btn_next(nullptr),
     _list_tracks(nullptr), _label_no_files(nullptr),
     _slider_vol(nullptr), _label_vol(nullptr),
-    _volume(60)
+    _volume(60),
+    _auto_next(false), _auto_next_timer(nullptr)
 {
     memset(_file_names, 0, sizeof(_file_names));
 }
@@ -162,6 +163,10 @@ bool PhoneAppMusic::run(void)
     }
     esp_audio_simple_player_set_event(_asp_handle, _asp_event_cb, this);
 
+    /* Deferred auto-next timer: checks _auto_next flag to avoid GMF re-entrancy.
+     * _asp_event_cb sets _auto_next=true instead of calling _next() directly. */
+    _auto_next_timer = lv_timer_create(_auto_next_timer_cb, 200, this);
+
     /* Load volume from NVS if available, otherwise use default */
     {
         nvs_handle_t nvs_h;
@@ -205,6 +210,11 @@ bool PhoneAppMusic::back(void)
 bool PhoneAppMusic::close(void)
 {
     _stop();
+    /* Clean up auto-next timer */
+    if (_auto_next_timer) {
+        lv_timer_delete(_auto_next_timer);
+        _auto_next_timer = nullptr;
+    }
     // Free file names
     for (int i = 0; i < _track_count; i++) {
         if (_file_names[i]) { free(_file_names[i]); _file_names[i] = nullptr; }
@@ -377,18 +387,12 @@ int PhoneAppMusic::_asp_event_cb(esp_asp_event_pkt_t *pkt, void *ctx)
         case ESP_ASP_STATE_FINISHED:
             ESP_LOGI(TAG, "Playback finished, advancing to next track");
             app->_is_playing = false;
-            if (lvgl_port_lock(0)) {
-                app->_next();
-                lvgl_port_unlock();
-            }
+            app->_auto_next = true;  // Defer _next() to LVGL timer (avoid GMF re-entrancy)
             break;
         case ESP_ASP_STATE_ERROR:
             ESP_LOGW(TAG, "Playback error, skipping to next");
             app->_is_playing = false;
-            if (lvgl_port_lock(0)) {
-                app->_next();
-                lvgl_port_unlock();
-            }
+            app->_auto_next = true;  // Defer _next() to LVGL timer (avoid GMF re-entrancy)
             break;
         case ESP_ASP_STATE_STOPPED:
             // User-initiated stop, already handled in _stop()
@@ -398,4 +402,15 @@ int PhoneAppMusic::_asp_event_cb(esp_asp_event_pkt_t *pkt, void *ctx)
         }
     }
     return 0;
+}
+
+/*============================================================================
+ * Auto-Next Timer: polls _auto_next to safely advance track from LVGL context
+ *============================================================================*/
+void PhoneAppMusic::_auto_next_timer_cb(lv_timer_t *timer)
+{
+    PhoneAppMusic *app = (PhoneAppMusic *)timer->user_data;
+    if (!app || !app->_auto_next) return;
+    app->_auto_next = false;
+    app->_next();
 }

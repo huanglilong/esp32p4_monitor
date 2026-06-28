@@ -599,10 +599,11 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 3. `_stop_recording()` 释放 `_pcm_buffer` (line 361)、关闭 `_encoder` (line 349)
 4. Audio task 访问已释放的 `_pcm_buffer[idx]` → **崩溃**
 
-#### 🔴 10. Music App `_asp_event_cb` 中重入 `_play()` — GMF 管道重入
-**文件**: `phone_app_music.cpp:377-391`, `phone_app_music.cpp:267-310`
+#### 🔴 10. Music App `_asp_event_cb` 中重入 `_play()` — GMF 管道重入 ✅ 已修复
 
-ASP 事件回调 `_asp_event_cb` 在 GMF 内部 task 中运行。`FINISHED` / `ERROR` 事件触发 `_next()` → `_play()` → `esp_audio_simple_player_stop()` + `esp_audio_simple_player_run()`。这是在 GMF 管道的状态转换回调中**重入同一个管道**，可能导致死锁、双重释放或管道状态损坏。
+**文件**: `phone_app_music.cpp/.hpp`
+
+**修复** (2026-06-28): `_asp_event_cb` 不再直接调用 `_next()` → `_play()`（会重入 GMF 管道）。改为设 `_auto_next = true` 易变标志。200ms LVGL timer 轮询此标志，从 taskLVGL 安全上下文调用 `_next()`。
 
 #### 🟡 11. Camera `_init_camera` 错误路径泄漏 buffer + CSI/ISP 句柄 ✅ 已修复
 
