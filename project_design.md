@@ -638,3 +638,29 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 项目架构设计合理，FreeRTOS 任务优先级分配恰当（实时音频 P5 > UI P4 > 检测 P2 > 后台 P1），核心亲和性利用有效（Core 1 专用于 LVGL，Core 0 承载计算负载）。第一轮修复已解决 10 个问题。
 
 **第二轮分析**新发现 3 个严重问题（task 强制 kill 竞态、录音停止竞态、GMF 重入）和 4 个中等问题（资源泄漏、WiFi deinit 缺失、栈溢出风险），主要集中在 task 生命周期管理和多线程同步的边界情况。
+
+### 第三轮分析 — 组件/lvgl/build 配置问题 (2026-06-28)
+
+#### 🔴 16. `components/espressif__esp_ipa/` 和 `espressif__esp_new_jpeg/` ✅ 已修复
+
+**修复** (2026-06-28): 删除 `components/` 下两个死代码目录。`esp_ipa` 无 CMakeLists.txt 永远不链接。`esp_new_jpeg` 会遮蔽 `managed_components/` 正式版本。
+
+#### 🟡 17. PPA 硬件旋转被禁用 ✅ 已修复
+
+**修复** (2026-06-28): sdkconfig 中 `CONFIG_LVGL_PORT_ENABLE_PPA=y`。P4 有 `SOC_PPA_SUPPORTED`，启用硬件旋转/缩放降低 CPU。
+
+#### 🟡 18. LVGL draw buffer 仅 50 行 ⚠️ 跳过
+
+**说明**: `BSP_LCD_DRAW_BUFF_SIZE` 定义在 `managed_components/` 的 BSP 头文件中，不可修改。
+
+#### 🟢 19. 字体精简 ✅ 已修复
+
+**修复** (2026-06-28): 禁用 12 个未使用字体（8, 14, 16, 26, 30-44），保留 8 个实际使用字体（10, 12, 18, 20, 22, 24, 28）。回收 **~560KB Flash**。
+
+#### 🟢 20. 其他低优先级发现
+| # | 文件 | 问题 |
+|---|------|------|
+| 20a | `shine_encoder/bitstream.c:13` | `<malloc.h>` 非标准头，应使用 `<stdlib.h>` |
+| 20b | `shine_encoder` `calloc(~96KB)` 失败 | 无 UI 提示，录音静默失败 |
+| 20c | `CMakeLists.txt:7` | `-Wno-missing-field-initializers` 屏蔽 struct 字段变更警告 |
+| 20d | `CMakeLists.txt:28` | `-Wno-attributes` 对 LVGL 过于宽泛 |
