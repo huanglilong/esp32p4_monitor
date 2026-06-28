@@ -30,7 +30,7 @@ extern "C" {
 #define EXAMPLE_AUDIO_MCLK_MULTIPLE   (I2S_MCLK_MULTIPLE_256)
 #define EXAMPLE_AUDIO_MCLK_FREQ_HZ    (EXAMPLE_AUDIO_SAMPLE_RATE * EXAMPLE_AUDIO_MCLK_MULTIPLE)
 #define EXAMPLE_VOICE_VOLUME          CONFIG_EXAMPLE_VOICE_VOLUME
-#define EXAMPLE_MIC_GAIN              CONFIG_EXAMPLE_MIC_GAIN
+/* Microphone gain is set directly in code (30dB, main.cpp:309) */
 
 /* Audio I2C */
 #define AUDIO_I2C_NUM         (0)

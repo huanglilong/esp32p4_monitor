@@ -201,6 +201,8 @@ bool PhoneAppCamera::_init_camera(void)
     ret = esp_cam_new_csi_ctlr(&csi_config, (esp_cam_ctlr_handle_t *)&_cam_ctlr);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "CSI init failed: 0x%x", ret);
+        free(_cam_buffer);
+        _cam_buffer = nullptr;
         return false;
     }
 
@@ -247,6 +249,14 @@ bool PhoneAppCamera::_init_camera(void)
 
     if (esp_cam_ctlr_start((esp_cam_ctlr_handle_t)_cam_ctlr) != ESP_OK) {
         ESP_LOGE(TAG, "Camera start failed");
+        esp_isp_disable((isp_proc_handle_t)_isp_proc);
+        esp_isp_del_processor((isp_proc_handle_t)_isp_proc);
+        _isp_proc = nullptr;
+        esp_cam_ctlr_disable((esp_cam_ctlr_handle_t)_cam_ctlr);
+        esp_cam_ctlr_del((esp_cam_ctlr_handle_t)_cam_ctlr);
+        _cam_ctlr = nullptr;
+        free(_cam_buffer);
+        _cam_buffer = nullptr;
         return false;
     }
 

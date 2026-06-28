@@ -44,7 +44,8 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     _ta_password(nullptr), _kb_password(nullptr),
     _spinner_connect(nullptr), _label_connect_status(nullptr)
 
-    ,     _wifi_scan_task(nullptr), _wifi_event_group(nullptr), _wifi_scanning(false)
+    ,     _wifi_scan_task(nullptr), _wifi_event_group(nullptr), _wifi_scanning(false),
+    _wifi_initialized(false)
 {
     memset(_wifi_ssid, 0, sizeof(_wifi_ssid));
     memset(_wifi_password, 0, sizeof(_wifi_password));
@@ -618,24 +619,29 @@ esp_err_t PhoneAppSettings::wifiInit(void)
     }
     if (!_wifi_event_group) return ESP_ERR_NO_MEM;
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_t *sta = esp_netif_create_default_wifi_sta();
-    assert(sta);
+    /* One-time init: netif + event loop + wifi driver */
+    if (!_wifi_initialized) {
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        esp_netif_t *sta = esp_netif_create_default_wifi_sta();
+        assert(sta);
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_err_t ret = esp_wifi_init(&cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_init failed: %s (0x%x). WiFi may not be available on this hardware.",
-                 esp_err_to_name(ret), ret);
-        return ret;
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        esp_err_t ret = esp_wifi_init(&cfg);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_wifi_init failed: %s (0x%x). WiFi may not be available on this hardware.",
+                     esp_err_to_name(ret), ret);
+            return ret;
+        }
+
+        esp_event_handler_instance_t inst;
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, this, &inst));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifiEventHandler, this, &inst));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        _wifi_initialized = true;
     }
 
-    esp_event_handler_instance_t inst;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, this, &inst));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifiEventHandler, this, &inst));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_start();
 
     if (strlen(_wifi_ssid) > 0) {
         wifi_config_t wifi_cfg = {};
@@ -813,6 +819,7 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
             esp_wifi_disconnect();
         }
+        esp_wifi_stop();  // Power down WiFi hardware (keeps stack init'd)
         /* Clean up scan task and event group on WiFi OFF */
         if (app->_wifi_scan_task) {
             vTaskDelete(app->_wifi_scan_task);

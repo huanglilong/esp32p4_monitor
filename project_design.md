@@ -604,39 +604,34 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 
 ASP 事件回调 `_asp_event_cb` 在 GMF 内部 task 中运行。`FINISHED` / `ERROR` 事件触发 `_next()` → `_play()` → `esp_audio_simple_player_stop()` + `esp_audio_simple_player_run()`。这是在 GMF 管道的状态转换回调中**重入同一个管道**，可能导致死锁、双重释放或管道状态损坏。
 
-#### 🟡 11. Camera `_init_camera` 错误路径泄漏 buffer + CSI/ISP 句柄
-**文件**: `phone_app_camera.cpp:144, 183-184, 228-230`
+#### 🟡 11. Camera `_init_camera` 错误路径泄漏 buffer + CSI/ISP 句柄 ✅ 已修复
+
+**文件**: `phone_app_camera.cpp`
+
+**修复** (2026-06-28): `esp_cam_new_csi_ctlr` 失败时释放 `_cam_buffer`。`esp_cam_ctlr_start` 失败时释放 buffer + disable/delete CSI/ISP。
 
 若 `esp_cam_new_csi_ctlr` 失败，1.92MB PSRAM buffer 未释放即 return false。若 `esp_cam_ctlr_start` 失败，buffer + CSI + ISP 句柄全部泄漏。虽然 `close()` → `_deinit_camera()` 可能清理非空句柄，但依赖框架在 `run()` 失败后调用 `close()` — **不保证**。
 
-#### 🟡 12. WiFi OFF 未 deinit esp_wifi/esp_netif/esp_event_loop
-**文件**: `phone_app_settings.cpp:810-824`
+#### 🟡 12. WiFi OFF 未 deinit esp_wifi/esp_netif/esp_event_loop ✅ 已修复
+#### 🟡 13. `wifiInit()` 无条件调用一次性初始化函数 ✅ 已修复
 
-WiFi 关闭时调用了 `esp_wifi_disconnect()`，但**未调用**：
-- `esp_wifi_stop()` / `esp_wifi_deinit()`
-- `esp_netif_destroy_default_wifi(sta)`
-- `esp_event_loop_delete_default()`
-WiFi 硬件仍耗电，netif 栈保持初始化。若重新打开 WiFi，`wifiInit()` 会第二次调用 `esp_netif_init()` / `esp_event_loop_create_default()` — 这些是**一次性调用**，重新调用会触发断言失败。
+**文件**: `phone_app_settings.cpp/.hpp`
 
-#### 🟡 13. `wifiInit()` 无条件调用一次性初始化函数
-**文件**: `phone_app_settings.cpp:621-622`
+**修复** (2026-06-28): 
+1. 添加 `_wifi_initialized` 标志，`wifiInit()` 中 `esp_netif_init`/`esp_event_loop_create_default`/`esp_wifi_init`/`esp_wifi_set_mode`/event handler 注册仅在首次调用时执行
+2. WiFi OFF 时调用 `esp_wifi_stop()` 关闭 WiFi 硬件（保留栈初始化状态），下次 ON 时 `wifiInit()` 只调用 `esp_wifi_start()`
 
-`wifiInit()` 每次调用都执行 `esp_netif_init()` 和 `esp_event_loop_create_default()`。`if (_wifi_event_group == NULL)` 守卫不够 — event group 可能非空但 netif/event_loop 已被销毁。
+#### 🟡 14. Audio task 栈 4KB 不足以运行 Shine MP3 编码器 ✅ 已修复
 
-#### 🟡 14. Audio task 栈 4KB 不足以运行 Shine MP3 编码器
 **文件**: `phone_app_audio.cpp:130`
 
-```cpp
-xTaskCreate(_audio_task, "audio_echo", 4096, this, 5, &_task_handle);
-```
-Shine 编码器 `shine_encode_buffer_interleaved()` 执行子带滤波、MDCT、心理声学模型、量化、霍夫曼编码，内含大量栈分配变量。4KB 几乎肯定不足 — MP3 编码器在 FreeRTOS 上通常需要 ≥8KB。表现为静默栈溢出，损坏相邻内存。
+**修复** (2026-06-28): task 栈从 4096 增加到 8192 字节。
 
-#### 🟢 15. 其他低优先级发现
-| # | 文件 | 问题 |
-|---|------|------|
-| 15a | `sdkconfig.defaults:96` | 配置了 `RESAMPLE_DEST_RATE=48000` 但缺少 `RESAMPLE_EN=y`，非 48kHz 源可能失败 |
-| 15b | `partitions.csv:2` | NVS 仅 24KB，扩展性受限 |
-| 15c | `example_config.h:33` | `EXAMPLE_MIC_GAIN` 引用了未定义的 Kconfig 符号，死代码 |
+#### 🟢 15. 其他低优先级发现 ✅ 已修复
+
+**修复** (2026-06-28):
+- 15a: 添加 `CONFIG_ESP_AUDIO_SIMPLE_PLAYER_RESAMPLE_EN=y` 到 `sdkconfig.defaults`
+- 15c: 移除 `example_config.h` 中的 `EXAMPLE_MIC_GAIN` 死代码宏
 
 ### 总体评价
 项目架构设计合理，FreeRTOS 任务优先级分配恰当（实时音频 P5 > UI P4 > 检测 P2 > 后台 P1），核心亲和性利用有效（Core 1 专用于 LVGL，Core 0 承载计算负载）。第一轮修复已解决 10 个问题。

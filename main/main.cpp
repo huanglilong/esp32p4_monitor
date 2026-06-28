@@ -306,7 +306,7 @@ static void monitor_init_audio(void)
     ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
     esp_codec_dev_set_out_vol(s_codec_handle, EXAMPLE_VOICE_VOLUME);
     ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_mic_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
-    esp_codec_dev_set_in_gain(s_codec_mic_handle, 30);
+    esp_codec_dev_set_in_gain(s_codec_mic_handle, 42);  // Max gain for quiet recordings
 
     ESP_LOGI(TAG, "Audio initialized: ES8311 + ES7210, vol=%d", EXAMPLE_VOICE_VOLUME);
 }
