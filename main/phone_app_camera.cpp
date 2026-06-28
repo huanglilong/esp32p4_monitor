@@ -40,7 +40,7 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     _cam_sensor(nullptr), _sccb_handle(nullptr),
     _cam_canvas(nullptr), _refresh_timer(nullptr), _btn_back(nullptr),
     _cam_running(false),
-    _detector(nullptr), _detect_buf(nullptr), _detect_buf_size(0),
+    _detector(nullptr),
     _detect_available(false), _detect_task_handle(nullptr), _detect_mutex(nullptr),
     _ppa_handle(nullptr), _ppa_buf(nullptr), _ppa_buf_size(0)
 {
@@ -379,16 +379,6 @@ bool PhoneAppCamera::_init_detection(void)
         return false;
     }
 
-    /* Allocate snapshot buffer (RGB888, same size as camera frame) */
-    _detect_buf_size = EXAMPLE_CAM_SENSOR_HRES * EXAMPLE_CAM_SENSOR_VRES * 3;
-    _detect_buf = heap_caps_aligned_alloc(128, _detect_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!_detect_buf) {
-        ESP_LOGE(TAG, "Failed to allocate detect snapshot buffer (%zu bytes)", _detect_buf_size);
-        vSemaphoreDelete(_detect_mutex);
-        _detect_mutex = nullptr;
-        return false;
-    }
-
     /* Create COCODetect instance (YOLO11n 320x320 for P4) */
     _detector = new COCODetect(COCODetect::YOLO11N_320_S8_V1, true);  // lazy load
 
@@ -407,8 +397,8 @@ bool PhoneAppCamera::_init_detection(void)
     }
     if (!_detector) {
         ESP_LOGE(TAG, "Failed to create COCODetect instance");
-        free(_detect_buf);
-        _detect_buf = nullptr;
+        if (_ppa_buf) { free(_ppa_buf); _ppa_buf = nullptr; }
+        if (_ppa_handle) { ppa_unregister_client((ppa_client_handle_t)_ppa_handle); _ppa_handle = nullptr; }
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
         return false;
@@ -422,8 +412,8 @@ bool PhoneAppCamera::_init_detection(void)
         ESP_LOGE(TAG, "Failed to create detection task");
         delete _detector;
         _detector = nullptr;
-        free(_detect_buf);
-        _detect_buf = nullptr;
+        if (_ppa_buf) { free(_ppa_buf); _ppa_buf = nullptr; }
+        if (_ppa_handle) { ppa_unregister_client((ppa_client_handle_t)_ppa_handle); _ppa_handle = nullptr; }
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
         return false;
@@ -445,12 +435,6 @@ void PhoneAppCamera::_deinit_detection(void)
     if (_detector) {
         delete _detector;
         _detector = nullptr;
-    }
-
-    /* Free snapshot buffer */
-    if (_detect_buf) {
-        free(_detect_buf);
-        _detect_buf = nullptr;
     }
 
     /* Free PPA output buffer and deregister client */
@@ -479,22 +463,19 @@ void PhoneAppCamera::_detection_task(void *arg)
     TickType_t last_wake = xTaskGetTickCount();
 
     while (1) {
-        if (!app->_cam_running || !app->_detector) {
+        if (!app->_cam_running || !app->_detector || !app->_cam_buffer) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-        /* Snapshot the camera buffer into detection buffer */
-        if (app->_cam_buffer && app->_detect_buf) {
-            esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-            memcpy(app->_detect_buf, app->_cam_buffer, app->_cam_buf_size);
-        }
+        /* Sync cache: ISP DMA wrote to _cam_buffer, invalidate CPU cache to see fresh data */
+        esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Use PPA hardware to resize RGB888 800x800 → 320x320 (skip CPU color conversion + resize) */
+        /* Use PPA hardware to resize RGB888 800x800 → 320x320 directly from camera buffer */
         dl::image::img_t img;
         if (app->_ppa_handle && app->_ppa_buf) {
             dl::image::img_t src = {
-                .data = app->_detect_buf,
+                .data = app->_cam_buffer,
                 .width = EXAMPLE_CAM_SENSOR_HRES,
                 .height = EXAMPLE_CAM_SENSOR_VRES,
                 .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888,
@@ -505,7 +486,6 @@ void PhoneAppCamera::_detection_task(void *arg)
                 .height = 320,
                 .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888,
             };
-            esp_cache_msync(app->_detect_buf, app->_detect_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
             if (dl::image::resize_ppa(src, dst, (ppa_client_handle_t)app->_ppa_handle) == ESP_OK) {
                 img = dst;  // PPA output: 320x320 RGB888 → preprocessor skips resize, only quantizes
             } else {
@@ -513,7 +493,7 @@ void PhoneAppCamera::_detection_task(void *arg)
             }
         } else {
             img = {
-                .data = app->_detect_buf,
+                .data = app->_cam_buffer,
                 .width = EXAMPLE_CAM_SENSOR_HRES,
                 .height = EXAMPLE_CAM_SENSOR_VRES,
                 .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888,
@@ -607,9 +587,6 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
         return;
     }
 
-    /* Sync cache: ISP DMA writes to PSRAM, ensure cache coherence for LVGL display DMA reads. */
-    esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-
     /* Draw detection boxes directly on canvas buffer pixels (no LVGL objects) */
     if (app->_detect_available && app->_detect_mutex &&
         xSemaphoreTake(app->_detect_mutex, 0) == pdTRUE) {
@@ -619,6 +596,8 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
             for (auto &r : app->_detect_results) {
                 app->_draw_box_on_canvas(r.box[0], r.box[1], r.box[2], r.box[3], green);
             }
+            /* Flush CPU-written box pixels to PSRAM so display DMA sees them */
+            esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
 
         xSemaphoreGive(app->_detect_mutex);

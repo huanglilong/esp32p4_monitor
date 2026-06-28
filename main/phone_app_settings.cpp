@@ -31,6 +31,7 @@ extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_1
 PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Settings", &esp_brookesia_image_large_app_launcher_default_112_112,
                            true, use_status_bar, use_navigation_bar),
+    _nvs_dirty(false), _nvs_save_timer(nullptr),
     _screen_index(SCREEN_MAIN), _is_ui_del(true),
     _scr_main(nullptr),
 
@@ -78,6 +79,9 @@ bool PhoneAppSettings::run(void)
     createWifiPasswordScreen();
     lv_scr_load(_scr_main);
 
+    /* Start NVS commit debounce timer (500ms) to avoid flash wear from rapid slider events */
+    _nvs_save_timer = lv_timer_create(_nvs_save_timer_cb, 500, this);
+
     /* Auto-start WiFi scan task if WiFi was enabled from NVS.
      * If task already running (kept alive from previous session by close()),
      * reuse it — don't recreate. */
@@ -117,6 +121,18 @@ bool PhoneAppSettings::back(void)
 bool PhoneAppSettings::close(void)
 {
     stopWifiScan();
+
+    /* Flush pending NVS writes before cleaning up */
+    if (_nvs_save_timer) {
+        lv_timer_delete(_nvs_save_timer);
+        _nvs_save_timer = nullptr;
+    }
+    if (_nvs_dirty) {
+        _nvs_dirty = false;
+        setNvsParam(NVS_KEY_VOLUME, _nvs_param_map[NVS_KEY_VOLUME]);
+        setNvsParam(NVS_KEY_BRIGHTNESS, _nvs_param_map[NVS_KEY_BRIGHTNESS]);
+    }
+
     _is_ui_del = true;
 
     /* Null out LVGL pointers — widgets may be freed by framework.
@@ -440,7 +456,7 @@ void PhoneAppSettings::onVolumeSliderChanged(lv_event_t *e)
         snprintf(buf, sizeof(buf), "Volume: %ld", vol);
         lv_label_set_text(app->_label_vol, buf);
         app->_nvs_param_map[NVS_KEY_VOLUME] = vol;
-        app->setNvsParam(NVS_KEY_VOLUME, vol);
+        app->_nvs_dirty = true;  // Defer NVS write (500ms debounce)
         if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, (int)vol);
     }
 }
@@ -455,7 +471,7 @@ void PhoneAppSettings::onBrightnessSliderChanged(lv_event_t *e)
         snprintf(buf, sizeof(buf), "Brightness: %ld", bri);
         lv_label_set_text(app->_label_brightness, buf);
         app->_nvs_param_map[NVS_KEY_BRIGHTNESS] = bri;
-        app->setNvsParam(NVS_KEY_BRIGHTNESS, bri);
+        app->_nvs_dirty = true;  // Defer NVS write (500ms debounce)
         if (bsp_display_brightness_set((int)bri) != ESP_OK) {
             lv_slider_set_value(app->_slider_brightness, app->_nvs_param_map[NVS_KEY_BRIGHTNESS], LV_ANIM_OFF);
         }
@@ -468,6 +484,18 @@ void PhoneAppSettings::onMainScreenLoaded(lv_event_t *e)
     if (!app) return;
     app->_screen_index = SCREEN_MAIN;
     app->updateMainScreenFromNvs();
+}
+
+/*============================================================================
+ * NVS Save Debounce Timer (500ms) — avoids flash wear from rapid slider events
+ *============================================================================*/
+void PhoneAppSettings::_nvs_save_timer_cb(lv_timer_t *timer)
+{
+    PhoneAppSettings *app = (PhoneAppSettings *)timer->user_data;
+    if (!app || !app->_nvs_dirty) return;
+    app->_nvs_dirty = false;
+    app->setNvsParam(NVS_KEY_VOLUME, app->_nvs_param_map[NVS_KEY_VOLUME]);
+    app->setNvsParam(NVS_KEY_BRIGHTNESS, app->_nvs_param_map[NVS_KEY_BRIGHTNESS]);
 }
 
 /*============================================================================

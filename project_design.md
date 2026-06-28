@@ -252,9 +252,11 @@ ES8311 Codec (I2S TX, 48kHz 16bit Stereo)
 
 ---
 
-### 4.2 🟠 高 — NVS Flash 过度写入 (Settings App)
+### 4.2 🟠 高 — NVS Flash 过度写入 (Settings App) ✅ 已修复
 
-**文件**: `main/phone_app_settings.cpp`, lines 413-419, 428-435
+**文件**: `main/phone_app_settings.cpp`, `main/phone_app_settings.hpp`
+
+**修复** (2026-06-28): 添加 500ms 去抖定时器 `_nvs_save_timer`。Slider 变化时立即更新 UI + codec/brightness（即时响应），设置 `_nvs_dirty=true`。定时器在 500ms 空闲后一次性将 volume+brightness 写入 NVS。`close()` 时立即 flush 未保存的值。
 
 **问题**: `onVolumeSliderChanged()` 和 `onBrightnessSliderChanged()` 在每次 LVGL `VALUE_CHANGED` 事件时调用 `setNvsParam()` → `nvs_commit()`。拖动滑块时 LVGL 会以极高频率触发该事件（可达 30-50 次/秒）。每次 `nvs_commit()` 都会写入 Flash，造成 Flash 快速磨损。
 
@@ -294,7 +296,7 @@ bsp_display_unlock();
 
 ---
 
-### 4.4 🟠 高 — `_init_detection()` 错误处理顺序不一致 (Camera App)
+### 4.4 🟠 高 — `_init_detection()` 错误处理顺序不一致 (Camera App) ✅ 已修复 (合并于 §5.1 优化)
 
 **文件**: `main/phone_app_camera.cpp`, lines 392-430
 
@@ -337,7 +339,9 @@ if (!_detector) { ... }  // detector 已经 new 过了，不会是 nullptr
 
 ---
 
-### 4.6 🟡 中 — `_frame_update_timer_cb` 中 `_detect_available` 竞态 (Camera App)
+### 4.6 🟡 ~~中~~ — `_frame_update_timer_cb` 中 `_detect_available` 竞态 (Camera App) ✅ 已修复
+
+**修复** (2026-06-28): `_detect_available` 改为 `volatile bool`，防止编译器跨核优化。
 
 **文件**: `main/phone_app_camera.cpp`, lines 603-629
 
@@ -417,9 +421,11 @@ PSRAM 访问延迟远高于内部 SRAM（~40-80ns vs ~10ns）。对于每 10ms �
 
 ## 5. 性能问题分析
 
-### 5.1 🔴 严重 — Camera 帧缓冲每帧全量 `memcpy` (1.92MB)
+### 5.1 🔴 ~~严重~~ — Camera 帧缓冲每帧全量 `memcpy` (1.92MB) ✅ 已修复
 
-**文件**: `main/phone_app_camera.cpp`, line 490
+**文件**: `main/phone_app_camera.cpp`, `main/phone_app_camera.hpp`
+
+**修复** (2026-06-28): 移除 `_detect_buf` (1.92MB PSRAM)。PPA 硬件直接读取 `_cam_buffer` 进行 resize，消除 memcpy 和额外的 cache sync。节省 ~2MB PSRAM。
 
 **问题**: 检测任务每 600ms 将整个 800×800×3 = 1.92MB 帧缓冲 `memcpy` 到检测缓冲：
 ```cpp
@@ -434,9 +440,11 @@ memcpy(app->_detect_buf, app->_cam_buffer, app->_cam_buf_size); // 1.92 MB
 
 ---
 
-### 5.2 🟠 高 — Camera 30fps 全帧 `esp_cache_msync` (1.92MB)
+### 5.2 🟠 ~~高~~ — Camera 30fps 全帧 `esp_cache_msync` (1.92MB) ✅ 已修复
 
-**文件**: `main/phone_app_camera.cpp`, line 611
+**文件**: `main/phone_app_camera.cpp`
+
+**修复** (2026-06-28): 将 `esp_cache_msync` 从每帧无条件执行移到检测框绘制块内部。正常预览帧无 cache sync 开销。MIPI DSI DMA 直接读取 PSRAM 绕过 CPU 缓存，无需 sync。
 
 **问题**: 每帧 (33ms) 对整个 1.92MB buffer 调用 `esp_cache_msync(C2M)`，确保 ISP DMA 写入的数据对 CPU 可见：
 ```cpp

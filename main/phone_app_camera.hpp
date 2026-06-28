@@ -47,10 +47,8 @@ private:
 
     /* Detection subsystem */
     COCODetect                 *_detector;           // COCO detection instance
-    void                       *_detect_buf;         // Snapshot buffer for detection (RGB565 copy)
-    size_t                      _detect_buf_size;    // Size of snapshot buffer
     std::list<dl::detect::result_t> _detect_results; // Latest detection results
-    bool                        _detect_available;   // New results available?
+    volatile bool               _detect_available;   // New results available? (cross-core)
     TaskHandle_t                _detect_task_handle; // Detection FreeRTOS task
     SemaphoreHandle_t           _detect_mutex;       // Mutex for results
     static constexpr float      PERSON_SCORE_THRESHOLD = 0.35f;

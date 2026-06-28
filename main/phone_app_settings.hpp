@@ -73,6 +73,11 @@ private:
     static void onBrightnessSliderChanged(lv_event_t *e);
     static void onMainScreenLoaded(lv_event_t *e);
 
+    /* NVS debounce save (avoids flash wear from rapid slider events) */
+    static void _nvs_save_timer_cb(lv_timer_t *timer);
+    bool                   _nvs_dirty;
+    lv_timer_t            *_nvs_save_timer;
+
     /* State */
     ScreenIndex            _screen_index;
     bool                   _is_ui_del;
