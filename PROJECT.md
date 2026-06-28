@@ -210,7 +210,34 @@ GPIO39/43/44 同时用于 MIPI CSI 和 SDMMC，两者不能同时使用:
 - SCCB 链接: ESL 头文件需 `extern "C"` 包裹
 - 音量振荡: 移除 mic→speaker 回声功能
 
-### 7. Camera 红绿通道修正（Bayer + 字节序）
+### 7. Camera App 人体检测 (ESP-DL + YOLO11n)
+
+`PhoneAppCamera` 新增人体检测功能，使用 ESP-DL 框架 + COCODetect (YOLO11n 320×320)：
+
+| 项目 | 配置 |
+|------|------|
+| 框架 | `espressif/esp-dl` v3.x + `espressif/coco_detect` v0.4 |
+| 模型 | YOLO11n INT8 量化, 320×320 输入, P4 NPU 加速 |
+| 推理速度 | ~560ms/帧 (1.8fps), 含预处理+推理+后处理 |
+| 检测类 | COCO class 0 (person), 置信度阈值 0.35 |
+| 输入源 | Camera buffer 800×800 RGB565LE 快照 → ESP-DL 内置 RGB565→RGB888→resize→letterbox |
+| 显示 | LVGL v9 `lv_canvas_init_layer` + `lv_draw_rect`/`lv_draw_label` 在 canvas 上绘制 |
+| 任务 | 独立 FreeRTOS task "detect" (priority 2, 16KB 栈) |
+| 互斥 | `_detect_mutex` Semaphore 保护检测结果 |
+| 依赖 | `main/idf_component.yml` 添加 `espressif/esp-dl: ^3.3` + `espressif/coco_detect: ^0.4` |
+| Kconfig | `CONFIG_FLASH_COCO_DETECT_YOLO11N_320_S8_V1=y` (Flash rodata 存储) |
+
+**工作流程**:
+1. Camera 30fps 正常预览 (ISP DMA → PSRAM → LVGL canvas)
+2. detect task 每 600ms: 快照 RGB565 buffer → memcpy → COCODetect::run() → filter person
+3. LVGL timer 检测到结果后: lv_canvas_init_layer → 画绿色矩形 + 置信度 % 标签 → lv_canvas_finish_layer
+
+**TODO/优化**:
+- 置信度标签带绿色背景框提升可读性
+- 检测框平滑 (EMA 或 Kalman filter 减少抖动)
+- ROI 区域检测 (只检测画面中心区域减少误报)
+
+### 8. Camera 红绿通道修正（Bayer + 字节序）
 
 **问题**: Camera 预览画面中红色显示为绿色。两个根本原因:
 
@@ -349,6 +376,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] CSI/ISP 正确释放 (stop→disable→del 顺序)
 - [x] Camera 在 LCD 显示有问题, 红色显示成绿色 — 修复: ISP `byte_swap_en=1`
 - [x] Camera App 关闭后重新挂载 SD 卡
+- [x] **Camera App 人体检测 (ESP-DL + YOLO11n 320x320 ≈ 1.8fps)**
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
 - [ ] WiFi/BLE 支持 (通过 ESP32-C6 SDIO)
 - [ ] Camera App 回放/录制功能

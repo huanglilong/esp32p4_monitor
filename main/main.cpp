@@ -41,12 +41,12 @@ void monitor_init_sdcard(void);
 static void monitor_init_audio(void);
 static void on_clock_update_timer_cb(struct _lv_timer_t *t);
 
-/* LVGL port config */
+/* LVGL port config — pin to core 1 (core 0 reserved for detection/NPU inference) */
 #define LVGL_PORT_INIT_CONFIG() \
     {                               \
         .task_priority = 4,       \
-        .task_stack = 10 * 1024,       \
-        .task_affinity = -1,      \
+        .task_stack = 10 * 1024,  \
+        .task_affinity = 1,       \
         .task_max_sleep_ms = 500, \
         .timer_period_ms = 5,     \
     }
