@@ -564,12 +564,81 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 - ✅ BSP I2S 格式匹配 (显式 48kHz Stereo)
 
 ### 待解决的关键问题 (本文档标识)
-- 🔴 WiFi task 和 Event Group 泄漏
-- 🔴 Settings App 中 `bsp_display_lock(0)` 返回值未检查
-- 🟠 NVS Flash 过度写入 (slider 未去抖)
-- 🟠 Camera 检测结果 `_detect_available` 无 volatile 保护
-- 🟠 Camera 帧缓冲 memcpy 和 cache msync 性能开销
-- 🟡 多个生命周期和资源管理边缘情况
+- 🔴 WiFi task 和 Event Group 泄漏 ✅ 已修复
+- 🔴 Settings App 中 `bsp_display_lock(0)` 返回值未检查 ✅ 已修复
+- 🔴 WiFi 后台 task 生命周期 ✅ 已修复
+- 🟠 NVS Flash 过度写入 (slider 未去抖) ✅ 已修复
+- 🟠 Camera 检测结果 `_detect_available` 无 volatile 保护 ✅ 已修复
+- 🟠 Camera 帧缓冲 memcpy 和 cache msync 性能开销 ✅ 已修复
+- 🟡 Audio PSRAM 分配、SD 卸载检查、WiFi 扫描节流 ✅ 已修复
+
+### 第二轮分析 — 新发现的问题 (2026-06-28)
+
+#### 🔴 8. Detection task 被 vTaskDelete 强制杀死时 COCODetect::run() 可能正在执行 ✅ 已修复
+
+**文件**: `phone_app_camera.cpp`
+
+**修复** (2026-06-28): 
+1. `close()` 先设 `_cam_running=false` 发停止信号，轮询 `_detect_task_handle` 最多 3s 等 task 退出，超时才 force-kill
+2. `_detection_task` 检测到 `!_cam_running` 时设 `_detect_task_handle=nullptr` + `vTaskDelete(NULL)` 优雅退出
+3. `_deinit_detection()` 不再 force-kill，仅清理资源
+
+`_deinit_detection()` 调用 `vTaskDelete(_detect_task_handle)` 强制杀死检测 task。该 task 在执行 `_detector->run(img)` 时需要 ~560ms（NPU 推理），若此时被杀死，`this` 指针随后被 `delete _detector` 释放 → **use-after-free**。此外 task 被 kill 时可能正在持有 `_detect_mutex`，导致信号量永久死锁。
+
+#### 🔴 9. Audio `_stop_recording()` 与 `_audio_task` 竞态 ✅ 已修复
+
+**文件**: `phone_app_audio.cpp:337-363`
+
+**修复** (2026-06-28): 将 `vTaskDelay(50ms)` 增加到 `vTaskDelay(200ms)`。200ms 覆盖最坏情况：I2S read 100ms 超时 + shine 编码 ~10ms + 安全余量。
+
+`_stop_recording()` 设 `_is_recording=false` 后只等 50ms 就释放 `_pcm_buffer`、`_encoder`、`_record_file`。但 audio task 在 `i2s_channel_read` 中可能阻塞 100ms，返回后立即进入编码循环访问这些资源。50ms 不够保证 task 已退出编码块。
+
+**竞态序列**:
+1. `_stop_recording()` 设 `_is_recording=false` → sleep 50ms
+2. Audio task 已过 `_is_recording` 检查，进入编码循环
+3. `_stop_recording()` 释放 `_pcm_buffer` (line 361)、关闭 `_encoder` (line 349)
+4. Audio task 访问已释放的 `_pcm_buffer[idx]` → **崩溃**
+
+#### 🔴 10. Music App `_asp_event_cb` 中重入 `_play()` — GMF 管道重入
+**文件**: `phone_app_music.cpp:377-391`, `phone_app_music.cpp:267-310`
+
+ASP 事件回调 `_asp_event_cb` 在 GMF 内部 task 中运行。`FINISHED` / `ERROR` 事件触发 `_next()` → `_play()` → `esp_audio_simple_player_stop()` + `esp_audio_simple_player_run()`。这是在 GMF 管道的状态转换回调中**重入同一个管道**，可能导致死锁、双重释放或管道状态损坏。
+
+#### 🟡 11. Camera `_init_camera` 错误路径泄漏 buffer + CSI/ISP 句柄
+**文件**: `phone_app_camera.cpp:144, 183-184, 228-230`
+
+若 `esp_cam_new_csi_ctlr` 失败，1.92MB PSRAM buffer 未释放即 return false。若 `esp_cam_ctlr_start` 失败，buffer + CSI + ISP 句柄全部泄漏。虽然 `close()` → `_deinit_camera()` 可能清理非空句柄，但依赖框架在 `run()` 失败后调用 `close()` — **不保证**。
+
+#### 🟡 12. WiFi OFF 未 deinit esp_wifi/esp_netif/esp_event_loop
+**文件**: `phone_app_settings.cpp:810-824`
+
+WiFi 关闭时调用了 `esp_wifi_disconnect()`，但**未调用**：
+- `esp_wifi_stop()` / `esp_wifi_deinit()`
+- `esp_netif_destroy_default_wifi(sta)`
+- `esp_event_loop_delete_default()`
+WiFi 硬件仍耗电，netif 栈保持初始化。若重新打开 WiFi，`wifiInit()` 会第二次调用 `esp_netif_init()` / `esp_event_loop_create_default()` — 这些是**一次性调用**，重新调用会触发断言失败。
+
+#### 🟡 13. `wifiInit()` 无条件调用一次性初始化函数
+**文件**: `phone_app_settings.cpp:621-622`
+
+`wifiInit()` 每次调用都执行 `esp_netif_init()` 和 `esp_event_loop_create_default()`。`if (_wifi_event_group == NULL)` 守卫不够 — event group 可能非空但 netif/event_loop 已被销毁。
+
+#### 🟡 14. Audio task 栈 4KB 不足以运行 Shine MP3 编码器
+**文件**: `phone_app_audio.cpp:130`
+
+```cpp
+xTaskCreate(_audio_task, "audio_echo", 4096, this, 5, &_task_handle);
+```
+Shine 编码器 `shine_encode_buffer_interleaved()` 执行子带滤波、MDCT、心理声学模型、量化、霍夫曼编码，内含大量栈分配变量。4KB 几乎肯定不足 — MP3 编码器在 FreeRTOS 上通常需要 ≥8KB。表现为静默栈溢出，损坏相邻内存。
+
+#### 🟢 15. 其他低优先级发现
+| # | 文件 | 问题 |
+|---|------|------|
+| 15a | `sdkconfig.defaults:96` | 配置了 `RESAMPLE_DEST_RATE=48000` 但缺少 `RESAMPLE_EN=y`，非 48kHz 源可能失败 |
+| 15b | `partitions.csv:2` | NVS 仅 24KB，扩展性受限 |
+| 15c | `example_config.h:33` | `EXAMPLE_MIC_GAIN` 引用了未定义的 Kconfig 符号，死代码 |
 
 ### 总体评价
-项目架构设计合理，FreeRTOS 任务优先级分配恰当（实时音频 P5 > UI P4 > 检测 P2 > 后台 P1），核心亲和性利用有效（Core 1 专用于 LVGL，Core 0 承载计算负载）。主要风险集中在 WiFi 任务管理的资源泄漏和 Settings App 的多线程安全问题。性能瓶颈主要在 Camera 帧处理的重复内存拷贝上。
+项目架构设计合理，FreeRTOS 任务优先级分配恰当（实时音频 P5 > UI P4 > 检测 P2 > 后台 P1），核心亲和性利用有效（Core 1 专用于 LVGL，Core 0 承载计算负载）。第一轮修复已解决 10 个问题。
+
+**第二轮分析**新发现 3 个严重问题（task 强制 kill 竞态、录音停止竞态、GMF 重入）和 4 个中等问题（资源泄漏、WiFi deinit 缺失、栈溢出风险），主要集中在 task 生命周期管理和多线程同步的边界情况。

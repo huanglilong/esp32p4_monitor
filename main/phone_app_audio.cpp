@@ -336,8 +336,10 @@ void PhoneAppAudio::_stop_recording(void)
     ESP_LOGI(TAG, "Stopping MP3 recording...");
     _is_recording = false;
 
-    /* Give audio task time to exit recording block */
-    vTaskDelay(pdMS_TO_TICKS(50));
+    /* Give audio task time to exit recording block.
+     * Worst case: task blocked in i2s_channel_read (100ms timeout) + encoding (~10ms).
+     * 200ms provides safe margin. */
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     /* Flush remaining encoded data */
     if (_encoder) {

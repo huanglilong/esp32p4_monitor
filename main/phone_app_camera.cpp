@@ -120,6 +120,26 @@ bool PhoneAppCamera::close(void)
         lv_timer_delete(_refresh_timer);
         _refresh_timer = nullptr;
     }
+
+    /* Signal detection task to stop BEFORE deinit (avoid use-after-free) */
+    _cam_running = false;
+
+    /* Wait for detection task to finish current inference and self-terminate.
+     * Worst case: mid-inference (~560ms) + one cycle. 3s timeout is safe. */
+    if (_detect_task_handle) {
+        int timeout = 0;
+        while (_detect_task_handle && timeout < 30) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            timeout++;
+        }
+        if (_detect_task_handle) {
+            ESP_LOGW(TAG, "Detection task did not exit, force-killing");
+            vTaskDelete(_detect_task_handle);
+        }
+        _detect_task_handle = nullptr;
+    }
+
+    /* Now safe to free resources */
     _deinit_detection();
     _deinit_camera();
 
@@ -432,11 +452,9 @@ bool PhoneAppCamera::_init_detection(void)
 
 void PhoneAppCamera::_deinit_detection(void)
 {
-    /* Delete detection task */
-    if (_detect_task_handle) {
-        vTaskDelete(_detect_task_handle);
-        _detect_task_handle = nullptr;
-    }
+    /* Detection task should already be stopped by close() via _cam_running=false.
+     * Just clean up resources here. */
+    _detect_task_handle = nullptr;
 
     /* Delete detector */
     if (_detector) {
@@ -471,6 +489,11 @@ void PhoneAppCamera::_detection_task(void *arg)
 
     while (1) {
         if (!app->_cam_running || !app->_detector || !app->_cam_buffer) {
+            if (!app->_cam_running) {
+                /* Camera is shutting down — self-terminate gracefully */
+                app->_detect_task_handle = nullptr;
+                vTaskDelete(NULL);
+            }
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
