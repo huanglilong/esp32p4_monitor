@@ -664,8 +664,12 @@ void PhoneAppSettings::wifiScanTaskHandler(void *arg)
         return;
     }
     xEventGroupSetBits(app->_wifi_event_group, WIFI_INIT_DONE_BIT);
+    /* Run one WiFi scan on entering the list screen, then stop — no continuous scanning */
     while (1) {
-        if (app->_wifi_scanning && !app->_is_ui_del) { app->scanWifiAndUpdateUi(); vTaskDelay(pdMS_TO_TICKS(10000)); }
+        if (app->_wifi_scanning && !app->_is_ui_del) {
+            app->scanWifiAndUpdateUi();
+            app->_wifi_scanning = false;  // Single scan, stop afterwards
+        }
         if (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT) {
             esp_wifi_sta_get_rssi(&app->_wifi_rssi);
         }

@@ -152,7 +152,14 @@ bool PhoneAppCamera::_init_camera(void)
     /* Unmount SD card if mounted (pin conflict: GPIO39/43/44) */
     if (s_card) {
         ESP_LOGW(TAG, "Unmounting SD card (pin conflict with camera)...");
-        esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, s_card);
+        esp_err_t sd_ret = esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, s_card);
+        if (sd_ret != ESP_OK) {
+            ESP_LOGE(TAG, "SD unmount failed (%s). Close other apps using SD card first.",
+                     esp_err_to_name(sd_ret));
+            free(_cam_buffer);
+            _cam_buffer = nullptr;
+            return false;
+        }
         s_card = nullptr;
     }
 

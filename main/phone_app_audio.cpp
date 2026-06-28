@@ -181,7 +181,7 @@ bool PhoneAppAudio::close(void)
 void PhoneAppAudio::_audio_task(void *arg)
 {
     PhoneAppAudio *app = (PhoneAppAudio *)arg;
-    int16_t *buf = (int16_t *)heap_caps_calloc(1, AUDIO_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int16_t *buf = (int16_t *)heap_caps_calloc(1, AUDIO_BUF_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate audio buffer");
         app->_task_running = false;

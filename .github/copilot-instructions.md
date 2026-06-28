@@ -11,7 +11,7 @@
     - give a summary of why and how at end, especially for issues and any other important information
 
 # Git
-1. with approvement from user, commit and push changes to the repository
+1. with tested and approvement from user, commit and push changes to the repository
 2. command: git add . && git commit -m "commit message" && git push
 3. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
 
