@@ -14,9 +14,8 @@
     - if cannot confirm the root cause, add logs in the code to help debug.
 
 # Git
-1. with tested and approvement from user, commit and push changes to the repository
-2. command: git add . && git commit -m "commit message" && git push
-3. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
+1. with tested and approvement from user, commit and push changes to the repository, cmd: git add . && git commit -m "commit message" && git push
+2. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
 
 ## ESP-DIF Build, Flash, and Monitor
 1. source ~/.espressif/v6.0.1/esp-idf/export.sh
@@ -24,7 +23,8 @@
 3. ~~if build successful, run idf.py -p /dev/cu.usbmodem* flash monitor # Flash monitor~~
 4. if changes are made to the code, repeat steps 2-3 to rebuild and flash the updated code
 5. don't change the code under `managed_components` folder, only if necessary and allowed by user. It is managed by ESP-DIF and will be overwritten.
-6. don't change sdkconfig directly, if need, should be update sdkconfig.defaults,
+6. avoid change code in `components` folder, only if necessary and allowed by user. It is managed by ESP-DIF and will be overwritten.
+7. don't change sdkconfig directly, if need, should be update sdkconfig.defaults,
    - sdkconfig generated from sdkconfig.defaults, if sdkconfig.defaults is changed, sdkconfig will be regenerated automatically
 
 ## Permission
