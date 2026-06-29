@@ -9,6 +9,9 @@
     - update PROJECT.md if necessary
     - update copilot-instructions.md if necessary
     - give a summary of why and how at end, especially for issues and any other important information
+6. if the project has issues or crashes
+    - check the logs and error messages, try to find the root cause
+    - if cannot confirm the root cause, add logs in the code to help debug.
 
 # Git
 1. with tested and approvement from user, commit and push changes to the repository
