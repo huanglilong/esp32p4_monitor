@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "esp_cache.h"
 #include "esp_video_init.h"
 #include "esp_video_ioctl.h"
 #include "example_video_common.h"
@@ -297,6 +298,11 @@ static esp_err_t stream_handler(httpd_req_t *req)
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+
+        /* Invalidate CPU cache on V4L2 mmap buffer: ISP DMA writes here,
+         * CPU reads for encoding. ESP32-P4 PSRAM requires explicit sync. */
+        esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
+                        ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
         /* Send boundary */
         httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
