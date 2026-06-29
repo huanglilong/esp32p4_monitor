@@ -167,6 +167,27 @@ bool PhoneAppMusic::run(void)
      * _asp_event_cb sets _auto_next=true instead of calling _next() directly. */
     _auto_next_timer = lv_timer_create(_auto_next_timer_cb, 200, this);
 
+    /* Volume sync timer: pull volume from NVS every 1s (Settings may change it) */
+    lv_timer_create([](lv_timer_t *t) {
+        PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
+        if (!app || !app->_label_vol || !app->_slider_vol) return;
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+            int32_t saved_vol = (int32_t)app->_volume;
+            if (nvs_get_i32(nvs_h, "volume", &saved_vol) == ESP_OK) {
+                if (saved_vol >= 0 && saved_vol <= 100 && saved_vol != (int32_t)app->_volume) {
+                    app->_volume = (int)saved_vol;
+                    lv_slider_set_value(app->_slider_vol, saved_vol, LV_ANIM_OFF);
+                    char txt[16];
+                    snprintf(txt, sizeof(txt), "Vol: %ld", saved_vol);
+                    lv_label_set_text(app->_label_vol, txt);
+                    if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, (int)saved_vol);
+                }
+            }
+            nvs_close(nvs_h);
+        }
+    }, 1000, this);
+
     /* Load volume from NVS if available, otherwise use default */
     {
         nvs_handle_t nvs_h;

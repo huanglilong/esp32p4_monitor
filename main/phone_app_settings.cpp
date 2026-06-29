@@ -98,6 +98,45 @@ bool PhoneAppSettings::run(void)
         ESP_LOGI(TAG, "Reusing existing WiFi background task");
     }
 
+    /* WiFi/Volume/Brightness status refresh timer: update every 1s */
+    lv_timer_create([](lv_timer_t *t) {
+        PhoneAppSettings *app = (PhoneAppSettings *)t->user_data;
+        if (!app || app->_is_ui_del || app->_screen_index != SCREEN_MAIN) return;
+
+        /* WiFi status */
+        if (app->_label_wifi) {
+            bool wifi_on = app->_nvs_param_map[NVS_KEY_WIFI_EN] != 0;
+            if (wifi_on) {
+                if (app->_wifi_event_group &&
+                    (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
+                    esp_wifi_sta_get_rssi(&app->_wifi_rssi);
+                    const char *sig = (app->_wifi_rssi > -60) ? "***" : (app->_wifi_rssi > -80) ? "** " : "*  ";
+                    lv_label_set_text_fmt(app->_label_wifi, "Wi-Fi  %s  %s", sig, app->_wifi_ip);
+                } else {
+                    lv_label_set_text(app->_label_wifi, "Wi-Fi (connecting...)");
+                }
+            } else {
+                lv_label_set_text(app->_label_wifi, "Wi-Fi");
+            }
+        }
+
+        /* Volume */
+        if (app->_label_vol) {
+            int32_t vol = app->_nvs_param_map[NVS_KEY_VOLUME];
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Volume: %ld", vol);
+            lv_label_set_text(app->_label_vol, buf);
+        }
+
+        /* Brightness */
+        if (app->_label_brightness) {
+            int32_t bri = app->_nvs_param_map[NVS_KEY_BRIGHTNESS];
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Brightness: %ld", bri);
+            lv_label_set_text(app->_label_brightness, buf);
+        }
+    }, 1000, this);
+
     return true;
 }
 
