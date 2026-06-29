@@ -6,7 +6,7 @@
 基于 ESP32-P4 + Waveshare ESP32-P4-WiFi6-Touch-LCD-4B 开发板的综合监控项目,集成:
 - **MIPI DSI** 显示 (720x720, ST7703, 通过 Waveshare BSP)
 - **MIPI CSI** 摄像头 (OV5647, ISP 处理 RAW8→RGB565)
-- **SDMMC** SD 卡 (4-bit 模式, FAT 文件系统)
+- **SDMMC** SD 卡 (SDSPI 1-bit 模式, SPI 20MHz, FAT 文件系统)
 - **音频输入/输出** (ES8311 DAC + ES7210 ADC, I2S)
 - **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
 
@@ -118,6 +118,13 @@ esp32p4_monitor/
 
 > **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5)。SDMMC_HOST_SLOT_0 被 ESP32-C6 WiFi (SDIO) 占用, 本项目实际使用 SDSPI 模式 (详见 `main/main.cpp:163`)。
 > **重要**: MIPI CSI (物理引脚 42-48) 与 SD 卡 (物理引脚 80-86) 是完全不同的物理引脚, 不存在引脚冲突!
+>
+> **SDSPI 1-bit 模式原因**:
+> - ESP32-P4 有 2 个 SDMMC Slot: Slot 0 和 Slot 1
+> - **Slot 1**: 被 C6 WiFi 占用 (SDIO 4-bit, 40MHz)
+> - **Slot 0 → SD 卡**: 只能用 `SDSPI_HOST_DEFAULT()` → GP-SPI2 (`SPI2_HOST`) → **1-bit 模式, 20MHz** (`SDMMC_FREQ_DEFAULT`)
+> - SPI 协议本身只有 1 根数据线, 无法使用 4-bit 模式
+> - 如果改为 SDMMC 4-bit 原生模式, 需要释放 Slot 0 或 Slot 1, 但这与 C6 WiFi SDIO 冲突
 
 | 信号 | GPIO | 物理引脚 | 说明 |
 |------|------|----------|------|
@@ -166,7 +173,7 @@ app_main()
   │      → PhoneAppSquareline
   │      → PhoneAppCamera, PhoneAppAudio
   │
-  ├─ 3. SDMMC SD Card (4-bit, FAT)
+  ├─ 3. SDMMC SD Card (SPI 1-bit, 20MHz, FAT)
   │
   ├─ 4. Audio (手动 I2S + ES8311 + ES7210)
   │      → PA GPIO 53 HIGH
@@ -212,6 +219,8 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 > 误判原因: 原理图中的 "43, 44, 39" 是 ESP32-P4 芯片的物理引脚号 (Pin Number), 被错误理解为 GPIO 号。详见 [pin_analysis_summary.md](../doc/pin_analysis_summary.md)
 
 当前 Camera App 中卸载 SD 卡的操作 (`phone_app_camera.cpp:175`) 是基于此前误判的**遗留代码**。由于 MIPI CSI 与 SD 卡引脚独立, 理论上可以同时工作。保留卸载逻辑不会造成功能问题 (仅暂时不可用 SD 卡)。
+
+> **⚠️ DMA 总线竞争**: 虽然物理引脚不冲突, 但 MIPI CSI ISP pipeline (esp_video) 和 SDSPI 共享同一 DMA 控制器和 PSRAM 带宽。在高负载场景 (如 Camera Stream WiFi 推流) 下, DMA 竞争可能导致 SD 卡读写变慢或 SDIO WiFi 超时。
 
 ### 6. Camera App 实现
 
