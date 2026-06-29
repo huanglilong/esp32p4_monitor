@@ -1,0 +1,76 @@
+menu "Example Video Configuration"
+
+    choice EXAMPLE_SELECT_DEV_BOARD
+        prompt "Select Development Board"
+        default EXAMPLE_SELECT_CUSTOMIZED_DEV_BOARD
+        help
+            Select the target development board.
+
+        config EXAMPLE_SELECT_CUSTOMIZED_DEV_BOARD
+            bool "Customized Development Board"
+            help
+                Customized development board for Waveshare ESP32-P4-WiFi6-Touch-LCD-4B.
+    endchoice
+
+    config EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR
+        bool "Enable MIPI-CSI Camera Sensor"
+        default y
+        help
+            Enable MIPI-CSI camera sensor support.
+
+    config EXAMPLE_SCCB_I2C_INIT_BY_APP
+        bool "Use Pre-initialized SCCB(I2C) Bus for Camera Sensor"
+        default y
+        help
+            Share the pre-initialized I2C bus for camera SCCB.
+
+    config EXAMPLE_SCCB_I2C_PORT_INIT_BY_APP
+        int "SCCB(I2C) Port Number"
+        default 0
+        depends on EXAMPLE_SCCB_I2C_INIT_BY_APP
+        help
+            I2C port number for camera SCCB.
+
+    config EXAMPLE_MIPI_CSI_SCCB_I2C_PORT
+        int "MIPI-CSI SCCB I2C Port"
+        default 0
+        help
+            I2C port for MIPI-CSI camera SCCB.
+
+    config EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ
+        int "MIPI-CSI SCCB I2C Frequency (Hz)"
+        default 100000
+        help
+            I2C frequency for MIPI-CSI camera SCCB.
+
+    config EXAMPLE_JPEG_COMPRESSION_QUALITY
+        int "JPEG compression quality (%)"
+        default 80
+        range 1 100
+        help
+            JPEG compression quality percentage (1-100).
+
+    config EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER
+        int "Camera video buffer number"
+        default 2
+        help
+            Number of video buffers for the camera sensor.
+
+    config EXAMPLE_HTTP_PART_BOUNDARY
+        string "HTTP part boundary"
+        default "123456789000000000000987654321"
+        help
+            HTTP multipart boundary string used for MJPEG streaming.
+
+    config EXAMPLE_MDNS_INSTANCE
+        string "mDNS instance"
+        default "web-cam"
+        help
+            mDNS instance name for service discovery.
+
+    config EXAMPLE_MDNS_HOST_NAME
+        string "mDNS host name"
+        default "esp-web"
+        help
+            mDNS host name for the device.
+endmenu

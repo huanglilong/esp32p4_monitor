@@ -1,8 +1,8 @@
 #pragma once
 
 #include "esp_brookesia.hpp"
-#include "esp_cam_ctlr.h"
 #include "dl_detect_define.hpp"
+#include "linux/videodev2.h"
 #include <list>
 
 class COCODetect;  // Forward declaration
@@ -16,34 +16,38 @@ public:
     bool back(void) override;
     bool close(void) override;
 
+    /* Public accessor for CameraStream to check if app is active */
+    bool isCameraRunning(void) const { return _cam_running; }
+
 private:
     static void _frame_update_timer_cb(lv_timer_t *timer);
     static void _detection_task(void *arg);
     bool _init_camera(void);
     bool _deinit_camera(void);
-    void _init_sensor(void);
 
     /* Detection init/deinit */
     bool _init_detection(void);
     void _deinit_detection(void);
 
-    /* Camera hardware handles */
-    void               *_cam_buffer;       // Camera frame buffer in PSRAM (RGB888)
-    size_t              _cam_buf_size;      // Buffer size in bytes
-    void               *_isp_proc;          // ISP processor handle (isp_proc_handle_t)
-    void               *_cam_ctlr;          // CAM controller handle (esp_cam_ctlr_handle_t)
-    void               *_cam_sensor;        // Camera sensor device (esp_cam_sensor_device_t)
-    void               *_sccb_handle;       // SCCB I/O handle (esp_sccb_io_handle_t)
-    esp_cam_ctlr_trans_t _cam_trans;       // Camera transaction info (must persist)
+    /* V4L2 camera handles */
+    int                  _video_fd;           // V4L2 device file descriptor
+    void               *_cam_buffer;          // Camera frame buffer in PSRAM (RGB888, display+detection)
+    size_t              _cam_buf_size;        // Buffer size in bytes
+    uint8_t            *_v4l2_buffers[2];     // V4L2 mmap'd buffers
+    uint32_t             _v4l2_buf_len[2];    // V4L2 buffer lengths
+    uint32_t             _v4l2_buf_count;     // Number of V4L2 buffers
+    uint32_t             _cam_width;
+    uint32_t             _cam_height;
+    uint32_t             _cam_pixel_format;
 
     /* LVGL objects */
-    lv_obj_t           *_cam_canvas;         // LVGL canvas for camera preview
-    lv_timer_t         *_refresh_timer;      // Refresh timer (30Hz)
+    lv_obj_t           *_cam_canvas;          // LVGL canvas for camera preview
+    lv_timer_t         *_refresh_timer;       // Refresh timer (30Hz)
 
     /* Back button */
-    lv_obj_t           *_btn_back;          // Back button overlay
+    lv_obj_t           *_btn_back;            // Back button overlay
 
-    bool                _cam_running;
+    volatile bool        _cam_running;
 
     /* Detection subsystem */
     COCODetect                 *_detector;           // COCO detection instance
@@ -59,7 +63,7 @@ private:
     void _draw_box_on_canvas(int x1, int y1, int x2, int y2, lv_color_t color);
 
     /* PPA hardware accelerator for image resize (RGB888 800x→320x) */
-    void                       *_ppa_handle;        // ppa_client_handle_t
-    void                       *_ppa_buf;           // PPA output buffer (320x320x3 RGB888)
+    void                       *_ppa_handle;         // ppa_client_handle_t
+    void                       *_ppa_buf;            // PPA output buffer (320x320x3 RGB888)
     size_t                      _ppa_buf_size;
 };

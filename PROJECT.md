@@ -14,11 +14,11 @@
 
 | App | 类名 | 功能 |
 |-----|------|------|
-| 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, MIPI CSI + ISP, 800×800 → 720×720 显示 |
+| 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, V4L2 (esp_video) 驱动, 800×800 → 720×720 显示 (**V4L2 重构**) |
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
-| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + NVS 持久化 (WiFi 待启用)** |
+| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi + 📷 Camera Stream (HTTP MJPEG)** |
 
 ## 开发环境
 - **芯片**: ESP32-P4NRW32
@@ -41,15 +41,18 @@ esp32p4_monitor/
 │   ├── example_config.h        # 引脚和参数宏定义
 │   ├── main.cpp                # 主程序 (C++): BSP 外设初始化 + 5 个 App 安装
 │   ├── phone_app_camera.hpp    # Camera App 头文件
-│   ├── phone_app_camera.cpp    # Camera App (MIPI CSI + ISP + OV5647 sensor)
+│   ├── phone_app_camera.cpp    # Camera App (V4L2 + OV5647 sensor + ESP-DL 人体检测)
 │   ├── phone_app_audio.hpp     # Audio App 头文件
 │   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + MP3 录音)
 │   ├── phone_app_music.hpp     # Music App 头文件
 │   ├── phone_app_music.cpp     # Music App (MP3/WAV 播放器)
 │   ├── phone_app_settings.hpp  # Settings App 头文件
-│   └── phone_app_settings.cpp  # Settings App (音量/亮度 + NVS, WiFi 条件编译)
+│   ├── phone_app_settings.cpp  # Settings App (音量/亮度 + WiFi + Camera Stream)
+│   ├── camera_stream.hpp       # Camera Stream 头文件 (NEW)
+│   └── camera_stream.cpp       # Camera Stream (V4L2 + JPEG → HTTP MJPEG + mDNS)
 ├── components/
-│   └── espressif__esp_lvgl_port/   # 本地补丁版 esp_lvgl_port
+│   ├── espressif__esp_lvgl_port/   # 本地补丁版 esp_lvgl_port
+│   └── example_video_common/       # V4L2 视频初始化 + JPEG 编码 (NEW)
 └── project_setup.md            # 本文档
 ```
 
@@ -60,8 +63,13 @@ esp32p4_monitor/
 | `espressif/esp-brookesia` | 0.5.0 | ESP Registry |
 | `waveshare/esp32_p4_wifi6_touch_lcd_4b` | 2.0.0 | ESP Registry |
 | `espressif/esp_codec_dev` | 1.5.10 | ESP Registry |
-| `espressif/esp_cam_sensor` | 1.7.0 | ESP Registry |
+| `espressif/esp_cam_sensor` | **2.2.0** (升级) | ESP Registry |
 | `espressif/esp_sccb_intf` | 0.0.8 | ESP Registry |
+| `espressif/esp_video` | **2.2.0** (新增) | ESP Registry |
+| `espressif/esp_new_jpeg` | **1.0.2** (新增) | ESP Registry |
+| `espressif/mdns` | **1.11.2** (新增) | ESP Registry |
+| `espressif/cjson` | **1.7.19** (新增) | ESP Registry |
+| `protocol_examples_common` | local | IDF examples |
 | `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
 | `lvgl/lvgl` | 9.2.2 | ESP Registry |
 | `shine_encoder` | (local) | 本地组件 `components/shine_encoder/` |
@@ -348,7 +356,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 
 **解决**: 在读取 UI 文本前加 `bsp_display_lock(0)`，将字符串复制到局部缓冲区后 `bsp_display_unlock()`，后续只使用局部副本。确保 LVGL 对象的内部指针不会在 taskLVGL 渲染期间被并发访问。
 
-### 13. Settings App (NVS 持久化)
+### 13. Settings App (NVS 持久化 + Camera Stream WiFi 推流)
 
 `PhoneAppSettings` 继承 `ESP_Brookesia_PhoneApp`，提供系统设置界面:
 
@@ -357,6 +365,15 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 | 🔉 音量 | LVGL Slider | `volume` | 0-100 | 60 |
 | ☀️ 屏幕亮度 | LVGL Slider | `brightness` | 20-100 | 80 |
 | 📶 Wi-Fi | LVGL Switch + 扫描列表 + 密码输入 | `wifi_en`, `ssid`, `pass` | - | - |
+| 📷 Camera Stream | LVGL Switch | **无 NVS 持久化** | - | OFF |
+
+**Camera Stream 功能**:
+- 通过 WiFi 将摄像头画面以 MJPEG 格式推流到 HTTP (port 81)
+- 参考 `simple_video_server` 项目, 使用 V4L2 + `esp_new_jpeg` SW 编码器
+- mDNS: `esp-web.local`
+- 启动条件: Toggle ON + WiFi 已连接 + Settings App 运行中
+- 自动停止: Toggle OFF / WiFi 断开 / 退出 Settings App
+- **不持久化**: 重启后默认 OFF
 
 **NVS 命名空间**: `"settings"`
 
@@ -393,8 +410,11 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] Camera 在 LCD 显示有问题, 红色显示成绿色 — 修复: ISP `byte_swap_en=1`
 - [x] Camera App 关闭后重新挂载 SD 卡
 - [x] **Camera App 人体检测 (ESP-DL + YOLO11n 320x320 ≈ 1.8fps)**
+- [x] **Camera App 迁移到 V4L2 (esp_video) 统一接口**
+- [x] **Camera Stream WiFi 推流 (HTTP MJPEG + mDNS)**
+- [x] **Settings App Camera Stream toggle**
+- [x] **esp_cam_sensor 升级 1.7.0 → 2.2.0**
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
-- [ ] WiFi/BLE 支持 (通过 ESP32-C6 SDIO)
 - [ ] Camera App 回放/录制功能
 - [x] Audio App Speaker 输出功能 (需解决回声消除)
 - [x] Audio App MP3 录音 (Shine encoder, SD 卡)

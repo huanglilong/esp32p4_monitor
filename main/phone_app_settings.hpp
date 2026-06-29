@@ -72,6 +72,7 @@ private:
     static void onVolumeSliderChanged(lv_event_t *e);
     static void onBrightnessSliderChanged(lv_event_t *e);
     static void onMainScreenLoaded(lv_event_t *e);
+    static void onCamStreamSwitchChanged(lv_event_t *e);
 
     /* NVS debounce save (avoids flash wear from rapid slider events) */
     static void _nvs_save_timer_cb(lv_timer_t *timer);
@@ -98,6 +99,10 @@ private:
     lv_obj_t              *_label_vol;
     lv_obj_t              *_slider_brightness;
     lv_obj_t              *_label_brightness;
+
+    /* Camera Stream toggle (no NVS persist) */
+    lv_obj_t              *_sw_cam_stream;
+    lv_obj_t              *_label_cam_stream;
 
     /* LVGL objects - WiFi list screen */
     lv_obj_t              *_scr_wifi_list;

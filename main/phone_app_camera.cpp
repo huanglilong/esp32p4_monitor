@@ -3,18 +3,15 @@
 #include "esp_log.h"
 #include "esp_cache.h"
 #include "esp_check.h"
-#include "driver/isp.h"
-#include "driver/isp_core.h"
-#include "esp_cam_ctlr_csi.h"
-#include "esp_cam_ctlr.h"
-#include "hal/color_types.h"
+#include "esp_video_init.h"
+#include "esp_video_ioctl.h"
+#include "sys/mman.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include "example_video_common.h"
 extern "C" {
-#include "esp_cam_sensor.h"
-#include "esp_cam_sensor_detect.h"
-#include "esp_sccb_intf.h"
-#include "esp_sccb_i2c.h"
-}
 #include "bsp/esp-bsp.h"
+}
 #include "example_config.h"
 #include "coco_detect.hpp"
 #include "dl_image_define.hpp"
@@ -31,15 +28,18 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Camera", &esp_brookesia_image_large_app_launcher_default_112_112,
                            true /* use_default_screen */,
                            use_status_bar, use_navigation_bar),
-    _cam_buffer(nullptr), _cam_buf_size(0), _isp_proc(nullptr), _cam_ctlr(nullptr),
-    _cam_sensor(nullptr), _sccb_handle(nullptr),
+    _video_fd(-1),
+    _cam_buffer(nullptr), _cam_buf_size(0),
+    _v4l2_buffers{nullptr, nullptr},
+    _v4l2_buf_len{0, 0},
+    _v4l2_buf_count(0),
+    _cam_width(0), _cam_height(0), _cam_pixel_format(0),
     _cam_canvas(nullptr), _refresh_timer(nullptr), _btn_back(nullptr),
     _cam_running(false),
     _detector(nullptr),
     _detect_available(false), _detect_task_handle(nullptr), _detect_mutex(nullptr),
     _ppa_handle(nullptr), _ppa_buf(nullptr), _ppa_buf_size(0)
 {
-    memset(&_cam_trans, 0, sizeof(_cam_trans));
 }
 
 PhoneAppCamera::~PhoneAppCamera()
@@ -143,240 +143,137 @@ bool PhoneAppCamera::close(void)
 }
 
 /*============================================================================
- * Camera Hardware Init / Deinit
+ * Camera Hardware Init / Deinit (V4L2 via esp_video)
  *============================================================================*/
 
 bool PhoneAppCamera::_init_camera(void)
 {
-    /* Use sensor resolution for buffer (CSI writes RAW8 800x800, ISP outputs RGB888 800x800) */
-    _cam_buf_size = EXAMPLE_CAM_SENSOR_HRES * EXAMPLE_CAM_SENSOR_VRES * 3;  // RGB888 = 3 bytes/px
+    int stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;  // Declared early to avoid goto-cross-init
+    esp_err_t ret;
 
-    /* Allocate frame buffer in PSRAM (128-byte aligned for cache) */
+    /* Init video pipeline (CSI + ISP) via esp_video. Safe to call multiple times. */
+    ESP_RETURN_ON_FALSE(example_video_init() == ESP_OK, false, TAG, "example_video_init failed");
+
+    /* Open V4L2 device */
+    _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
+    if (_video_fd < 0) {
+        ESP_LOGE(TAG, "Failed to open %s", EXAMPLE_CAM_DEV_PATH);
+        return false;
+    }
+
+    /* Get current format (sensor resolution from esp_video_init) */
+    struct v4l2_format fmt = {};
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ioctl(_video_fd, VIDIOC_G_FMT, &fmt) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_G_FMT failed");
+        ::close(_video_fd); _video_fd = -1;
+        return false;
+    }
+
+    _cam_width = fmt.fmt.pix.width;
+    _cam_height = fmt.fmt.pix.height;
+    _cam_pixel_format = fmt.fmt.pix.pixelformat;
+    ESP_LOGI(TAG, "V4L2 format: %" PRIu32 "x%" PRIu32 " %c%c%c%c",
+             _cam_width, _cam_height,
+             (char)(_cam_pixel_format & 0xFF),
+             (char)((_cam_pixel_format >> 8) & 0xFF),
+             (char)((_cam_pixel_format >> 16) & 0xFF),
+             (char)((_cam_pixel_format >> 24) & 0xFF));
+
+    /* Allocate display/detection buffer (RGB888, 3 bytes per pixel) */
+    _cam_buf_size = _cam_width * _cam_height * 3;
     _cam_buffer = heap_caps_aligned_alloc(128, _cam_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!_cam_buffer) {
         ESP_LOGE(TAG, "Failed to allocate camera buffer (%zu bytes)", _cam_buf_size);
+        ::close(_video_fd);
+        _video_fd = -1;
         return false;
     }
-    memset(_cam_buffer, 0x00, _cam_buf_size);  // Black frame
-    esp_cache_msync(_cam_buffer, _cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    memset(_cam_buffer, 0x00, _cam_buf_size);
 
-    /* Note: MIPI CSI uses ESP32-P4 dedicated interface pins (phys pins 42-48, power VDD_MIPI_DPHY),
-     * not GPIOs. SD card (SDSPI) uses GPIO39/42/43/44 (phys pins 80/83/84/86, power VDD_IO_5).
-     * These are completely different physical pins — no conflict exists, so SD card stays mounted.
-     * See doc/pin_analysis_summary.md for details. */
-
-    /* Initialize MIPI CSI */
-    esp_err_t ret;
-    esp_cam_ctlr_csi_config_t csi_config = {
-        .ctlr_id = 0,
-        .clk_src = MIPI_CSI_PHY_CLK_SRC_DEFAULT,
-        .h_res = EXAMPLE_CAM_SENSOR_HRES,
-        .v_res = EXAMPLE_CAM_SENSOR_VRES,
-        .data_lane_num = 2,
-        .lane_bit_rate_mbps = EXAMPLE_MIPI_CSI_LANE_BITRATE_MBPS,
-        .input_data_color_type = CAM_CTLR_COLOR_RAW8,
-        .output_data_color_type = CAM_CTLR_COLOR_RAW8,
-        .data_type = {0},
-        .queue_items = 1,
-    };
-
-    ret = esp_cam_new_csi_ctlr(&csi_config, (esp_cam_ctlr_handle_t *)&_cam_ctlr);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "CSI init failed: 0x%x", ret);
-        free(_cam_buffer);
-        _cam_buffer = nullptr;
+    /* Request V4L2 buffers (double-buffer) */
+    struct v4l2_requestbuffers req = {};
+    req.count = 2;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_MMAP;
+    if (ioctl(_video_fd, VIDIOC_REQBUFS, &req) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_REQBUFS failed");
+        free(_cam_buffer); _cam_buffer = nullptr;
+        ::close(_video_fd); _video_fd = -1;
         return false;
     }
+    _v4l2_buf_count = req.count;
+    ESP_LOGI(TAG, "V4L2 buffers allocated: %" PRIu32, _v4l2_buf_count);
 
-    _cam_trans.buffer = _cam_buffer;
-    _cam_trans.buflen = _cam_buf_size;
-    esp_cam_ctlr_evt_cbs_t cbs = {
-        .on_get_new_trans = [](esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t *t, void *ud) -> bool {
-            esp_cam_ctlr_trans_t *nt = (esp_cam_ctlr_trans_t *)ud;
-            t->buffer = nt->buffer;
-            t->buflen = nt->buflen;
-            return false;
-        },
-        .on_trans_finished = [](esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t *t, void *ud) -> bool {
-            return false;
-        },
-    };
-    ESP_ERROR_CHECK(esp_cam_ctlr_register_event_callbacks((esp_cam_ctlr_handle_t)_cam_ctlr, &cbs, &_cam_trans));
-    ESP_ERROR_CHECK(esp_cam_ctlr_enable((esp_cam_ctlr_handle_t)_cam_ctlr));
-
-    /* Initialize ISP (RAW8 → RGB565) */
-    esp_isp_processor_cfg_t isp_config = {
-        .clk_src = ISP_CLK_SRC_DEFAULT,
-        .clk_hz = 80 * 1000 * 1000,
-        .input_data_source = ISP_INPUT_DATA_SOURCE_CSI,
-        .input_data_color_type = ISP_COLOR_RAW8,
-        .output_data_color_type = ISP_COLOR_RGB888,
-        .yuv_range = ISP_COLOR_RANGE_FULL,
-        .yuv_std = ISP_YUV_CONV_STD_BT601,
-        .has_line_start_packet = false,
-        .has_line_end_packet = false,
-        .h_res = EXAMPLE_CAM_SENSOR_HRES,
-        .v_res = EXAMPLE_CAM_SENSOR_VRES,
-        .bayer_order = COLOR_RAW_ELEMENT_ORDER_GBRG,
-        .intr_priority = 0,
-        .flags = {
-            .byte_swap_en = 1,
-        },
-    };
-    ESP_ERROR_CHECK(esp_isp_new_processor(&isp_config, (isp_proc_handle_t *)&_isp_proc));
-    ESP_ERROR_CHECK(esp_isp_enable((isp_proc_handle_t)_isp_proc));
-
-    /* NOTE: OV5647 sensor I2C init would go here.
-     * For now, camera ISP will show black frames until sensor is configured. */
-
-    if (esp_cam_ctlr_start((esp_cam_ctlr_handle_t)_cam_ctlr) != ESP_OK) {
-        ESP_LOGE(TAG, "Camera start failed");
-        esp_isp_disable((isp_proc_handle_t)_isp_proc);
-        esp_isp_del_processor((isp_proc_handle_t)_isp_proc);
-        _isp_proc = nullptr;
-        esp_cam_ctlr_disable((esp_cam_ctlr_handle_t)_cam_ctlr);
-        esp_cam_ctlr_del((esp_cam_ctlr_handle_t)_cam_ctlr);
-        _cam_ctlr = nullptr;
-        free(_cam_buffer);
-        _cam_buffer = nullptr;
-        return false;
+    /* Map and enqueue each buffer */
+    for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
+        struct v4l2_buffer buf = {};
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+        if (ioctl(_video_fd, VIDIOC_QUERYBUF, &buf) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_QUERYBUF[%" PRIu32 "] failed", i);
+            goto fail;
+        }
+        _v4l2_buffers[i] = (uint8_t *)mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
+                                             MAP_SHARED, _video_fd, buf.m.offset);
+        if (_v4l2_buffers[i] == MAP_FAILED) {
+            ESP_LOGE(TAG, "mmap[%" PRIu32 "] failed", i);
+            _v4l2_buffers[i] = nullptr;
+            goto fail;
+        }
+        _v4l2_buf_len[i] = buf.length;
+        if (ioctl(_video_fd, VIDIOC_QBUF, &buf) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_QBUF[%" PRIu32 "] failed", i);
+            goto fail;
+        }
     }
 
-    /* Initialize OV5647 sensor via BSP I2C */
-    _init_sensor();
+    /* Start streaming */
+    if (ioctl(_video_fd, VIDIOC_STREAMON, &stream_type) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_STREAMON failed");
+        goto fail;
+    }
 
     _cam_running = true;
-    ESP_LOGI(TAG, "MIPI CSI camera + ISP pipeline started");
+    ESP_LOGI(TAG, "V4L2 camera pipeline started (%" PRIu32 "x%" PRIu32 ")", _cam_width, _cam_height);
     return true;
-}
 
-/*============================================================================
- * Camera Sensor Init (OV5647 via BSP I2C)
- *============================================================================*/
-
-void PhoneAppCamera::_init_sensor(void)
-{
-    i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
-    if (!i2c_handle) {
-        ESP_LOGW(TAG, "BSP I2C not available, skipping sensor init");
-        return;
-    }
-
-    esp_cam_sensor_device_t *cam = nullptr;
-    esp_sccb_io_handle_t sccb_handle = nullptr;
-
-    for (esp_cam_sensor_detect_fn_t *p = &__esp_cam_sensor_detect_fn_array_start;
-         p < &__esp_cam_sensor_detect_fn_array_end; ++p) {
-
-        sccb_i2c_config_t i2c_config = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = p->sccb_addr,
-            .scl_speed_hz = 100000,
-            .addr_bits_width = 16,
-            .val_bits_width = 8,
-        };
-
-        esp_err_t ret = sccb_new_i2c_io(i2c_handle, &i2c_config, &sccb_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "sccb_new_i2c_io failed for addr 0x%02x: %s",
-                     p->sccb_addr, esp_err_to_name(ret));
-            continue;
-        }
-
-        esp_cam_sensor_config_t cam_config = {
-            .sccb_handle = sccb_handle,
-            .reset_pin = (gpio_num_t)-1,
-            .pwdn_pin = (gpio_num_t)-1,
-            .xclk_pin = (gpio_num_t)-1,
-            .sensor_port = (esp_cam_sensor_port_t)p->port,
-        };
-
-        cam = p->detect(&cam_config);
-        if (cam) {
-            ESP_LOGI(TAG, "Detected camera sensor at I2C addr 0x%02x", p->sccb_addr);
-            _sccb_handle = sccb_handle;
-            _cam_sensor = cam;
-            break;
-        }
-
-        esp_sccb_del_i2c_io(sccb_handle);
-        sccb_handle = nullptr;
-    }
-
-    if (!cam) {
-        ESP_LOGW(TAG, "No camera sensor detected");
-        if (sccb_handle) esp_sccb_del_i2c_io(sccb_handle);
-        return;
-    }
-
-    /* Query and set format */
-    esp_cam_sensor_format_array_t fmt_array = {0};
-    esp_cam_sensor_query_format(cam, &fmt_array);
-
-    const esp_cam_sensor_format_t *target_fmt = nullptr;
-    for (int i = 0; i < fmt_array.count; i++) {
-        ESP_LOGI(TAG, "Sensor format[%d]: %s", i, fmt_array.format_array[i].name);
-        if (strcmp(fmt_array.format_array[i].name, EXAMPLE_CAM_FORMAT) == 0) {
-            target_fmt = &fmt_array.format_array[i];
+fail:
+    for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
+        if (_v4l2_buffers[i]) {
+            munmap(_v4l2_buffers[i], _v4l2_buf_len[i]);
+            _v4l2_buffers[i] = nullptr;
         }
     }
-
-    if (!target_fmt) {
-        ESP_LOGW(TAG, "Format '%s' not supported by sensor", EXAMPLE_CAM_FORMAT);
-        return;
-    }
-
-    esp_err_t ret = esp_cam_sensor_set_format(cam, target_fmt);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Sensor set format failed: %s", esp_err_to_name(ret));
-        return;
-    }
-    ESP_LOGI(TAG, "Sensor format set: %s", target_fmt->name);
-
-    int enable = 1;
-    ret = esp_cam_sensor_ioctl(cam, ESP_CAM_SENSOR_IOC_S_STREAM, &enable);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Sensor start stream failed: %s", esp_err_to_name(ret));
-        return;
-    }
-    ESP_LOGI(TAG, "OV5647 sensor streaming started");
+    free(_cam_buffer); _cam_buffer = nullptr;
+    ::close(_video_fd); _video_fd = -1;
+    return false;
 }
 
 bool PhoneAppCamera::_deinit_camera(void)
 {
     _cam_running = false;
 
-    /* Stop sensor streaming */
-    if (_cam_sensor) {
-        int enable = 0;
-        esp_cam_sensor_ioctl((esp_cam_sensor_device_t *)_cam_sensor,
-                             ESP_CAM_SENSOR_IOC_S_STREAM, &enable);
-        esp_cam_sensor_del_dev((esp_cam_sensor_device_t *)_cam_sensor);
-        _cam_sensor = nullptr;
+    if (_video_fd >= 0) {
+        /* Stop streaming */
+        int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        ioctl(_video_fd, VIDIOC_STREAMOFF, &type);
+
+        /* Unmap buffers */
+        for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
+            if (_v4l2_buffers[i]) {
+                munmap(_v4l2_buffers[i], _v4l2_buf_len[i]);
+                _v4l2_buffers[i] = nullptr;
+            }
+        }
+        _v4l2_buf_count = 0;
+
+        ::close(_video_fd);
+        _video_fd = -1;
     }
 
-    /* Stop and delete CSI controller (must be in INIT state for del) */
-    if (_cam_ctlr) {
-        esp_cam_ctlr_stop((esp_cam_ctlr_handle_t)_cam_ctlr);
-        esp_cam_ctlr_disable((esp_cam_ctlr_handle_t)_cam_ctlr);
-        esp_cam_ctlr_del((esp_cam_ctlr_handle_t)_cam_ctlr);
-        _cam_ctlr = nullptr;
-    }
-
-    /* Disable and delete ISP processor */
-    if (_isp_proc) {
-        esp_isp_disable((isp_proc_handle_t)_isp_proc);
-        esp_isp_del_processor((isp_proc_handle_t)_isp_proc);
-        _isp_proc = nullptr;
-    }
-
-    /* Free SCCB I/O handle (BSP I2C bus is NOT deleted - BSP owns it) */
-    if (_sccb_handle) {
-        esp_sccb_del_i2c_io((esp_sccb_io_handle_t)_sccb_handle);
-        _sccb_handle = nullptr;
-    }
-
-    /* Free frame buffer */
+    /* Free display buffer */
     if (_cam_buffer) {
         free(_cam_buffer);
         _cam_buffer = nullptr;
@@ -490,7 +387,8 @@ void PhoneAppCamera::_detection_task(void *arg)
             continue;
         }
 
-        /* Sync cache: ISP DMA wrote to _cam_buffer, invalidate CPU cache to see fresh data */
+        /* Sync cache: refresh timer (core 1) wrote to _cam_buffer via memcpy from V4L2.
+         * Invalidate CPU cache to see fresh data (PSRAM needs explicit sync on P4). */
         esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
         /* Use PPA hardware to resize RGB888 800x800 → 320x320 directly from camera buffer */
@@ -599,15 +497,41 @@ void PhoneAppCamera::_draw_box_on_canvas(int x1, int y1, int x2, int y2, lv_colo
 }
 
 /*============================================================================
- * Frame Update Timer (30fps) — lightweight detection box overlay
+ * Frame Update Timer (30fps) — V4L2 DQBUF → copy to canvas → QBUF
  *============================================================================*/
 
 void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
 {
     PhoneAppCamera *app = (PhoneAppCamera *)timer->user_data;
-    if (!app || !app->_cam_running || !app->_cam_buffer) {
+    if (!app || !app->_cam_running || app->_video_fd < 0 || !app->_cam_buffer) {
         return;
     }
+
+    /* Dequeue a frame from V4L2 */
+    struct v4l2_buffer buf = {};
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    if (ioctl(app->_video_fd, VIDIOC_DQBUF, &buf) != 0) {
+        return;  // No frame available yet
+    }
+    if (!(buf.flags & V4L2_BUF_FLAG_DONE)) {
+        ioctl(app->_video_fd, VIDIOC_QBUF, &buf);
+        return;
+    }
+
+    /* Copy frame to display buffer.
+     * The V4L2 buffer format depends on the sensor/ISP pipeline config.
+     * For OV5647 RAW8 → ISP → the output may be YUV422P or RGB888.
+     * We copy raw bytes; the canvas is set up for the actual format. */
+    uint32_t copy_size = buf.bytesused;
+    if (copy_size > app->_cam_buf_size) copy_size = app->_cam_buf_size;
+    memcpy(app->_cam_buffer, app->_v4l2_buffers[buf.index], copy_size);
+
+    /* Return buffer to V4L2 queue */
+    ioctl(app->_video_fd, VIDIOC_QBUF, &buf);
+
+    /* Cache sync: CPU wrote to _cam_buffer, make it visible to display DMA */
+    esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
     /* Draw detection boxes directly on canvas buffer pixels (no LVGL objects) */
     if (app->_detect_available && app->_detect_mutex &&
@@ -618,7 +542,6 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
             for (auto &r : app->_detect_results) {
                 app->_draw_box_on_canvas(r.box[0], r.box[1], r.box[2], r.box[3], green);
             }
-            /* Flush CPU-written box pixels to PSRAM so display DMA sees them */
             esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
 
