@@ -96,6 +96,13 @@ bool PhoneAppMusic::run(void)
         snprintf(txt, sizeof(txt), "Vol: %d", app->_volume);
         lv_label_set_text(app->_label_vol, txt);
         if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, app->_volume);
+        /* Persist to NVS so Settings app picks up the change */
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, "volume", app->_volume);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
     }, LV_EVENT_VALUE_CHANGED, this);
 
     /* Control buttons (bottom) */
