@@ -18,9 +18,11 @@
 ## ESP-DIF Build, Flash, and Monitor
 1. source ~/.espressif/v6.0.1/esp-idf/export.sh
 2. idf.py build # Build the project
-3. ~~idf.py -p /dev/cu.usbmodem* flash monitor # Flash and monitor~~
+3. ~~if build successful, run idf.py -p /dev/cu.usbmodem* flash monitor # Flash monitor~~
 4. if changes are made to the code, repeat steps 2-3 to rebuild and flash the updated code
 5. don't change the code under `managed_components` folder, only if necessary and allowed by user. It is managed by ESP-DIF and will be overwritten.
+6. don't change sdkconfig directly, if need, should be update sdkconfig.defaults,
+   - sdkconfig generated from sdkconfig.defaults, if sdkconfig.defaults is changed, sdkconfig will be regenerated automatically
 
 ## Permission
 1. allow read/write access to all files and directories and tools in the workspace
