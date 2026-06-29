@@ -245,7 +245,7 @@ static void monitor_init_audio(void)
             .din  = (gpio_num_t)11,
         },
     };
-    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_384;
+    std_cfg.clk_cfg.mclk_multiple = EXAMPLE_AUDIO_MCLK_MULTIPLE;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_handle));
