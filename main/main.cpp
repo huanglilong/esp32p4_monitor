@@ -360,18 +360,7 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "=== All peripherals initialized ===");
 
     /* Memory monitor loop */
-    char buffer[128];
     while (1) {
-        size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        size_t internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
-        size_t external_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        size_t external_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-        snprintf(buffer, sizeof(buffer),
-                 "SRAM: free=%zu/%zu  PSRAM: free=%zu/%zu  largest_free=%zu",
-                 internal_free, internal_total,
-                 external_free, external_total,
-                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        ESP_LOGI("MEM", "%s", buffer);
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
