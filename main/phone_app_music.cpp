@@ -32,6 +32,7 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     _list_tracks(nullptr), _label_no_files(nullptr),
     _slider_vol(nullptr), _label_vol(nullptr),
     _volume(60),
+    _nvs_dirty(false), _nvs_save_timer(nullptr),
     _auto_next(false), _auto_next_timer(nullptr)
 {
     memset(_file_names, 0, sizeof(_file_names));
@@ -96,13 +97,8 @@ bool PhoneAppMusic::run(void)
         snprintf(txt, sizeof(txt), "Vol: %d", app->_volume);
         lv_label_set_text(app->_label_vol, txt);
         if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, app->_volume);
-        /* Persist to NVS so Settings app picks up the change */
-        nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, "volume", app->_volume);
-            nvs_commit(nvs_h);
-            nvs_close(nvs_h);
-        }
+        /* Defer NVS write (debounce to avoid flash wear) */
+        app->_nvs_dirty = true;
     }, LV_EVENT_VALUE_CHANGED, this);
 
     /* Control buttons (bottom) */
@@ -174,6 +170,20 @@ bool PhoneAppMusic::run(void)
      * _asp_event_cb sets _auto_next=true instead of calling _next() directly. */
     _auto_next_timer = lv_timer_create(_auto_next_timer_cb, 200, this);
 
+    /* NVS debounce timer (500ms): avoid flash wear from rapid slider events.
+     * Actual NVS write happens here, not in the slider callback. */
+    _nvs_save_timer = lv_timer_create([](lv_timer_t *t) {
+        PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
+        if (!app || !app->_nvs_dirty) return;
+        app->_nvs_dirty = false;
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, "volume", (int32_t)app->_volume);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
+    }, 500, this);
+
     /* Volume sync timer: pull volume from NVS every 1s (Settings may change it) */
     lv_timer_create([](lv_timer_t *t) {
         PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
@@ -242,6 +252,20 @@ bool PhoneAppMusic::close(void)
     if (_auto_next_timer) {
         lv_timer_delete(_auto_next_timer);
         _auto_next_timer = nullptr;
+    }
+    /* Flush pending NVS write */
+    if (_nvs_save_timer) {
+        lv_timer_delete(_nvs_save_timer);
+        _nvs_save_timer = nullptr;
+    }
+    if (_nvs_dirty) {
+        _nvs_dirty = false;
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, "volume", (int32_t)_volume);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
     }
     // Free file names
     for (int i = 0; i < _track_count; i++) {

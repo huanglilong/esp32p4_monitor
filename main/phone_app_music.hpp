@@ -47,6 +47,8 @@ private:
     lv_obj_t           *_slider_vol;
     lv_obj_t           *_label_vol;
     volatile int         _volume;           // Current volume (0-100), cross-core access
+    bool                 _nvs_dirty;         // NVS debounce flag
+    lv_timer_t          *_nvs_save_timer;    // NVS debounce timer (500ms)
 
     /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
     volatile bool       _auto_next;
