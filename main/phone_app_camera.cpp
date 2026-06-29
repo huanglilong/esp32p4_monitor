@@ -3,7 +3,6 @@
 #include "esp_log.h"
 #include "esp_cache.h"
 #include "esp_check.h"
-#include "esp_vfs_fat.h"
 #include "driver/isp.h"
 #include "driver/isp_core.h"
 #include "esp_cam_ctlr_csi.h"
@@ -24,10 +23,6 @@ extern "C" {
 #include <cstring>
 
 static const char *TAG = "PhoneAppCamera";
-
-/* External SD card state and init function from main.cpp */
-extern sdmmc_card_t *s_card;
-extern void monitor_init_sdcard(void);
 
 /* Use built-in brookesia launcher icon for camera */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
@@ -143,10 +138,6 @@ bool PhoneAppCamera::close(void)
     _deinit_detection();
     _deinit_camera();
 
-    /* Re-mount SD card (was unmounted due to GPIO pin conflict with CSI) */
-    ESP_LOGI(TAG, "Re-mounting SD card...");
-    monitor_init_sdcard();
-
     ESP_LOGI(TAG, "Camera app closed");
     return true;
 }
@@ -169,19 +160,10 @@ bool PhoneAppCamera::_init_camera(void)
     memset(_cam_buffer, 0x00, _cam_buf_size);  // Black frame
     esp_cache_msync(_cam_buffer, _cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
-    /* Unmount SD card if mounted (pin conflict: GPIO39/43/44) */
-    if (s_card) {
-        ESP_LOGW(TAG, "Unmounting SD card (pin conflict with camera)...");
-        esp_err_t sd_ret = esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, s_card);
-        if (sd_ret != ESP_OK) {
-            ESP_LOGE(TAG, "SD unmount failed (%s). Close other apps using SD card first.",
-                     esp_err_to_name(sd_ret));
-            free(_cam_buffer);
-            _cam_buffer = nullptr;
-            return false;
-        }
-        s_card = nullptr;
-    }
+    /* Note: MIPI CSI uses ESP32-P4 dedicated interface pins (phys pins 42-48, power VDD_MIPI_DPHY),
+     * not GPIOs. SD card (SDSPI) uses GPIO39/42/43/44 (phys pins 80/83/84/86, power VDD_IO_5).
+     * These are completely different physical pins — no conflict exists, so SD card stays mounted.
+     * See doc/pin_analysis_summary.md for details. */
 
     /* Initialize MIPI CSI */
     esp_err_t ret;

@@ -80,35 +80,45 @@ esp32p4_monitor/
 
 ## 引脚配置
 
-### MIPI DSI (2-lane)
-| 信号 | GPIO | 说明 |
-|------|------|------|
-| DSI_DATAP1 | 34 | FPC D1+ |
-| DSI_DATAN1 | 35 | FPC D1- |
-| DSI_CLKN | 36 | FPC CLK- |
-| DSI_CLKP | 37 | FPC CLK+ |
-| DSI_DATAP0 | 38 | FPC D0+ |
-| DSI_DATAN0 | 39 | FPC D0- |
+### MIPI DSI (2-lane) — 专用接口引脚
 
-### MIPI CSI (2-lane, OV5647) — 与 SDMMC 共享 GPIO39/43/44
-| 信号 | GPIO | 说明 |
-|------|------|------|
+> **注意**: MIPI DSI 使用 ESP32-P4 专用接口引脚 (Dedicated Interface Pins, 电源域 VDD_MIPI_DPHY), 不是 GPIO。以下编号为芯片物理引脚号。
+
+| 信号 | Pin | 说明 |
+|------|-----|------|
+| DSI_DATAP1 | 35 | FPC D1+ |
+| DSI_DATAN1 | 36 | FPC D1- |
+| DSI_CLKN | 37 | FPC CLK- |
+| DSI_CLKP | 38 | FPC CLK+ |
+| DSI_DATAP0 | 39 | FPC D0+ |
+| DSI_DATAN0 | 40 | FPC D0- |
+
+### MIPI CSI (2-lane, OV5647) — 专用接口引脚
+
+> **注意**: MIPI CSI 使用 ESP32-P4 专用接口引脚 (Dedicated Interface Pins, 电源域 VDD_MIPI_DPHY), 不是 GPIO。以下编号为芯片物理引脚号。
+
+| 信号 | Pin | 说明 |
+|------|-----|------|
 | CSI_DATAP0 | 43 | DAT0+ |
-| CSI_DATAN0 | 44 | DAT0- |
-| CSI_CLKP | 45 | CLK+ |
-| CSI_CLKN | 46 | CLK- |
+| CSI_DATAN0 | 42 | DAT0- |
+| CSI_CLKP | 44 | CLK+ |
+| CSI_CLKN | 45 | CLK- |
 | CSI_DATAP1 | 47 | DAT1+ |
-| CSI_DATAN1 | 48 | DAT1- |
+| CSI_DATAN1 | 46 | DAT1- |
 
-### SDMMC (4-bit) — 与 MIPI CSI 共享 GPIO39/43/44
-| 信号 | GPIO | 说明 |
-|------|------|------|
-| SD_CLK | 43 | Clock |
-| SD_CMD | 44 | Command |
-| SD_D0 | 39 | Data 0 |
-| SD_D1 | 40 | Data 1 |
-| SD_D2 | 41 | Data 2 |
-| SD_D3 | 42 | Data 3 |
+### SDMMC/SDSPI — 真实 GPIO 引脚
+
+> **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5)。SDMMC_HOST_SLOT_0 被 ESP32-C6 WiFi (SDIO) 占用, 本项目实际使用 SDSPI 模式 (详见 `main/main.cpp:163`)。
+> **重要**: MIPI CSI (物理引脚 42-48) 与 SD 卡 (物理引脚 80-86) 是完全不同的物理引脚, 不存在引脚冲突!
+
+| 信号 | GPIO | 物理引脚 | 说明 |
+|------|------|----------|------|
+| SD_CLK | 43 | 84 | Clock / SPI SCLK |
+| SD_CMD | 44 | 86 | Command / SPI MOSI |
+| SD_D0 | 39 | 80 | Data 0 / SPI MISO |
+| SD_D1 | 40 | 81 | Data 1 (4-bit mode) |
+| SD_D2 | 41 | 82 | Data 2 (4-bit mode) |
+| SD_D3 | 42 | 83 | Data 3 / SPI CS |
 
 ### 音频 I2S + PA (ES8311 + ES7210)
 | 信号 | GPIO | 说明 |
@@ -185,11 +195,15 @@ app_main()
 ### 4. I2C 总线共享
 GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (GPIO7/8)。BSP 初始化 I2C_NUM_0 (`bsp_display_start` 内调用 `bsp_i2c_init`)，音频和摄像头复用 BSP 的 I2C 句柄 `bsp_i2c_get_handle()`。
 
-### 5. MIPI CSI 与 SDMMC 引脚冲突
-GPIO39/43/44 同时用于 MIPI CSI 和 SDMMC，两者不能同时使用:
-- 默认启用 SDMMC (SD 卡已挂载)
-- 打开 Camera App 时自动卸载 SD 卡并初始化摄像头
-- 关闭 Camera App 后释放 CSI/ISP 资源
+### 5. ~~MIPI CSI 与 SDMMC 引脚冲突~~ (已勘误: 不存在引脚冲突)
+> **勘误**: 经过对照 [ESP32-P4 数据手册](../doc/esp32-p4_datasheet_En.pdf) Table 2-1 (Pin Overview) 和 Table 2-9 (Dedicated Interface Pins) 确认:
+> - **MIPI CSI** 使用专用接口引脚 (物理引脚 42-48, 电源域 VDD_MIPI_DPHY), **不是 GPIO**
+> - **SD 卡** 使用真实 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5), 包括 GPIO39/42/43/44
+> - **两者是完全不同的物理引脚**, 不存在引脚冲突!
+>
+> 误判原因: 原理图中的 "43, 44, 39" 是 ESP32-P4 芯片的物理引脚号 (Pin Number), 被错误理解为 GPIO 号。详见 [pin_analysis_summary.md](../doc/pin_analysis_summary.md)
+
+当前 Camera App 中卸载 SD 卡的操作 (`phone_app_camera.cpp:175`) 是基于此前误判的**遗留代码**。由于 MIPI CSI 与 SD 卡引脚独立, 理论上可以同时工作。保留卸载逻辑不会造成功能问题 (仅暂时不可用 SD 卡)。
 
 ### 6. Camera App 实现
 

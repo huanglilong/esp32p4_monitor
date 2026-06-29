@@ -12,14 +12,17 @@
     |   SDIO_D2	    |   SDMMC1_CDATA2   |   (GPIO16)    |	DAT2    |
     |   SDIO_D3	    |   SDMMC1_CDATA3	|   (GPIO17)    |	DAT3    |
   - MIPI DSI 2lane, LCD resolution 720 * 720, 4 inch, driver: waveshare/esp32_p4_wifi6_touch_lcd_4b
-    |   Signal    |     P4      |    MIPI DSI   |
+
+    > **注意**: MIPI DSI 使用 ESP32-P4 专用接口引脚 (Dedicated Interface Pins, 电源域 VDD_MIPI_DPHY), 不是 GPIO。以下编号为芯片物理引脚号。
+
+    |   Signal    |   P4 Pin    |    MIPI DSI   |
     |:----:|:----:|:----:|
-    |   DSI_DATAP1	|   GPIO34  |	FPC D1+     |
-    |   DSI_DATAN1	|   GPIO35  |	FPC D1−     |
-    |   DSI_CLKN	|   GPIO36  |	FPC CLK−    |
-    |   DSI_CLKP	|   GPIO37  |	FPC CLK+    |
-    |   DSI_DATAP0	|   GPIO38  |	FPC D0+     |
-    |   DSI_DATAN0	|   GPIO39  |	FPC D0−     |
+    |   DSI_DATAP1	|   35   |	FPC D1+     |
+    |   DSI_DATAN1	|   36   |	FPC D1−     |
+    |   DSI_CLKN	|   37   |	FPC CLK−    |
+    |   DSI_CLKP	|   38   |	FPC CLK+    |
+    |   DSI_DATAP0	|   39   |	FPC D0+     |
+    |   DSI_DATAN0	|   40   |	FPC D0−     |
   - Touch Panel: GT911 (I2C, shared with audio codec)
     |   Signal  |   P4 GPIO   |   Direction   |   GT911  |
     |:----:|:----:|:----:|:----:|
@@ -28,15 +31,18 @@
     |   TP_RST	|   GPIO23	|   P4→GT911	|   Reset     |
     |   TP_INT	|   NC    	|   --    	|   Interrupt |
   - MIPI CSI 2lane, camera: OV5647
-    |   Signal    |     P4      |    MIPI CSI    |
+
+    > **注意**: MIPI CSI 使用 ESP32-P4 专用接口引脚 (Dedicated Interface Pins, 电源域 VDD_MIPI_DPHY), 不是 GPIO。以下编号为芯片物理引脚号。
+
+    |   Signal    |   P4 Pin    |    MIPI CSI    |
     |:----:|:----:|:----:|
-    |   CSI_DATAP0	|   GPIO43	|   FPC     |   DAT0+   |
-    |   CSI_DATAN0	|   GPIO44	|   FPC     |   DAT0−   |
-    |   CSI_CLKP	|   GPIO45	|   FPC     |   CLK+    |
-    |   CSI_CLKN	|   GPIO46	|   FPC     |   CLK−    |
-    |   CSI_DATAP1	|   GPIO47	|   FPC     |   DAT1+   |
-    |   CSI_DATAN1	|   GPIO48	|   FPC     |   DAT1−   |
-    |   CSI_REXT	|   GPIO49	|   --      |   4.02 kΩ |
+    |   CSI_DATAP0	|   43   |	FPC DAT0+   |
+    |   CSI_DATAN0	|   42   |	FPC DAT0−   |
+    |   CSI_CLKP	|   44   |	FPC CLK+    |
+    |   CSI_CLKN	|   45   |	FPC CLK−    |
+    |   CSI_DATAP1	|   47   |	FPC DAT1+   |
+    |   CSI_DATAN1	|   46   |	FPC DAT1−   |
+    |   CSI_REXT	|   48   |	4.02 kΩ    |
   - Two mic connected ES7210, and ES7210 attached to ESP32P4 I2S
     |   Signal  |   P4 GPIO   |   Direction   |   ES7210  |
     |:----:|:----:|:----:|:----:|
@@ -53,17 +59,21 @@
     |   DAC_I2S_SCLK	|   GPIO12   |  P4→ES8311	|   BCLK    |
     |   DAC_I2S_LRCK	|   GPIO10   |  P4→ES8311	|   LRCK    |
     |   DAC_I2S_SDIN	|   GPIO9    |  P4→ES8311	|   PCM     |
-  - SDMMC:
-    |   Signal	|   P4 GPIO	|   SD Card     |   Pin	Description |
-    |:----:|:----:|:----:|:----:|
-    |   SD_CLK	|   GPIO43	|   Pin 5	    |   Clock, 10k pull-up  |
-    |   SD_CMD	|   GPIO44	|   Pin 2	    |   Command, 10k pull-up    |
-    |   SD_D0	|   GPIO39	|   Pin 7	    |   Data 0, 10k pull-up |
-    |   SD_D1	|   GPIO40	|   Pin 8	    |   Data 1, 10k pull-up (4-bit mode)    |
-    |   SD_D2	|   GPIO41	|   Pin 9	    |   Data 2, 10k pull-up (4-bit mode)    |
-    |   SD_D3	|   GPIO42	|   Pin 1	    |   Data 3, 10k pull-up (also serves as card detect)    |
-    |   SD_VDD	|   LDO_VO4 |   Pin 4	    |   Card power supply   |
-    |   SD_VSS	|   GND	    |   Pin 3/6	    |   Ground  |
+  - SDMMC/SDSPI:
+
+    > **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5), 通过 IO MUX 可配置为 SDMMC 4-bit 或 SDSPI 模式。
+    > **本项目实际使用 SDSPI 模式**: SDMMC_HOST_SLOT_0 被 ESP32-C6 WiFi (SDIO) 占用, 详见 `main/main.cpp:163`。
+
+    |   Signal	|   P4 GPIO   |   Phys Pin     |   SD Card     |   Description |
+    |:----:|:----:|:----:|:----:|:----:|
+    |   SD_CLK	|   GPIO43    |   84	    |   Pin 5	    |   Clock / SPI SCLK, 10k pull-up  |
+    |   SD_CMD	|   GPIO44    |   86	    |   Pin 2	    |   Command / SPI MOSI, 10k pull-up |
+    |   SD_D0	|   GPIO39    |   80	    |   Pin 7	    |   Data 0 / SPI MISO, 10k pull-up |
+    |   SD_D1	|   GPIO40    |   81	    |   Pin 8	    |   Data 1, 10k pull-up (4-bit mode) |
+    |   SD_D2	|   GPIO41    |   82	    |   Pin 9	    |   Data 2, 10k pull-up (4-bit mode) |
+    |   SD_D3	|   GPIO42    |   83	    |   Pin 1	    |   Data 3 / SPI CS, 10k pull-up (also card detect) |
+    |   SD_VDD	|   LDO_VO4  |   --	    |   Pin 4	    |   Card power supply   |
+    |   SD_VSS	|   GND	    |   --	    |   Pin 3/6	    |   Ground  |
 - ESP32P4:
   - [ESP32-P4 Datasheet](https://documentation.espressif.com/esp32-p4_datasheet_en.pdf)
   - [ESP32-P4 Technical Reference Manual](https://documentation.espressif.com/esp32-p4_technical_reference_manual_en.pdf)
