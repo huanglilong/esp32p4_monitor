@@ -52,7 +52,7 @@ bool PhoneAppCamera::run(void)
     ESP_LOGI(TAG, "Camera app starting...");
     lv_obj_t *screen = lv_scr_act();
 
-    /* Camera preview canvas (full sensor resolution, clipped to display) */
+    /* Camera preview canvas (sensor resolution, clipped to display) */
     _cam_canvas = lv_canvas_create(screen);
     lv_obj_set_size(_cam_canvas, EXAMPLE_CAM_SENSOR_HRES, EXAMPLE_CAM_SENSOR_VRES);
     lv_obj_align(_cam_canvas, LV_ALIGN_CENTER, 0, 0);
@@ -85,9 +85,10 @@ bool PhoneAppCamera::run(void)
         return false;
     }
 
-    /* Set canvas buffer to camera frame buffer (800x800, display clips to 720x720) */
-    lv_canvas_set_buffer(_cam_canvas, _cam_buffer, EXAMPLE_CAM_SENSOR_HRES, EXAMPLE_CAM_SENSOR_VRES,
-                         LV_COLOR_FORMAT_RGB888);
+    /* Set canvas buffer to V4L2 frame buffer (RGB565, 2 bytes/px).
+     * Display clips to 720x720. */
+    lv_canvas_set_buffer(_cam_canvas, _cam_buffer, (int32_t)_cam_width, (int32_t)_cam_height,
+                         LV_COLOR_FORMAT_RGB565);
 
     /* Initialize person detection */
     if (!_init_detection()) {
@@ -148,8 +149,7 @@ bool PhoneAppCamera::close(void)
 
 bool PhoneAppCamera::_init_camera(void)
 {
-    int stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;  // Declared early to avoid goto-cross-init
-    esp_err_t ret;
+    int stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
     /* Init video pipeline (CSI + ISP) via esp_video. Safe to call multiple times. */
     ESP_RETURN_ON_FALSE(example_video_init() == ESP_OK, false, TAG, "example_video_init failed");
@@ -180,8 +180,8 @@ bool PhoneAppCamera::_init_camera(void)
              (char)((_cam_pixel_format >> 16) & 0xFF),
              (char)((_cam_pixel_format >> 24) & 0xFF));
 
-    /* Allocate display/detection buffer (RGB888, 3 bytes per pixel) */
-    _cam_buf_size = _cam_width * _cam_height * 3;
+    /* Allocate display/detection buffer (RGB565, 2 bytes per pixel) */
+    _cam_buf_size = _cam_width * _cam_height * 2;
     _cam_buffer = heap_caps_aligned_alloc(128, _cam_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!_cam_buffer) {
         ESP_LOGE(TAG, "Failed to allocate camera buffer (%zu bytes)", _cam_buf_size);
@@ -391,41 +391,21 @@ void PhoneAppCamera::_detection_task(void *arg)
          * Invalidate CPU cache to see fresh data (PSRAM needs explicit sync on P4). */
         esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Use PPA hardware to resize RGB888 800x800 → 320x320 directly from camera buffer */
-        dl::image::img_t img;
-        if (app->_ppa_handle && app->_ppa_buf) {
-            dl::image::img_t src = {
-                .data = app->_cam_buffer,
-                .width = EXAMPLE_CAM_SENSOR_HRES,
-                .height = EXAMPLE_CAM_SENSOR_VRES,
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888,
-            };
-            dl::image::img_t dst = {
-                .data = app->_ppa_buf,
-                .width = 320,
-                .height = 320,
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888,
-            };
-            if (dl::image::resize_ppa(src, dst, (ppa_client_handle_t)app->_ppa_handle) == ESP_OK) {
-                img = dst;  // PPA output: 320x320 RGB888 → preprocessor skips resize, only quantizes
-            } else {
-                img = src;  // PPA failed, fall back to CPU resize in ImagePreprocessor
-            }
-        } else {
-            img = {
-                .data = app->_cam_buffer,
-                .width = EXAMPLE_CAM_SENSOR_HRES,
-                .height = EXAMPLE_CAM_SENSOR_VRES,
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888,
-            };
-        }
+        /* PPA does NOT support RGB565→RGB888 resize.
+         * Let COCODetect's built-in CPU preprocessor handle resize + format conversion. */
+        dl::image::img_t img = {
+            .data = app->_cam_buffer,
+            .width = (uint16_t)app->_cam_width,
+            .height = (uint16_t)app->_cam_height,
+            .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
+        };
 
         /* Run detection (first call loads model ~11s, subsequent ~560ms) */
         std::list<dl::detect::result_t> &results = app->_detector->run(img);
 
-        /* Filter for person class (COCO class 0) only, scale coords to 800x800 canvas */
-        constexpr float SCALE = (float)EXAMPLE_CAM_SENSOR_HRES / 320.0f;  // 800/320 = 2.5
-        bool ppa_used = (img.width == 320 && app->_ppa_handle != nullptr);
+        /* Filter for person class (COCO class 0), scale coords to v4l2 resolution */
+        const float SCALE = (float)app->_cam_width / 320.0f;
+        constexpr bool ppa_used = false;  // PPA not used for RGB565 source
         if (xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             app->_detect_results.clear();
             for (auto &r : results) {
@@ -454,30 +434,25 @@ void PhoneAppCamera::_detection_task(void *arg)
 
 void PhoneAppCamera::_draw_box_on_canvas(int x1, int y1, int x2, int y2, lv_color_t color)
 {
-    /* Clamp to canvas bounds */
+    /* Clamp to canvas bounds (use actual V4L2 resolution) */
     if (x1 < 0) x1 = 0;
     if (y1 < 0) y1 = 0;
-    if (x2 >= EXAMPLE_CAM_SENSOR_HRES) x2 = EXAMPLE_CAM_SENSOR_HRES - 1;
-    if (y2 >= EXAMPLE_CAM_SENSOR_VRES) y2 = EXAMPLE_CAM_SENSOR_VRES - 1;
+    if (x2 >= (int)_cam_width) x2 = (int)_cam_width - 1;
+    if (y2 >= (int)_cam_height) y2 = (int)_cam_height - 1;
     if (x1 > x2 || y1 > y2) return;
 
-    /* Write directly to canvas buffer (RGB888: LVGL stores as BGR in memory) */
-    uint8_t *buf = (uint8_t *)_cam_buffer;
-    int stride = EXAMPLE_CAM_SENSOR_HRES * 3;  // 3 bytes per pixel
-    /* LVGL stores RGB888 as BGR: data[0]=blue, data[1]=green, data[2]=red */
-    uint8_t r = color.red;
-    uint8_t g = color.green;
-    uint8_t b = color.blue;
+    /* RGB565: 2 bytes per pixel, each pixel is uint16_t */
+    uint16_t *buf = (uint16_t *)_cam_buffer;
+    int stride = (int)_cam_width;
+    uint16_t c = lv_color_to_u16(color);
 
     /* Top and bottom horizontal lines */
     for (int w = 0; w < BOX_LINE_WIDTH; w++) {
         int row_top = y1 + w;
         int row_bot = y2 - w;
         for (int x = x1; x <= x2; x++) {
-            int off_top = row_top * stride + x * 3;
-            int off_bot = row_bot * stride + x * 3;
-            buf[off_top + 0] = b; buf[off_top + 1] = g; buf[off_top + 2] = r;
-            buf[off_bot + 0] = b; buf[off_bot + 1] = g; buf[off_bot + 2] = r;
+            buf[row_top * stride + x] = c;
+            buf[row_bot * stride + x] = c;
         }
     }
 
@@ -488,10 +463,8 @@ void PhoneAppCamera::_draw_box_on_canvas(int x1, int y1, int x2, int y2, lv_colo
         int col_l = x1 + w;
         int col_r = x2 - w;
         for (int y = y_start; y <= y_end; y++) {
-            int off_l = y * stride + col_l * 3;
-            int off_r = y * stride + col_r * 3;
-            buf[off_l + 0] = b; buf[off_l + 1] = g; buf[off_l + 2] = r;
-            buf[off_r + 0] = b; buf[off_r + 1] = g; buf[off_r + 2] = r;
+            buf[y * stride + col_l] = c;
+            buf[y * stride + col_r] = c;
         }
     }
 }
