@@ -14,7 +14,7 @@
     - if cannot confirm the root cause, add logs in the code to help debug.
 
 # Git
-1. with tested and approvement from user, commit and push changes to the repository, cmd: git add . && git commit -m "commit message" && git push
+1. every commit and push must be approved by user! git cmd: git add . && git commit -m "commit message" && git push
 2. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
 
 ## ESP-DIF Build, Flash, and Monitor
