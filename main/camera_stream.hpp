@@ -67,7 +67,7 @@ private:
     httpd_handle_t         _httpd_81;          // Port 81: MJPEG stream
 
     /* State */
-    bool                   _running;
+    volatile bool          _running;
 
     /* mDNS */
     bool                   _mdns_running;

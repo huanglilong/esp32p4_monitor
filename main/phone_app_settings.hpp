@@ -119,7 +119,7 @@ private:
     /* WiFi state */
     TaskHandle_t           _wifi_scan_task;
     EventGroupHandle_t     _wifi_event_group;
-    bool                   _wifi_scanning;
+    volatile bool          _wifi_scanning;
     bool                   _wifi_initialized;  // one-time netif/wifi init done
 
     static constexpr int   WIFI_SCAN_MAX = 20;

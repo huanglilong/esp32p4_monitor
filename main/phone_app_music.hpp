@@ -46,7 +46,7 @@ private:
     lv_obj_t           *_label_no_files;
     lv_obj_t           *_slider_vol;
     lv_obj_t           *_label_vol;
-    int                 _volume;           // Current volume (0-100)
+    volatile int         _volume;           // Current volume (0-100), cross-core access
 
     /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
     volatile bool       _auto_next;
