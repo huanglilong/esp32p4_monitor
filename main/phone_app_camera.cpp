@@ -410,18 +410,13 @@ void PhoneAppCamera::_detection_task(void *arg)
         /* Run detection (first call loads model ~11s, subsequent ~560ms) */
         std::list<dl::detect::result_t> &results = app->_detector->run(img);
 
-        /* Filter for person class (COCO class 0), scale coords from model space (320x320)
-         * to actual camera resolution. COCODetect::run() internally resizes to 320x320,
-         * so output box coordinates are in 320x320 model space regardless of input size. */
-        const float SCALE = (float)app->_cam_width / 320.0f;
+        /* Filter for person class (COCO class 0).
+         * COCODetect::run() internally handles coordinate scaling from model
+         * space to input image size, so results are already in camera resolution. */
         if (xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             app->_detect_results.clear();
             for (auto &r : results) {
                 if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
-                    /* Scale box coords from 320×320 model space → camera resolution */
-                    for (int i = 0; i < 4; i++) {
-                        r.box[i] = (int)(r.box[i] * SCALE);
-                    }
                     app->_detect_results.push_back(r);
                 }
             }
