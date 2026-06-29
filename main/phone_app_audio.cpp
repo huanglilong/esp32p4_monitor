@@ -415,6 +415,7 @@ void PhoneAppAudio::_scan_recordings(void)
         const char *ext = name + len - 4;
         if (strcasecmp(ext, ".mp3") != 0) continue;
         _recording_names[count] = strdup(name);
+        if (!_recording_names[count]) continue;  // OOM, skip this file
         count++;
     }
     closedir(dir);

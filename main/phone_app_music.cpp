@@ -208,7 +208,7 @@ bool PhoneAppMusic::run(void)
                     char txt[16];
                     snprintf(txt, sizeof(txt), "Vol: %ld", saved_vol);
                     lv_label_set_text(app->_label_vol, txt);
-                    if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, (int)saved_vol);
+                    if (s_codec_handle) safe_set_volume((int)saved_vol);
                 }
             }
             nvs_close(nvs_h);
@@ -313,6 +313,7 @@ void PhoneAppMusic::_scan_files(void)
         const char *ext = name + len - 4;
         if (strcasecmp(ext, ".mp3") != 0 && strcasecmp(ext, ".wav") != 0) continue;
         _file_names[count] = strdup(name);
+        if (!_file_names[count]) continue;  // OOM, skip this file
         count++;
     }
     closedir(dir);

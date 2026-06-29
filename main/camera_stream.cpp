@@ -326,6 +326,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
                 continue;
             }
+            /* Invalidate cache: HW JPEG encoder writes via DMA, CPU needs fresh view */
+            esp_cache_msync(cs->_jpeg_out_buf, jpeg_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
             jpeg_data = cs->_jpeg_out_buf;
         }
 
