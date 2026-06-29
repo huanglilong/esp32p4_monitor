@@ -162,8 +162,24 @@ bool PhoneAppAudio::close(void)
         _update_timer = nullptr;
     }
 
-    /* Wait for task to finish */
-    vTaskDelay(pdMS_TO_TICKS(150));
+    /* Wait for task to finish gracefully.
+     * Task may be blocked in i2s_channel_read (100ms timeout). 2s timeout is safe.
+     * Task self-deletes with vTaskDelete(nullptr) and clears _task_handle.
+     * Use eTaskGetState() to avoid double-delete if task already exited. */
+    int timeout = 0;
+    while (timeout < 20) {
+        if (!_task_handle || eTaskGetState(_task_handle) == eDeleted) {
+            _task_handle = nullptr;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+        timeout++;
+    }
+    if (_task_handle && eTaskGetState(_task_handle) != eDeleted) {
+        ESP_LOGW(TAG, "Audio task did not exit within 2s, force-killing");
+        vTaskDelete(_task_handle);
+        _task_handle = nullptr;
+    }
 
     /* Free recording names */
     for (int i = 0; i < _recording_count; i++) {
@@ -185,6 +201,7 @@ void PhoneAppAudio::_audio_task(void *arg)
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate audio buffer");
         app->_task_running = false;
+        app->_task_handle = nullptr;  /* Clear before self-delete to prevent double-free in close() */
         vTaskDelete(nullptr);
         return;
     }
@@ -223,6 +240,7 @@ void PhoneAppAudio::_audio_task(void *arg)
     }
 
     free(buf);
+    app->_task_handle = nullptr;  /* Clear before self-delete to prevent double-free in close() */
     vTaskDelete(nullptr);
 }
 

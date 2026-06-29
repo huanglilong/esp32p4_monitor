@@ -122,23 +122,35 @@ bool PhoneAppCamera::close(void)
     _cam_running = false;
 
     /* Wait for detection task to finish current inference and self-terminate.
-     * Worst case: mid-inference (~560ms) + one cycle. 3s timeout is safe. */
+     * Worst case: mid-inference (~560ms) + one cycle. 3s timeout is safe.
+     * Task self-deletes with vTaskDelete(NULL) and clears _detect_task_handle.
+     * Use eTaskGetState() to avoid double-delete if task already exited. */
     if (_detect_task_handle) {
         int timeout = 0;
-        while (_detect_task_handle && timeout < 30) {
+        while (timeout < 30) {
+            if (!_detect_task_handle || eTaskGetState(_detect_task_handle) == eDeleted) {
+                _detect_task_handle = nullptr;
+                break;
+            }
             vTaskDelay(pdMS_TO_TICKS(100));
             timeout++;
         }
-        if (_detect_task_handle) {
+        if (_detect_task_handle && eTaskGetState(_detect_task_handle) != eDeleted) {
             ESP_LOGW(TAG, "Detection task did not exit, force-killing");
             vTaskDelete(_detect_task_handle);
+            _detect_task_handle = nullptr;
         }
-        _detect_task_handle = nullptr;
     }
 
     /* Now safe to free resources */
     _deinit_detection();
     _deinit_camera();
+
+    /* Release CSI/ISP pipeline (esp_video). Safe to call even if already deinited;
+     * next Camera App or Camera Stream start will re-init via example_video_init(). */
+    if (example_video_deinit() != ESP_OK) {
+        ESP_LOGW(TAG, "example_video_deinit failed (may already be deinited)");
+    }
 
     ESP_LOGI(TAG, "Camera app closed");
     return true;
@@ -160,6 +172,10 @@ bool PhoneAppCamera::_init_camera(void)
 
     /* Init video pipeline (CSI + ISP) via esp_video. Safe to call multiple times. */
     ESP_RETURN_ON_FALSE(example_video_init() == ESP_OK, false, TAG, "example_video_init failed");
+
+    /* Reduce sensor frame rate from 50fps → ~10fps (VTS: 984→4920).
+     * ISP DMA: ~32 MB/s → ~6.4 MB/s. */
+    ov5647_set_vts_10fps();
 
     /* Open V4L2 device */
     _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);

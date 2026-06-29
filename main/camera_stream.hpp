@@ -3,10 +3,27 @@
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief Write OV5647 VTS registers via I2C to reduce frame rate from ~50fps to ~10fps.
+ *
+ * VTS (Vertical Total Size) is the number of lines per frame including blanking.
+ * Increasing VTS from 984 → 4920 (5x) proportionally reduces frame rate:
+ *   Frame Rate = PCLK / (HTS × VTS) ≈ 50fps / 5 = ~10fps
+ *
+ * Benefits:
+ *   - ISP DMA bandwidth: ~32 MB/s → ~6.4 MB/s
+ *   - MIPI CSI bandwidth usage is reduced (more idle time between frames)
+ *   - JPEG encoder CPU load is reduced
+ *
+ * Must be called after example_video_init() (sensor I2C bus is available).
+ */
+void ov5647_set_vts_10fps(void);
 
 /**
  * @brief Camera stream over WiFi — V4L2 camera → JPEG encoding → HTTP MJPEG → mDNS
@@ -46,6 +63,13 @@ public:
     uint32_t               _jpeg_out_size;
     uint8_t                _jpeg_quality;
     SemaphoreHandle_t      _encoder_sem;
+
+    /* FPS tracking */
+    uint32_t               _frame_count;       /* Total frames sent */
+    uint32_t               _fps_frame_count;   /* Frames in current FPS window */
+    struct timespec        _fps_window_start;  /* Start of current FPS window */
+    uint32_t               _fps_total_bytes;   /* JPEG bytes in current FPS window */
+    static constexpr int   FPS_LOG_INTERVAL_S = 2;  /* Log FPS every 2s */
 
 private:
     CameraStream();

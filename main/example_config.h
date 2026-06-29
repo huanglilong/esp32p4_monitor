@@ -21,6 +21,10 @@ extern "C" {
 
 #if CONFIG_EXAMPLE_MIPI_CSI_HRES_800
 #if CONFIG_EXAMPLE_MIPI_CSI_VRES_800
+/* Sensor preset: MIPI_2lane_24Minput_RAW8_800x800_50fps.
+ * Frame rate reduced to ~10fps at runtime via OV5647 VTS modification
+ * (VTS: 984 → 4920, see ov5647_set_vts_10fps() in camera_stream.cpp).
+ * ISP DMA bandwidth: ~32 MB/s → ~6.4 MB/s. */
 #define EXAMPLE_CAM_FORMAT                     "MIPI_2lane_24Minput_RAW8_800x800_50fps"
 #endif
 #endif

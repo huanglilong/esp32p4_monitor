@@ -228,12 +228,13 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 
 | 项目 | 配置 |
 |------|------|
-| 传感器 | OV5647, I2C auto-detect, 格式 `MIPI_2lane_24Minput_RAW8_800x800_50fps` |
+| 传感器 | OV5647, I2C auto-detect, 格式 `MIPI_2lane_24Minput_RAW8_800x800_50fps` (**VTS 运行时降为 4920 → ~10fps**) |
 | CSI | 2-lane, 200Mbps, RAW8 input |
 | ISP | RAW8→RGB565, 80MHz clock |
+| ISP DMA | **~6.4 MB/s** (800×800×1×~10fps, VTS=4920) |
 | 帧缓冲 | PSRAM, `heap_caps_aligned_alloc(128, ...)`, 128字节对齐 (cache line) |
 | 显示 | LVGL `lv_canvas` + buffer 零拷贝, 30fps 定时器刷新 |
-| 传感器初始化 | `esp_cam_sensor` auto-detect → `set_format` → `ioctl(S_STREAM)` |
+| 传感器初始化 | `esp_cam_sensor` auto-detect → `set_format` → VTS I2C write → `ioctl(S_STREAM)` |
 | 清理顺序 | sensor stop → del_dev → sccb_del → CSI stop→disable→del → ISP disable→del → free buf |
 
 **已解决的问题**:

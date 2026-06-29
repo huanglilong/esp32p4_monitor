@@ -199,7 +199,7 @@ bool PhoneAppSettings::close(void)
     bool wifi_connected = _wifi_event_group &&
         (xEventGroupGetBits(_wifi_event_group) & WIFI_CONNECTED_BIT);
     if (!wifi_connected) {
-        if (_wifi_scan_task) {
+        if (_wifi_scan_task && eTaskGetState(_wifi_scan_task) != eDeleted) {
             vTaskDelete(_wifi_scan_task);
             _wifi_scan_task = nullptr;
         }
@@ -908,7 +908,7 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
         }
         esp_wifi_stop();  // Power down WiFi hardware (keeps stack init'd)
         /* Clean up scan task and event group on WiFi OFF */
-        if (app->_wifi_scan_task) {
+        if (app->_wifi_scan_task && eTaskGetState(app->_wifi_scan_task) != eDeleted) {
             vTaskDelete(app->_wifi_scan_task);
             app->_wifi_scan_task = nullptr;
         }

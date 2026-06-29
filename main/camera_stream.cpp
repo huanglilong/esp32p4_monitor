@@ -14,6 +14,7 @@
 #include "mdns.h"
 #include "cJSON.h"
 #include "lwip/apps/netbiosns.h"
+#include "driver/i2c_master.h"
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -21,6 +22,71 @@
 #include <cstring>
 
 static const char *TAG = "CameraStream";
+
+/* Forward declaration: BSP I2C bus handle getter (provided by Waveshare BSP) */
+extern "C" i2c_master_bus_handle_t bsp_i2c_get_handle(void);
+
+/*============================================================================
+ * OV5647 VTS helper: reduce sensor frame rate from ~50fps to ~10fps
+ *============================================================================*/
+void ov5647_set_vts_10fps(void)
+{
+    i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
+    if (!i2c_handle) {
+        ESP_LOGW(TAG, "I2C bus not available, cannot set OV5647 VTS");
+        return;
+    }
+
+    i2c_master_dev_handle_t dev_handle = nullptr;
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = 0x36,  /* OV5647 SCCB address */
+        .scl_speed_hz = 100000,
+    };
+
+    esp_err_t ret = i2c_master_bus_add_device(i2c_handle, &dev_cfg, &dev_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to add I2C device for OV5647 VTS write: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    const uint16_t NEW_VTS = 4920;  /* 5x original 984 → ~10fps */
+    uint8_t data[3];
+
+    /* Write VTS high byte (register 0x380E) */
+    data[0] = 0x38; data[1] = 0x0E; data[2] = (NEW_VTS >> 8) & 0xFF;
+    ret = i2c_master_transmit(dev_handle, data, 3, 100);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "OV5647 VTS high write failed: %s", esp_err_to_name(ret));
+        i2c_master_bus_rm_device(dev_handle);
+        return;
+    }
+
+    /* Write VTS low byte (register 0x380F) */
+    data[0] = 0x38; data[1] = 0x0F; data[2] = NEW_VTS & 0xFF;
+    ret = i2c_master_transmit(dev_handle, data, 3, 100);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "OV5647 VTS low write failed: %s", esp_err_to_name(ret));
+        i2c_master_bus_rm_device(dev_handle);
+        return;
+    }
+
+    /* Read back VTS to verify */
+    uint8_t rd_cmd[2] = {0x38, 0x0E};
+    uint8_t rd_val[1] = {0};
+    ret = i2c_master_transmit_receive(dev_handle, rd_cmd, 2, rd_val, 1, 100);
+    if (ret == ESP_OK) {
+        uint16_t vts_high = rd_val[0];
+        rd_cmd[1] = 0x0F;
+        ret = i2c_master_transmit_receive(dev_handle, rd_cmd, 2, rd_val, 1, 100);
+        if (ret == ESP_OK) {
+            uint16_t vts = (vts_high << 8) | rd_val[0];
+            ESP_LOGI(TAG, "OV5647 VTS: 984→%u (target ~10 fps)", vts);
+        }
+    }
+
+    i2c_master_bus_rm_device(dev_handle);
+}
 
 /* MJPEG stream constants */
 #define PART_BOUNDARY  "123456789000000000000987654321"
@@ -45,8 +111,11 @@ CameraStream::CameraStream() :
     _v4l2_buf_count(0),
     _encoder_handle(nullptr),
     _jpeg_out_buf(nullptr), _jpeg_out_size(0),
-    _jpeg_quality(50),  // Lower quality = faster encode + less WiFi/SDIO traffic
+    _jpeg_quality(30),  // Lower quality = faster encode + less WiFi/SDIO traffic
     _encoder_sem(nullptr),
+    _frame_count(0), _fps_frame_count(0),
+    _fps_window_start{0, 0},
+    _fps_total_bytes(0),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _mdns_running(false)
@@ -77,6 +146,12 @@ bool CameraStream::start(void)
 
     _init_mdns();
 
+    /* Reset FPS counters for new streaming session */
+    _frame_count = 0;
+    _fps_frame_count = 0;
+    _fps_total_bytes = 0;
+    clock_gettime(CLOCK_MONOTONIC, &_fps_window_start);
+
     _running = true;
     ESP_LOGI(TAG, "Stream started → http://esp-web.local/stream (port 81)");
     return true;
@@ -99,7 +174,6 @@ void CameraStream::stop(void)
  *============================================================================*/
 bool CameraStream::_init_video(void)
 {
-    esp_err_t ret;
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     struct v4l2_format fmt = {};      // Declared early to avoid goto-cross-init
     struct v4l2_streamparm sparm = {}; // Same
@@ -110,6 +184,11 @@ bool CameraStream::_init_video(void)
         return false;
     }
 
+    /* Step 1b: Reduce sensor frame rate from 50fps → ~10fps by increasing VTS.
+     * This reduces ISP DMA bandwidth from ~32 MB/s to ~6.4 MB/s,
+     * relieving PSRAM pressure during WiFi streaming. */
+    ov5647_set_vts_10fps();
+
     /* Step 2: Open V4L2 device */
     _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
     if (_video_fd < 0) {
@@ -118,12 +197,14 @@ bool CameraStream::_init_video(void)
     }
     ESP_LOGI(TAG, "V4L2 device opened: %s", EXAMPLE_CAM_DEV_PATH);
 
-    /* Step 3: Read frame rate (matches reference: VIDIOC_G_PARM) */
+    /* Step 3: Read frame rate (matches reference: VIDIOC_G_PARM).
+     * Note: Driver caches the original preset value (50fps); actual sensor
+     * frame rate is ~10fps due to VTS=4920 set in ov5647_set_vts_10fps(). */
     sparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(_video_fd, VIDIOC_G_PARM, &sparm) == 0) {
         struct v4l2_fract *tpf = &sparm.parm.capture.timeperframe;
         uint32_t fps = (tpf->denominator && tpf->numerator) ? tpf->denominator / tpf->numerator : 0;
-        ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps", fps);
+        ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~10 fps from VTS=4920)", fps);
     } else {
         ESP_LOGW(TAG, "VIDIOC_G_PARM failed, frame rate unknown");
     }
@@ -344,6 +425,27 @@ static esp_err_t stream_handler(httpd_req_t *req)
 
         /* Return buffer */
         ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+
+        /* FPS tracking */
+        cs->_frame_count++;
+        cs->_fps_frame_count++;
+        cs->_fps_total_bytes += jpeg_size;
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed_s = (now.tv_sec - cs->_fps_window_start.tv_sec) +
+                           (now.tv_nsec - cs->_fps_window_start.tv_nsec) / 1e9;
+        if (elapsed_s >= CameraStream::FPS_LOG_INTERVAL_S) {
+            double fps = cs->_fps_frame_count / elapsed_s;
+            uint32_t avg_bytes = cs->_fps_total_bytes / cs->_fps_frame_count;
+            ESP_LOGI(TAG, "FPS: %.1f fps | %lu frames sent | avg JPEG %lu bytes | %lu total",
+                     fps, (unsigned long)cs->_frame_count,
+                     (unsigned long)avg_bytes,
+                     (unsigned long)cs->_fps_total_bytes);
+            cs->_fps_frame_count = 0;
+            cs->_fps_total_bytes = 0;
+            cs->_fps_window_start = now;
+        }
 
         /* Yield CPU to prevent SDIO/WiFi starvation.
          * JPEG SW encoding of 800x800 RGB565 takes significant time
