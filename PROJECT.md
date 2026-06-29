@@ -249,16 +249,12 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 
 | 项目 | 配置 |
 |------|------|
-| 框架 | `espressif/esp-dl` v3.x + `espressif/coco_detect` v0.4 |
-| 模型 | YOLO11n INT8 量化, 320×320 输入, P4 NPU 加速 |
-| 推理速度 | ~560ms/帧 (1.8fps), 含预处理+推理+后处理 |
-| 检测类 | COCO class 0 (person), 置信度阈值 0.35 |
-| 输入源 | Camera buffer 800×800 RGB565LE 快照 → ESP-DL 内置 RGB565→RGB888→resize→letterbox |
-| 显示 | LVGL v9 `lv_canvas_init_layer` + `lv_draw_rect`/`lv_draw_label` 在 canvas 上绘制 |
-| 任务 | 独立 FreeRTOS task "detect" (priority 2, 16KB 栈) |
-| 互斥 | `_detect_mutex` Semaphore 保护检测结果 |
-| 依赖 | `main/idf_component.yml` 添加 `espressif/esp-dl: ^3.3` + `espressif/coco_detect: ^0.4` |
-| Kconfig | `CONFIG_FLASH_COCO_DETECT_YOLO11N_320_S8_V1=y` (Flash rodata 存储) |
+| 输入源 | Camera buffer (`_cam_width`×`_cam_height` RGB565LE) |
+| 坐标处理 | COCODetect::run() 内部通过 ImagePreprocessor 自动缩放 → 无需手动 scale |
+
+**已知问题 (已修复)**:
+- ~~检测框不缩放 → 太小~~ (COCODetect 内部已缩放，手动 scale 会双重缩放导致过大)
+- RGB565LE → PPA 不支持，改 CPU resize
 
 **工作流程**:
 1. Camera 30fps 正常预览 (ISP DMA → PSRAM → LVGL canvas)

@@ -664,3 +664,77 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 | 20b | `shine_encoder` `calloc(~96KB)` 失败 | 无 UI 提示，录音静默失败 |
 | 20c | `CMakeLists.txt:7` | `-Wno-missing-field-initializers` 屏蔽 struct 字段变更警告 |
 | 20d | `CMakeLists.txt:28` | `-Wno-attributes` 对 LVGL 过于宽泛 |
+
+### 第三轮分析 — 新发现的问题 (2026-06-29)
+
+#### 🔴 21. 检测框坐标双重缩放 ✅ 已修复
+
+**文件**: `phone_app_camera.cpp` (detection task)
+
+**问题**: 修复 #1 时加入手动 `SCALE = _cam_width / 320` 缩放检测框坐标，但 `COCODetect::run()` 内部通过 `ImagePreprocessor` 已自动将坐标从模型空间缩放到输入图像尺寸。导致坐标被缩放 **两次**，bounding box 过大（2.5×）。
+
+**修复** (2026-06-29): 移除手动 SCALE。COCODetect::run() 返回的坐标已经是输入图像尺寸。
+
+#### 🔴 22. I2S MCLK 384x vs Codec 256x 不匹配 ✅ 已修复
+
+**文件**: `main.cpp:248`
+
+**问题**: I2S MCLK 硬编码 `I2S_MCLK_MULTIPLE_384` (18.432MHz)，但 ES8311/ES7210 codec 配置为 256x (12.288MHz)。导致音频 1.5× 速度。
+
+**修复** (2026-06-29): 改为 `EXAMPLE_AUDIO_MCLK_MULTIPLE` (256x)，与 codec 一致。
+
+#### 🔴 23. 跨核非原子变量无 volatile 保护 ✅ 已修复
+
+**文件**: `phone_app_settings.hpp`, `camera_stream.hpp`, `phone_app_music.hpp`
+
+**问题**: `_wifi_scanning` (core0↔core1)、`_running` (core1↔HTTP handler)、`_volume` (core1 slider↔core0 GMF callback) 均无 volatile/atomic 保护。ESP32-P4 L2 cache 下编译器可能优化掉跨核读取。
+
+**修复** (2026-06-29): 加 `volatile` 修饰。
+
+#### 🔴 24. V4L2 /dev/video0 双开无防护 ✅ 已修复
+
+**文件**: `phone_app_camera.cpp`
+
+**问题**: Camera App 和 Camera Stream 可同时 `open("/dev/video0")` → 共享 V4L2 buffer 队列，帧数据混乱。
+
+**修复** (2026-06-29): Camera App 初始化前检查 `CameraStream::instance().isRunning()`。
+
+#### 🔴 25. Music 音量滑块 NVS 过度写入 ✅ 已修复
+
+**文件**: `phone_app_music.cpp:92-105`
+
+**问题**: `LV_EVENT_VALUE_CHANGED` 每次拖动触发数十次 NVS open/write/commit/close。Flash 快速磨损。
+
+**修复** (2026-06-29): 500ms debounce timer + close() 时 flush。与 Settings App 模式一致。
+
+#### 🔴 26. Audio task 栈 8KB→12KB ✅ 已修复
+
+**文件**: `phone_app_audio.cpp:130`
+
+**问题**: Shine encoder PCM buffer (4608B) + 本地 I2S buffer (1920B) + 编码器内部状态 ≈ 10KB+，8KB 栈有溢出风险。
+
+**修复** (2026-06-29): 增至 12288。
+
+#### 🔴 27. 全局 audio codec handle 无锁 ✅ 已修复
+
+**文件**: `main.cpp`, `phone_app_settings.cpp`, `phone_app_music.cpp`
+
+**问题**: `s_codec_handle` 被 Settings (LVGL, core1) 和 Music (GMF callback, core0) 并发调用 `esp_codec_dev_set_out_vol()`。
+
+**修复** (2026-06-29): 添加 `s_codec_mutex` Semaphore，Music 用 `safe_set_volume()` 封装。
+
+#### 🟢 28. V4L2 mmap buffer 缺 cache invalidate ✅ 已修复
+
+**文件**: `camera_stream.cpp`
+
+**问题**: ISP DMA 写入 V4L2 mmap PSRAM buffer，CPU 直接编码 → 可能读到 staled cache line。
+
+**修复** (2026-06-29): DQBUF 后 `esp_cache_msync(M2C)`；JPEG 编码输出后同样 `esp_cache_msync(M2C)`。
+
+#### 🟢 29. strdup 结果未 null 检查 ✅ 已修复
+
+**文件**: `phone_app_audio.cpp:417`, `phone_app_music.cpp:315`
+
+**问题**: OOM 时 `strdup` 返回 NULL，随后 `free(NULL)` 安全但 `lv_list_add_btn(NULL)` 及其他字符串访问崩溃。
+
+**修复** (2026-06-29): 加 null 检查，OOM 时跳过该文件。
