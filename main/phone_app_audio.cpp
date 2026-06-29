@@ -127,7 +127,7 @@ bool PhoneAppAudio::run(void)
 
     /* Start audio echo task */
     _task_running = true;
-    BaseType_t ret = xTaskCreate(_audio_task, "audio_echo", 8192, this, 5, &_task_handle);
+    BaseType_t ret = xTaskCreate(_audio_task, "audio_echo", 12288, this, 5, &_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create audio task");
         _task_running = false;

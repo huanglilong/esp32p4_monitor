@@ -13,6 +13,16 @@
 
 static const char *TAG = "MusicApp";
 
+extern esp_codec_dev_handle_t s_codec_handle;
+extern SemaphoreHandle_t s_codec_mutex;
+static inline void safe_set_volume(int vol) {
+    if (s_codec_handle && s_codec_mutex &&
+        xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        esp_codec_dev_set_out_vol(s_codec_handle, vol);
+        xSemaphoreGive(s_codec_mutex);
+    }
+}
+
 /* External handles from main.cpp */
 extern esp_codec_dev_handle_t s_codec_handle;
 
@@ -96,7 +106,7 @@ bool PhoneAppMusic::run(void)
         char txt[16];
         snprintf(txt, sizeof(txt), "Vol: %d", app->_volume);
         lv_label_set_text(app->_label_vol, txt);
-        if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, app->_volume);
+        safe_set_volume(app->_volume);
         /* Defer NVS write (debounce to avoid flash wear) */
         app->_nvs_dirty = true;
     }, LV_EVENT_VALUE_CHANGED, this);
@@ -220,7 +230,7 @@ bool PhoneAppMusic::run(void)
     }
 
     /* Set initial volume on codec */
-    if (s_codec_handle) esp_codec_dev_set_out_vol(s_codec_handle, _volume);
+    safe_set_volume(_volume);
 
     /* Scan SD card */
     _scan_files();

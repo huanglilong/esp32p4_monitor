@@ -56,6 +56,7 @@ esp_codec_dev_handle_t s_codec_handle = NULL;     // Speaker (ES8311)
 esp_codec_dev_handle_t s_codec_mic_handle = NULL; // Microphone (ES7210)
 i2s_chan_handle_t s_rx_handle = NULL;             // I2S RX (for direct mic read)
 i2s_chan_handle_t s_tx_handle = NULL;             // I2S TX (for music playback)
+SemaphoreHandle_t s_codec_mutex = NULL;           // Protect concurrent codec access
 
 /* SD card */
 sdmmc_card_t *s_card = NULL;
@@ -309,6 +310,7 @@ static void monitor_init_audio(void)
     esp_codec_dev_set_in_gain(s_codec_mic_handle, 42);  // Max gain for quiet recordings
 
     ESP_LOGI(TAG, "Audio initialized: ES8311 + ES7210, vol=%d", EXAMPLE_VOICE_VOLUME);
+    s_codec_mutex = xSemaphoreCreateMutex();
 }
 
 /*============================================================================
