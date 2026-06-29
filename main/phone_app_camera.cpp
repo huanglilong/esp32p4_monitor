@@ -14,6 +14,7 @@ extern "C" {
 }
 #include "example_config.h"
 #include "coco_detect.hpp"
+#include "camera_stream.hpp"
 #include "dl_image_define.hpp"
 #include "dl_image_ppa.hpp"
 
@@ -150,6 +151,12 @@ bool PhoneAppCamera::close(void)
 bool PhoneAppCamera::_init_camera(void)
 {
     int stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    /* Guard: CameraStream must not be running (V4L2 /dev/video0 is exclusive) */
+    if (CameraStream::instance().isRunning()) {
+        ESP_LOGW(TAG, "Camera Stream active, cannot open Camera App");
+        return false;
+    }
 
     /* Init video pipeline (CSI + ISP) via esp_video. Safe to call multiple times. */
     ESP_RETURN_ON_FALSE(example_video_init() == ESP_OK, false, TAG, "example_video_init failed");
