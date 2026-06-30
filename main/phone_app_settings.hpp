@@ -19,6 +19,9 @@ public:
     bool close(void) override;
     bool init(void) override;
 
+    /** Boot-time WiFi auto-connect: read NVS and connect if SSID stored */
+    static void bootWifiAutoConnect(void);
+
 private:
     /* Screen indices */
     enum ScreenIndex {

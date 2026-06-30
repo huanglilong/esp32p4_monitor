@@ -61,6 +61,87 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
 PhoneAppSettings::~PhoneAppSettings() {}
 
 /*============================================================================
+ * Boot-time WiFi Auto-Connect
+ *============================================================================*/
+void PhoneAppSettings::bootWifiAutoConnect(void)
+{
+    nvs_handle_t nvs_h;
+    if (nvs_open("settings", NVS_READONLY, &nvs_h) != ESP_OK) {
+        return;
+    }
+
+    int32_t wifi_en = 0;
+    nvs_get_i32(nvs_h, "wifi_en", &wifi_en);
+    if (!wifi_en) {
+        nvs_close(nvs_h);
+        return;
+    }
+
+    char ssid[33] = {};
+    char pass[65] = {};
+    size_t len;
+    len = sizeof(ssid);
+    nvs_get_str(nvs_h, "ssid", ssid, &len);
+    len = sizeof(pass);
+    nvs_get_str(nvs_h, "pass", pass, &len);
+    nvs_close(nvs_h);
+
+    if (strlen(ssid) == 0) {
+        ESP_LOGI(TAG, "WiFi enabled in NVS but no SSID stored");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Boot WiFi: connecting to %s...", ssid);
+
+    /* One-time netif + event loop + wifi driver init */
+    if (!_wifi_initialized) {
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+        assert(sta_netif);
+
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        if (esp_wifi_init(&cfg) != ESP_OK) {
+            ESP_LOGW(TAG, "esp_wifi_init failed, boot WiFi deferred");
+            return;
+        }
+
+        /* Register event handler for WiFi/IP events */
+        esp_event_handler_instance_t inst;
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
+            wifiEventHandler, nullptr, &inst));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+            wifiEventHandler, nullptr, &inst));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            IP_EVENT, IP_EVENT_STA_GOT_IP,
+            wifiEventHandler, nullptr, &inst));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        _wifi_initialized = true;
+    }
+
+    /* Create event group for tracking connection state */
+    if (_wifi_event_group == nullptr) {
+        _wifi_event_group = xEventGroupCreate();
+    }
+
+    esp_wifi_start();
+
+    /* Set credentials and connect */
+    wifi_config_t wifi_cfg = {};
+    size_t slen = strlen(ssid);
+    if (slen >= sizeof(wifi_cfg.sta.ssid)) slen = sizeof(wifi_cfg.sta.ssid) - 1;
+    memcpy(wifi_cfg.sta.ssid, ssid, slen);
+    slen = strlen(pass);
+    if (slen >= sizeof(wifi_cfg.sta.password)) slen = sizeof(wifi_cfg.sta.password) - 1;
+    memcpy(wifi_cfg.sta.password, pass, slen);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+    esp_wifi_connect();
+    ESP_LOGI(TAG, "Boot WiFi: connection attempt started");
+}
+
+/*============================================================================
  * App Lifecycle
  *============================================================================*/
 bool PhoneAppSettings::init(void)
@@ -806,27 +887,21 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
 
 void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    PhoneAppSettings *app = (PhoneAppSettings *)arg;
-    if (!app->_wifi_event_group) return;
+    /* Use static _wifi_event_group — arg may be nullptr during boot auto-connect */
+    if (!_wifi_event_group) return;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-        xEventGroupSetBits(app->_wifi_event_group, WIFI_CONNECTED_BIT);
+        xEventGroupSetBits(_wifi_event_group, WIFI_CONNECTED_BIT);
         wifi_event_sta_connected_t *evt = (wifi_event_sta_connected_t *)event_data;
         ESP_LOGI(TAG, "WiFi connected to %s", evt->ssid);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(app->_wifi_event_group, WIFI_CONNECTED_BIT);
-        app->_wifi_rssi = -100;
-        memset(app->_wifi_ip, 0, sizeof(app->_wifi_ip));
+        xEventGroupClearBits(_wifi_event_group, WIFI_CONNECTED_BIT);
         ESP_LOGI(TAG, "WiFi disconnected");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)event_data;
-        snprintf(app->_wifi_ip, sizeof(app->_wifi_ip), IPSTR, IP2STR(&evt->ip_info.ip));
-        ESP_LOGI(TAG, "Got IP: %s", app->_wifi_ip);
-        /* Read RSSI after getting IP */
-        esp_wifi_sta_get_rssi(&app->_wifi_rssi);
-        ESP_LOGI(TAG, "Signal: %d dBm", app->_wifi_rssi);
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
     }
 }
 

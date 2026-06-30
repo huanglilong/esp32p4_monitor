@@ -424,6 +424,9 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(nvs_err);
     ESP_LOGI(TAG, "NVS initialized");
 
+    /* 0b. Boot WiFi auto-connect: connect if SSID/password stored in NVS */
+    PhoneAppSettings::bootWifiAutoConnect();
+
     /* 1. MIPI DSI Display */
     lv_display_t *disp = NULL;
     monitor_init_display(&disp);
