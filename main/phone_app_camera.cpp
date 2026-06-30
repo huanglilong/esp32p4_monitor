@@ -510,9 +510,8 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
     }
 
     /* Copy frame to display buffer.
-     * The V4L2 buffer format depends on the sensor/ISP pipeline config.
-     * For OV5647 RAW8 → ISP → the output may be YUV422P or RGB888.
-     * We copy raw bytes; the canvas is set up for the actual format. */
+     * Note: _cam_buffer is shared between LVGL timer (core 1) and detection
+     * task (core 0). Tearing is possible but non-critical (affects 1 frame). */
     uint32_t copy_size = buf.bytesused;
     if (copy_size > app->_cam_buf_size) copy_size = app->_cam_buf_size;
     memcpy(app->_cam_buffer, app->_v4l2_buffers[buf.index], copy_size);

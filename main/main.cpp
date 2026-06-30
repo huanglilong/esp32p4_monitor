@@ -349,6 +349,9 @@ void monitor_init_audio(void)
     s_codec_mic_handle = esp_codec_dev_new(&dev_adc);
     assert(s_codec_mic_handle);
 
+    /* Create mutex BEFORE opening codecs — protect concurrent access from Audio/Music apps */
+    s_codec_mutex = xSemaphoreCreateMutex();
+
     /* Open both codecs */
     esp_codec_dev_sample_info_t fs = { .bits_per_sample = 16, .channel = 2, .channel_mask = 0x03, .sample_rate = EXAMPLE_AUDIO_SAMPLE_RATE };
     ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
@@ -357,7 +360,6 @@ void monitor_init_audio(void)
     esp_codec_dev_set_in_gain(s_codec_mic_handle, 42);  // Max gain for quiet recordings
 
     ESP_LOGI(TAG, "Audio initialized: ES8311 + ES7210, vol=%d", EXAMPLE_VOICE_VOLUME);
-    s_codec_mutex = xSemaphoreCreateMutex();
     s_audio_refcount = 1;
 }
 

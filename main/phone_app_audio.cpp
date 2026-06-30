@@ -58,7 +58,24 @@ PhoneAppAudio::~PhoneAppAudio()
     }
     if (_task_running) {
         _task_running = false;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        /* Wait up to 2s for task to exit (matches close()) */
+        int timeout = 0;
+        while (timeout < 20) {
+            if (!_task_handle || eTaskGetState(_task_handle) == eDeleted) {
+                _task_handle = nullptr;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+            timeout++;
+        }
+        if (_task_handle && eTaskGetState(_task_handle) != eDeleted) {
+            vTaskDelete(_task_handle);
+            _task_handle = nullptr;
+        }
+    }
+    /* Free recording names (defensive — close() normally does this) */
+    for (int i = 0; i < _recording_count; i++) {
+        if (_recording_names[i]) { free(_recording_names[i]); _recording_names[i] = nullptr; }
     }
 }
 
@@ -372,25 +389,29 @@ void PhoneAppAudio::_stop_recording(void)
     _is_recording = false;
 
     /* Give audio task time to exit recording block.
-     * Worst case: task blocked in i2s_channel_read (100ms timeout) + encoding (~10ms).
-     * 200ms provides safe margin. */
+     * Task checks _is_recording at loop top; worst case it's in i2s_channel_read
+     * (100ms timeout) + encoding (~10ms). 200ms ensures it has exited the write path
+     * and will not attempt fwrite to _record_file after we close it. */
     vTaskDelay(pdMS_TO_TICKS(200));
+
+    /* Save file handle locally before nulling — task won't access it after _is_recording=false */
+    FILE *file = _record_file;
+    _record_file = nullptr;
 
     /* Flush remaining encoded data */
     if (_encoder) {
         int written = 0;
         unsigned char *data = shine_flush(_encoder, &written);
-        if (data && written > 0 && _record_file) {
-            fwrite(data, 1, written, _record_file);
+        if (data && written > 0 && file) {
+            fwrite(data, 1, written, file);
         }
         shine_close(_encoder);
         _encoder = nullptr;
     }
 
     /* Close file */
-    if (_record_file) {
-        fclose(_record_file);
-        _record_file = nullptr;
+    if (file) {
+        fclose(file);
     }
 
     /* Free PCM buffer */

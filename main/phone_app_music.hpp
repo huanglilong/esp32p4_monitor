@@ -49,6 +49,7 @@ private:
     volatile int         _volume;           // Current volume (0-100), cross-core access
     bool                 _nvs_dirty;         // NVS debounce flag
     lv_timer_t          *_nvs_save_timer;    // NVS debounce timer (500ms)
+    lv_timer_t          *_vol_sync_timer;    // NVS volume sync timer (1s)
 
     /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
     volatile bool       _auto_next;

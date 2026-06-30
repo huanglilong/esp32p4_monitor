@@ -39,6 +39,7 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     ESP_Brookesia_PhoneApp("Settings", &esp_brookesia_image_large_app_launcher_default_112_112,
                            true, use_status_bar, use_navigation_bar),
     _nvs_dirty(false), _nvs_save_timer(nullptr),
+    _status_timer(nullptr),
     _screen_index(SCREEN_MAIN), _is_ui_del(true),
     _scr_main(nullptr),
 
@@ -183,7 +184,7 @@ bool PhoneAppSettings::run(void)
     }
 
     /* WiFi/Volume/Brightness status refresh timer: update every 1s */
-    lv_timer_create([](lv_timer_t *t) {
+    _status_timer = lv_timer_create([](lv_timer_t *t) {
         PhoneAppSettings *app = (PhoneAppSettings *)t->user_data;
         if (!app || app->_is_ui_del || app->_screen_index != SCREEN_MAIN) return;
 
@@ -252,6 +253,10 @@ bool PhoneAppSettings::close(void)
     if (_nvs_save_timer) {
         lv_timer_delete(_nvs_save_timer);
         _nvs_save_timer = nullptr;
+    }
+    if (_status_timer) {
+        lv_timer_delete(_status_timer);
+        _status_timer = nullptr;
     }
     if (_nvs_dirty) {
         _nvs_dirty = false;

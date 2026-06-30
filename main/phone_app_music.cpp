@@ -49,6 +49,7 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     _slider_vol(nullptr), _label_vol(nullptr),
     _volume(60),
     _nvs_dirty(false), _nvs_save_timer(nullptr),
+    _vol_sync_timer(nullptr),
     _auto_next(false), _auto_next_timer(nullptr)
 {
     memset(_file_names, 0, sizeof(_file_names));
@@ -210,7 +211,7 @@ bool PhoneAppMusic::run(void)
     }, 500, this);
 
     /* Volume sync timer: pull volume from NVS every 1s (Settings may change it) */
-    lv_timer_create([](lv_timer_t *t) {
+    _vol_sync_timer = lv_timer_create([](lv_timer_t *t) {
         PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
         if (!app || !app->_label_vol || !app->_slider_vol) return;
         nvs_handle_t nvs_h;
@@ -277,6 +278,11 @@ bool PhoneAppMusic::close(void)
     if (_auto_next_timer) {
         lv_timer_delete(_auto_next_timer);
         _auto_next_timer = nullptr;
+    }
+    /* Clean up volume sync timer */
+    if (_vol_sync_timer) {
+        lv_timer_delete(_vol_sync_timer);
+        _vol_sync_timer = nullptr;
     }
     /* Flush pending NVS write */
     if (_nvs_save_timer) {
@@ -455,8 +461,10 @@ void PhoneAppMusic::_prev(void)
 int PhoneAppMusic::_asp_output_cb(uint8_t *data, int data_size, void *ctx)
 {
     (void)ctx;
-    if (!s_codec_handle || data_size <= 0) return -1;
+    if (!s_codec_handle || !s_codec_mutex || data_size <= 0) return -1;
+    if (xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(50)) != pdPASS) return -1;
     int ret = esp_codec_dev_write(s_codec_handle, data, data_size);
+    xSemaphoreGive(s_codec_mutex);
     return (ret == ESP_CODEC_DEV_OK) ? data_size : -1;
 }
 

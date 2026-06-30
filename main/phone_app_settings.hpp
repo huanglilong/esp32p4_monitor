@@ -80,6 +80,7 @@ private:
     static void _nvs_save_timer_cb(lv_timer_t *timer);
     bool                   _nvs_dirty;
     lv_timer_t            *_nvs_save_timer;
+    lv_timer_t            *_status_timer;       // WiFi/volume/brightness status refresh
 
     /* State */
     ScreenIndex            _screen_index;
