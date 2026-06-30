@@ -15,6 +15,8 @@
 #include "cJSON.h"
 #include "lwip/apps/netbiosns.h"
 #include "driver/i2c_master.h"
+#include "coco_detect.hpp"
+#include "dl_image_define.hpp"
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -116,6 +118,10 @@ CameraStream::CameraStream() :
     _frame_count(0), _fps_frame_count(0),
     _fps_window_start{0, 0},
     _fps_total_bytes(0),
+    _detector(nullptr),
+    _detect_in_buf(nullptr), _detect_in_size(0),
+    _detect_results(),
+    _detect_available(false),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _mdns_running(false)
@@ -138,9 +144,14 @@ bool CameraStream::start(void)
         return false;
     }
 
+    if (!_init_detection()) {
+        ESP_LOGW(TAG, "Detection init failed, continuing without detection");
+    }
+
     if (!_start_http_server()) {
         ESP_LOGE(TAG, "HTTP server init failed");
         _deinit_video();
+        // _deinit_detection is called in stop()
         return false;
     }
 
@@ -164,6 +175,7 @@ void CameraStream::stop(void)
     _running = false;
     _stop_http_server();
     _deinit_mdns();
+    _deinit_detection();
     _deinit_video();
 
     ESP_LOGI(TAG, "Stream stopped");
@@ -349,6 +361,122 @@ void CameraStream::_deinit_video(void)
 }
 
 /*============================================================================
+ * Detection Subsystem — inline (no separate task, no extra buffer overhead)
+ *============================================================================*/
+
+bool CameraStream::_init_detection(void)
+{
+    /* Allocate small frame buffer for inference copy (same size as V4L2 buffer).
+     * Since Camera App and Camera Stream are mutually exclusive, this PSRAM
+     * allocation is naturally reused when switching between apps. */
+    _detect_in_size = _cam_width * _cam_height * 2;  // RGB565
+    _detect_in_buf = (uint8_t *)heap_caps_aligned_alloc(128, _detect_in_size,
+                                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!_detect_in_buf) {
+        ESP_LOGE(TAG, "Failed to allocate detect buffer (%" PRIu32 " bytes)", _detect_in_size);
+        return false;
+    }
+
+    /* Create COCODetect instance (YOLO11n 320x320 for P4, lazy load) */
+    _detector = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);
+    if (!_detector) {
+        ESP_LOGE(TAG, "Failed to create COCODetect instance");
+        heap_caps_free(_detect_in_buf);
+        _detect_in_buf = nullptr;
+        return false;
+    }
+    _detector->set_score_thr(PERSON_SCORE_THRESHOLD);
+
+    _detect_available = false;
+    ESP_LOGI(TAG, "Detection initialized (YOLO11n 320x320)");
+    return true;
+}
+
+void CameraStream::_deinit_detection(void)
+{
+    if (_detector) {
+        delete _detector;
+        _detector = nullptr;
+    }
+    if (_detect_in_buf) {
+        heap_caps_free(_detect_in_buf);
+        _detect_in_buf = nullptr;
+    }
+    _detect_in_size = 0;
+    _detect_available = false;
+    _detect_results.clear();
+    ESP_LOGI(TAG, "Detection deinitialized");
+}
+
+void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
+{
+    if (!_detector || !_detect_in_buf) return;
+
+    /* Copy frame to detection buffer (we'll Q the V4L2 buf back quickly).
+     * COCODetect will preprocess (resize + format convert) from this buffer. */
+    uint32_t copy_sz = (size < _detect_in_size) ? size : _detect_in_size;
+    memcpy(_detect_in_buf, buffer, copy_sz);
+
+    dl::image::img_t img = {
+        .data = _detect_in_buf,
+        .width = (uint16_t)_cam_width,
+        .height = (uint16_t)_cam_height,
+        .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
+    };
+
+    /* Run detection. First call loads model (~11s), subsequent ~560ms.
+     * Filter for person class (COCO class 0). */
+    std::list<dl::detect::result_t> &results = _detector->run(img);
+    _detect_results.clear();
+    for (auto &r : results) {
+        if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
+            _detect_results.push_back(r);
+        }
+    }
+    _detect_available = true;
+}
+
+/*============================================================================
+ * Draw helper: hollow rectangle directly on pixel buffer (RGB565)
+ *============================================================================*/
+
+void CameraStream::_draw_box_on_buffer(uint8_t *buffer, uint32_t width, uint32_t height,
+                                       int x1, int y1, int x2, int y2, uint16_t color)
+{
+    /* Clamp to buffer bounds */
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 >= (int)width) x2 = (int)width - 1;
+    if (y2 >= (int)height) y2 = (int)height - 1;
+    if (x1 > x2 || y1 > y2) return;
+
+    uint16_t *buf = (uint16_t *)buffer;
+    int stride = (int)width;
+
+    /* Top and bottom horizontal lines */
+    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
+        int row_top = y1 + w;
+        int row_bot = y2 - w;
+        for (int x = x1; x <= x2; x++) {
+            buf[row_top * stride + x] = color;
+            buf[row_bot * stride + x] = color;
+        }
+    }
+
+    /* Left and right vertical lines (between top/bottom borders) */
+    int y_start = y1 + BOX_LINE_WIDTH;
+    int y_end = y2 - BOX_LINE_WIDTH;
+    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
+        int col_l = x1 + w;
+        int col_r = x2 - w;
+        for (int y = y_start; y <= y_end; y++) {
+            buf[y * stride + col_l] = color;
+            buf[y * stride + col_r] = color;
+        }
+    }
+}
+
+/*============================================================================
  * HTTP Handlers
  *============================================================================*/
 
@@ -380,79 +508,101 @@ static esp_err_t stream_handler(httpd_req_t *req)
             continue;
         }
 
-        /* Invalidate CPU cache on V4L2 mmap buffer: ISP DMA writes here,
-         * CPU reads for encoding. ESP32-P4 PSRAM requires explicit sync. */
+        /* Invalidate CPU cache on V4L2 mmap buffer */
         esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Send boundary */
-        if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK) {
-            break;
+        /* Every N frames: copy frame, Q buffer quickly, run inference inline.
+         * This holds the V4L2 buffer only for the memcpy (~ms), not for the
+         * entire 560ms inference — no frame drops. */
+        bool detection_run_this_frame = false;
+        if (cs->_detector && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
+            uint32_t copy_sz = buf.bytesused;
+            if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
+            memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);  // Return buffer immediately
+            cs->_run_inference(cs->_detect_in_buf, copy_sz);
+            cs->_frame_count++;
+            vTaskDelay(pdMS_TO_TICKS(50));
+            detection_run_this_frame = true;
         }
 
-        uint32_t jpeg_size;
-        uint8_t *jpeg_data;
-
-        if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-            jpeg_data = cs->_v4l2_bufs[buf.index];
-            jpeg_size = buf.bytesused;
-        } else {
-            if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+        if (!detection_run_this_frame) {
+            /* Send boundary */
+            if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK) {
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                continue;
+                break;
             }
-            esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                                     cs->_v4l2_bufs[buf.index], buf.bytesused,
-                                                     cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
-            if (ret != ESP_OK) {
-                xSemaphoreGive(cs->_encoder_sem);
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                continue;
-            }
-            /* HW encoder output buffer from jpeg_alloc_encoder_mem() is
-             * non-cacheable DMA memory — no cache sync needed. */
-            jpeg_data = cs->_jpeg_out_buf;
-        }
 
-        /* Send part header + JPEG data */
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        int hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, jpeg_size,
-                            (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
-        if (httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
-            httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
+            uint32_t jpeg_size;
+            uint8_t *jpeg_data;
+
+            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+                jpeg_data = cs->_v4l2_bufs[buf.index];
+                jpeg_size = buf.bytesused;
+            } else {
+                /* Draw latest detection boxes on the V4L2 buffer before encoding */
+                if (cs->_detect_available && !cs->_detect_results.empty()) {
+                    for (auto &r : cs->_detect_results) {
+                        cs->_draw_box_on_buffer(cs->_v4l2_bufs[buf.index],
+                                                cs->_cam_width, cs->_cam_height,
+                                                r.box[0], r.box[1], r.box[2], r.box[3],
+                                                0x07E0);  // Green in RGB565
+                    }
+                    esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
+                                    ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                }
+
+                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                    continue;
+                }
+                esp_err_t ret = example_encoder_process(cs->_encoder_handle,
+                                                         cs->_v4l2_bufs[buf.index], buf.bytesused,
+                                                         cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
+                if (ret != ESP_OK) {
+                    xSemaphoreGive(cs->_encoder_sem);
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                    continue;
+                }
+                jpeg_data = cs->_jpeg_out_buf;
+            }
+
+            /* Send part header + JPEG data */
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            int hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, jpeg_size,
+                                (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
+            if (httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
+                httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
+                if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+                    xSemaphoreGive(cs->_encoder_sem);
+                }
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                break;
+            }
             if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                 xSemaphoreGive(cs->_encoder_sem);
             }
+
+            /* Return buffer */
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-            break;
+
+            cs->_frame_count++;
+
+            /* Yield CPU to prevent SDIO/WiFi starvation */
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
-        if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
-            xSemaphoreGive(cs->_encoder_sem);
-        }
-
-        /* Return buffer */
-        ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-
-        /* FPS tracking — count frames only (no debug log) */
-        cs->_frame_count++;
-
-        /* Yield CPU to prevent SDIO/WiFi starvation.
-         * JPEG SW encoding of 800x800 RGB565 takes significant time
-         * without yielding, causing esp_hosted SDIO timeouts.
-         * A delay between frames gives SDIO task time to process WiFi TX. */
-        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     return ESP_OK;
 }
 
-/** Single JPEG snapshot handler */
+/** Single JPEG snapshot handler — runs detection inline, draws boxes, encodes */
 static esp_err_t capture_handler(httpd_req_t *req)
 {
     CameraStream *cs = (CameraStream *)req->user_ctx;
     struct v4l2_buffer buf;
     uint32_t jpeg_size;
-    uint8_t *jpeg_data;
     esp_err_t http_ret;
 
     memset(&buf, 0, sizeof(buf));
@@ -468,35 +618,46 @@ static esp_err_t capture_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    /* Invalidate cache, then copy to detect_in_buf and Q buffer quickly */
+    esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
+                    ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+
+    uint32_t copy_sz = buf.bytesused;
+    if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
+    memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
+    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);  // Release V4L2 buffer, reuse later
+
     httpd_resp_set_type(req, "image/jpeg");
 
-    if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-        jpeg_data = cs->_v4l2_bufs[buf.index];
-        jpeg_size = buf.bytesused;
-    } else {
-        if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
+    /* Run detection inline on the captured frame, then draw boxes on detect_in_buf */
+    if (cs->_detector) {
+        cs->_run_inference(cs->_detect_in_buf, copy_sz);
+        if (cs->_detect_available && !cs->_detect_results.empty()) {
+            for (auto &r : cs->_detect_results) {
+                cs->_draw_box_on_buffer(cs->_detect_in_buf,
+                                        cs->_cam_width, cs->_cam_height,
+                                        r.box[0], r.box[1], r.box[2], r.box[3],
+                                        0x07E0);  // Green in RGB565
+            }
         }
-        esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                                 cs->_v4l2_bufs[buf.index], buf.bytesused,
-                                                 cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
-        if (ret != ESP_OK) {
-            xSemaphoreGive(cs->_encoder_sem);
-            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-        jpeg_data = cs->_jpeg_out_buf;
     }
 
-    http_ret = httpd_resp_send(req, (char *)jpeg_data, jpeg_size);
-
-    if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+    /* Encode the detection buffer (with boxes) to JPEG */
+    if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    esp_err_t ret = example_encoder_process(cs->_encoder_handle,
+                                             cs->_detect_in_buf, copy_sz,
+                                             cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
+    if (ret != ESP_OK) {
         xSemaphoreGive(cs->_encoder_sem);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
     }
-    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+    xSemaphoreGive(cs->_encoder_sem);
+
+    http_ret = httpd_resp_send(req, (char *)cs->_jpeg_out_buf, jpeg_size);
 
     return http_ret;
 }
@@ -522,6 +683,31 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_Delete(root);
 
     httpd_resp_set_type(req, "application/json");
+    esp_err_t ret = httpd_resp_sendstr(req, json_str);
+    free(json_str);
+    return ret;
+}
+
+/** Detection info JSON handler — person count + max confidence */
+static esp_err_t detection_info_handler(httpd_req_t *req)
+{
+    CameraStream *cs = (CameraStream *)req->user_ctx;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "detection_enabled", cs->_detector != nullptr);
+
+    float max_conf = 0.0f;
+    for (auto &r : cs->_detect_results) {
+        if (r.score > max_conf) max_conf = r.score;
+    }
+    cJSON_AddNumberToObject(root, "person_count", cs->_detect_results.size());
+    cJSON_AddNumberToObject(root, "max_confidence", cs->_detect_available ? max_conf : 0.0);
+
+    char *json_str = cJSON_Print(root);
+    cJSON_Delete(root);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     esp_err_t ret = httpd_resp_sendstr(req, json_str);
     free(json_str);
     return ret;
@@ -619,6 +805,8 @@ static esp_err_t index_handler(httpd_req_t *req)
         "<span class='stat'>Frames: <b id='fr'>0</b></span>"
         "<label>Quality: <b id='ql'>30</b></label>"
         "<input type='range' id='qs' min='1' max='100' value='30' oninput=\"setQ(this.value)\">"
+        "<span class='stat'>People: <b id='ppl'>--</b></span>"
+        "<span class='stat'>Conf: <b id='conf'>--</b></span>"
         "<a href='http://' + window.location.hostname + ':81/stream'>Direct</a>"
         "<a href='/api/capture_image'>Shot</a>"
         "</div><script>"
@@ -630,7 +818,11 @@ static esp_err_t index_handler(httpd_req_t *req)
         "document.getElementById('fps').textContent=d.frame_rate;"
         "document.getElementById('fr').textContent=d.total_frames;"
         "document.getElementById('ql').textContent=d.jpeg_quality;"
-        "document.getElementById('qs').value=d.jpeg_quality}).catch(function(){})}"
+        "document.getElementById('qs').value=d.jpeg_quality}).catch(function(){})"
+        ";fetch('/api/get_detection_info').then(r=>r.json()).then(d=>{"
+        "document.getElementById('ppl').textContent=d.person_count;"
+        "document.getElementById('conf').textContent=d.detection_enabled?d.max_confidence.toFixed(3):'N/A'"
+        "}).catch(function(){})}"
         "setInterval(upd,3000);upd()</script></body></html>";
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, strlen(html));
@@ -657,11 +849,13 @@ bool CameraStream::_start_http_server(void)
     httpd_uri_t uri_capture = { .uri = "/api/capture_image", .method = HTTP_GET, .handler = capture_handler, .user_ctx = this };
     httpd_uri_t uri_quality = { .uri = "/api/set_quality", .method = HTTP_GET, .handler = set_quality_handler, .user_ctx = this };
     httpd_uri_t uri_config  = { .uri = "/api/set_camera_config", .method = HTTP_POST, .handler = set_camera_config_handler, .user_ctx = this };
+    httpd_uri_t uri_detect  = { .uri = "/api/get_detection_info", .method = HTTP_GET, .handler = detection_info_handler, .user_ctx = this };
     httpd_register_uri_handler(_httpd_80, &uri_index);
     httpd_register_uri_handler(_httpd_80, &uri_info);
     httpd_register_uri_handler(_httpd_80, &uri_capture);
     httpd_register_uri_handler(_httpd_80, &uri_quality);
     httpd_register_uri_handler(_httpd_80, &uri_config);
+    httpd_register_uri_handler(_httpd_80, &uri_detect);
 
     /* Port 81: MJPEG stream */
     config.server_port += 1;   // 80 → 81 (matches reference: config.server_port += 1)

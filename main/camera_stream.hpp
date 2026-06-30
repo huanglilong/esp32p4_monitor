@@ -3,7 +3,11 @@
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "dl_detect_define.hpp"
 #include <time.h>
+#include <list>
+
+class COCODetect;  // Forward declaration
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,6 +75,23 @@ public:
     uint32_t               _fps_total_bytes;   /* JPEG bytes in current FPS window */
     static constexpr int   FPS_LOG_INTERVAL_S = 2;  /* Log FPS every 2s */
 
+    /* Detection — inline, no separate task/buffer needed */
+    COCODetect                    *_detector;
+    uint8_t                      *_detect_in_buf;   /* Copy buffer for inference */
+    uint32_t                      _detect_in_size;
+    std::list<dl::detect::result_t> _detect_results;
+    mutable bool                 _detect_available;   /* Non-volatile: same task */
+    static constexpr float       PERSON_SCORE_THRESHOLD = 0.35f;
+    static constexpr int         DETECT_INTERVAL_FRAMES = 3;
+    static constexpr int         BOX_LINE_WIDTH = 2;
+
+    /* Draw helper */
+    void _draw_box_on_buffer(uint8_t *buffer, uint32_t width, uint32_t height,
+                             int x1, int y1, int x2, int y2, uint16_t color);
+
+    /* Run detection inference on given buffer (same task, no mutex needed) */
+    void _run_inference(uint8_t *buffer, uint32_t size);
+
 private:
     CameraStream();
     ~CameraStream();
@@ -78,13 +99,16 @@ private:
     CameraStream(const CameraStream&) = delete;
     CameraStream& operator=(const CameraStream&) = delete;
 
-    /* Internal */
     bool _init_video(void);
     void _deinit_video(void);
     bool _start_http_server(void);
     void _stop_http_server(void);
     void _init_mdns(void);
     void _deinit_mdns(void);
+
+    /* Detection: init/deinit */
+    bool _init_detection(void);
+    void _deinit_detection(void);
 
     /* HTTP server */
     httpd_handle_t         _httpd_80;          // Port 80: API + info
