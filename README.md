@@ -74,6 +74,10 @@
     |   SD_D3	|   GPIO42    |   83	    |   Pin 1	    |   Data 3 / SPI CS, 10k pull-up (also card detect) |
     |   SD_VDD	|   LDO_VO4  |   --	    |   Pin 4	    |   Card power supply   |
     |   SD_VSS	|   GND	    |   --	    |   Pin 3/6	    |   Ground  |
+- [ESP32-P4-WIFI6](https://docs.waveshare.net/ESP32-P4-WIFI6)
+  - ESP32-P4NRW32 + 32MB Nor Flash
+  - chip version v1.x and CPU frequency 360 MHz
+  - ESP32-C6-MINI-1U-H8 with SDIO connected to ESP32-P4 for Wi-Fi 6 and Bluetooth 5 (LE) Zigbee and Thread
 - ESP32P4:
   - [ESP32-P4 Datasheet](https://documentation.espressif.com/esp32-p4_datasheet_en.pdf)
   - [ESP32-P4 Technical Reference Manual](https://documentation.espressif.com/esp32-p4_technical_reference_manual_en.pdf)
