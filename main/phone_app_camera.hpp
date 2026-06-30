@@ -61,7 +61,4 @@ private:
 
     /* Draw helper: draw hollow rectangle directly on canvas buffer */
     void _draw_box_on_canvas(int x1, int y1, int x2, int y2, lv_color_t color);
-
-    /* PPA hardware accelerator — deprecated, unused */
-    void                       *_ppa_handle;
 };
