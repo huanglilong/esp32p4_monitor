@@ -462,6 +462,7 @@ void monitor_deinit_audio(void)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== ESP32-P4 Monitor Starting ===");
+    ESP_LOGI(TAG, "CONFIG_BOARD_WIFI6_TOUCH_LCD_4B=%d", CONFIG_BOARD_WIFI6_TOUCH_LCD_4B);
 
     /* 0. NVS init (for persistent settings) */
     esp_err_t nvs_err = nvs_flash_init();

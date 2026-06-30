@@ -30,6 +30,9 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "cJSON.h"
+#if !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#include "camera_stream.hpp"
+#endif
 
 static const char *TAG = "WebConfig";
 
@@ -40,6 +43,9 @@ static const char *TAG = "WebConfig";
 #define NVS_KEY_WIFI_SSID       "ssid"
 #define NVS_KEY_WIFI_PASS       "pass"
 #define NVS_KEY_VOLUME          "volume"
+#if !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#define NVS_KEY_CAM_STREAM      "cam_stream"
+#endif
 
 #define VOLUME_MIN              0
 #define VOLUME_MAX              100
@@ -158,6 +164,15 @@ static const char *WEB_UI_HTML =
 "<input type=\"password\" id=\"pass\" maxlength=\"64\" placeholder=\"WiFi password\">"
 "</div>"
 "<div class=\"card\">"
+"<h2>Camera Stream</h2>"
+"<div class=\"toggle-row\">"
+"<span id=\"cam_label\">Enable (WiFi required)</span>"
+"<label class=\"toggle\">"
+"<input type=\"checkbox\" id=\"cam_stream\" onchange=\"onCamToggle()\">"
+"<span class=\"slider\"></span></label></div>"
+"<div id=\"cam_status\" style=\"font-size:12px;color:#a0a0b0;margin-top:4px\"></div>"
+"</div>"
+"<div class=\"card\">"
 "<h2>Volume</h2>"
 "<div class=\"slider-container\">"
 "<input type=\"range\" id=\"volume\" min=\"0\" max=\"100\" value=\"60\" oninput=\"updateVol()\">"
@@ -179,9 +194,26 @@ static const char *WEB_UI_HTML =
 "document.getElementById('pass').value=j.pass||'';"
 "document.getElementById('volume').value=j.volume||60;"
 "document.getElementById('vol_val').textContent=j.volume||60;"
+"document.getElementById('cam_stream').checked=j.cam_stream!=0;"
+"let cs=document.getElementById('cam_status');"
+"cs.textContent=j.cam_running?'● Streaming active':'○ Stopped';"
+"cs.style.color=j.cam_running?'#4caf50':'#a0a0b0';"
 "updateUI()}catch(e){showStatus('Failed to load settings','error')}}"
 "function showStatus(msg,cls){let s=document.getElementById('status');"
 "s.textContent=msg;s.className=cls}"
+"async function onCamToggle(){"
+"let en=document.getElementById('cam_stream').checked;"
+"showStatus(en?'Starting camera stream...':'Stopping camera stream...','info');"
+"try{let r=await fetch('/api/camera_stream',{method:'POST',"
+"headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:en?1:0})});"
+"let j=await r.json();"
+"if(j.ok){document.getElementById('cam_stream').checked=j.enabled;"
+"let cs=document.getElementById('cam_status');"
+"cs.textContent=j.running?'● Streaming active':'○ Stopped';"
+"cs.style.color=j.running?'#4caf50':'#a0a0b0';"
+"showStatus(j.running?'Stream started':'Stream stopped','success')}"
+"else{showStatus(j.error||'Failed','error');loadStatus()}}"
+"catch(e){showStatus('Connection error','error');loadStatus()}}"
 "async function saveSettings(){"
 "let data={wifi_en:document.getElementById('wifi_en').checked?1:0,"
 "ssid:document.getElementById('ssid').value,"
@@ -249,10 +281,19 @@ static esp_err_t status_handler(httpd_req_t *req)
     nvs_get_str(NVS_KEY_WIFI_PASS, pass, sizeof(pass));
     int32_t wifi_en = nvs_get_i32_def(NVS_KEY_WIFI_EN, 0);
     int32_t volume  = nvs_get_i32_def(NVS_KEY_VOLUME, VOLUME_DEFAULT);
+#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+    /* LCD-4B: Camera Stream managed by Phone App, not web */
+    int32_t cam_en = 0;
+    bool cam_running = false;
+#else
+    int32_t cam_en  = nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0);
+    bool cam_running = CameraStream::instance().isRunning();
+#endif
 
     snprintf(json, sizeof(json),
-        "{\"wifi_en\":%ld,\"ssid\":\"%s\",\"pass\":\"%s\",\"volume\":%ld}",
-        wifi_en, ssid, pass, volume);
+        "{\"wifi_en\":%ld,\"ssid\":\"%s\",\"pass\":\"%s\",\"volume\":%ld,"
+        "\"cam_stream\":%ld,\"cam_running\":%s}",
+        wifi_en, ssid, pass, volume, cam_en, cam_running ? "true" : "false");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -386,6 +427,68 @@ static esp_err_t settings_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t camera_stream_handler(httpd_req_t *req)
+{
+#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+    /* LCD-4B: Camera Stream managed by Phone App, not available via web */
+    const char *resp = "{\"ok\":0,\"error\":\"Use Camera Stream App on the display\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+#else
+    char buf[128];
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    buf[received] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *j_enable = cJSON_GetObjectItem(root, "enable");
+    bool enable = (j_enable && j_enable->valueint != 0);
+
+    if (enable) {
+        /* Require WiFi connected to start camera stream */
+        if (!wifi_sta_is_connected()) {
+            const char *resp = "{\"ok\":0,\"error\":\"WiFi not connected\"}";
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+            cJSON_Delete(root);
+            return ESP_OK;
+        }
+        if (!CameraStream::instance().isRunning()) {
+            ESP_LOGI(TAG, "Starting camera stream...");
+            CameraStream::instance().start();
+        }
+    } else {
+        if (CameraStream::instance().isRunning()) {
+            ESP_LOGI(TAG, "Stopping camera stream...");
+            CameraStream::instance().stop();
+        }
+    }
+
+    /* Persist intent to NVS */
+    nvs_set_i32(NVS_KEY_CAM_STREAM, enable ? 1 : 0);
+
+    cJSON_Delete(root);
+
+    bool running = CameraStream::instance().isRunning();
+    char resp[128];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":1,\"enabled\":%s,\"running\":%s}",
+             enable ? "true" : "false", running ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+#endif /* !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B */
+}
+
 /*============================================================================
  * Task
  *============================================================================*/
@@ -410,6 +513,7 @@ static void web_config_task(void *arg)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
+    config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
     config.max_uri_handlers = 8;
     config.lru_purge_enable = true;
 
@@ -431,13 +535,26 @@ static void web_config_task(void *arg)
         .uri = "/api/settings", .method = HTTP_POST,
         .handler = settings_handler, .user_ctx = NULL
     };
+    httpd_uri_t uri_cam = {
+        .uri = "/api/camera_stream", .method = HTTP_POST,
+        .handler = camera_stream_handler, .user_ctx = NULL
+    };
 
     httpd_register_uri_handler(s_httpd, &uri_index);
     httpd_register_uri_handler(s_httpd, &uri_status);
     httpd_register_uri_handler(s_httpd, &uri_settings);
+    httpd_register_uri_handler(s_httpd, &uri_cam);
 
     ESP_LOGI(TAG, "Web config server started on port %d", WEB_CONFIG_PORT);
     s_running = true;
+
+#if !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+    /* Auto-start camera stream if NVS says it was enabled */
+    if (nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
+        ESP_LOGI(TAG, "NVS cam_stream=1, auto-starting camera stream...");
+        CameraStream::instance().start();
+    }
+#endif
 
     /* Idle — HTTP server runs in its own internal threads */
     while (1) {
