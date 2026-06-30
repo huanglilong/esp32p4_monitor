@@ -1,6 +1,6 @@
 # ESP32-P4 Monitor — 项目架构、FreeRTOS 调度与潜在问题分析
 
-> 生成日期: 2026-06-28 | ESP-IDF v6.0.1 | ESP32-P4NRW32
+> 生成日期: 2026-06-30 | ESP-IDF v6.0.1 | ESP32-P4NRW32
 
 ---
 
@@ -24,13 +24,13 @@
 
 ```
 app_main()
-├── NVS Flash Init (亮度加载)
+├── NVS Flash Init
+├── Boot WiFi Auto-Connect (NVS SSID/password → 后台连接)
 ├── MIPI DSI Display → ST7703 + GT911 → taskLVGL 创建
-├── ESP-Brookesia Phone UI (5 个 App 安装)
-├── SDMMC SD Card (SPI 模式, FAT)
-├── Audio Init (I2S + ES8311 + ES7210)
-└── Memory Monitor Loop (每 5s)
+├── ESP-Brookesia Phone UI (6 个 App 安装)
+└── Idle Loop (60s)
 ```
+SD 卡和音频 I2S 不在 app_main() 中初始化，由 Audio/Music App 按需初始化/释放 (引用计数)。
 
 ### 1.3 组件依赖
 
@@ -39,7 +39,11 @@ app_main()
 | `espressif/esp-brookesia` | 0.5.0 | Phone 桌面 UI 框架 |
 | `waveshare/esp32_p4_wifi6_touch_lcd_4b` | 2.0.0 | BSP 驱动 (显示/触摸/I2C) |
 | `espressif/esp_codec_dev` | 1.5.10 | ES8311/ES7210 Codec 设备层 |
-| `espressif/esp_cam_sensor` | 1.7.0 | OV5647 传感器驱动 |
+| `espressif/esp_cam_sensor` | 2.2.0 | OV5647 传感器驱动 |
+| `espressif/esp_video` | 2.2.0 | V4L2 视频接口 (Camera/CameraStream) |
+| `espressif/esp_new_jpeg` | 1.0.2 | SW JPEG 编码备选 |
+| `espressif/esp_driver_jpeg` | IDF | HW JPEG 编码 (P4 JPEG Codec) |
+| `espressif/esp_hosted` | 2.12.7 | ESP32-P4 ↔ C6 SDIO WiFi 传输 |
 | `espressif/esp_audio_simple_player` | 1.0.0 | ESP-GMF 音频播放管道 |
 | `espressif/esp-dl` | 3.3 | ESP 深度学习框架 |
 | `espressif/coco_detect` | 0.4 | COCO 检测模型 (YOLO11n) |
@@ -53,7 +57,8 @@ app_main()
 | 📷 Camera | `PhoneAppCamera` | OV5647 预览 + YOLO11n 人体检测 | MIPI CSI + ISP + NPU |
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 电平监控 + MP3 录音 | I2S RX + Shine Encoder |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器 (SD 卡) | ESP-GMF + ES8311 |
-| ⚙️ Settings | `PhoneAppSettings` | 音量/亮度 + WiFi 管理 | NVS + I2C Codec |
+| 🌐 Camera Stream | `PhoneAppCameraStream` | MJPEG 流 WiFi 推流 + Web UI | MIPI CSI + HW JPEG + HTTP |
+| ⚙️ Settings | `PhoneAppSettings` | 音量/亮度 + WiFi 管理 (后台保持) | NVS + I2C Codec |
 | 🎨 Squareline | `PhoneAppSquareline` | 内置 Squareline 示例 | 无 |
 
 ---
@@ -64,13 +69,14 @@ app_main()
 
 | # | 任务名 | 优先级 | 栈 | 核心 | 创建者 | 生命周期 | 周期/触发 |
 |---|--------|--------|-----|------|--------|----------|-----------|
-| 1 | `main` | 1 (默认) | 10KB | 0 | ESP-IDF | 永久 | 5s 循环 |
+| 1 | `main` | 1 (默认) | 10KB | 0 | ESP-IDF | 永久 | 60s 空闲 |
 | 2 | `taskLVGL` | 4 | 10KB | 1 | `esp_lvgl_port` | 永久 | 5ms timer |
-| 3 | `audio_echo` | 5 | 4KB | 0† | `PhoneAppAudio::run()` | App 打开→关闭 | 10ms 循环 |
+| 3 | `audio_echo` | 5 | 12KB | 0† | `PhoneAppAudio::run()` | App 打开→关闭 | 10ms 循环 |
 | 4 | `detect` | 2 | 16KB | **0** (固定) | `PhoneAppCamera::run()` | Camera App 打开→关闭 | 600ms |
 | 5 | `GMF task` | 5 | 4KB | 0 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
-| 6 | `wifi_scan` | 1 | 6KB | 0† | `Settings` (WiFi ON) | WiFi ON→OFF | 200ms 轮询 |
+| 6 | `wifi_scan` | 1 | 6KB | 0† | `Settings` (WiFi ON) / Boot | WiFi ON→OFF | 200ms 轮询 |
 | 7 | `wifi_conn` | 4 | 4KB | 0† | `Settings` (连接点击) | 一次性 | 15s 超时 |
+| 8 | `httpd` | 默认 | 6KB | 0† | `CameraStream` | Stream 打开→关闭 | 事件驱动 |
 
 > † 使用 `xTaskCreate` (未指定核心), FreeRTOS 调度到 core 0 或 core 1
 
@@ -112,14 +118,14 @@ Priority 1: main, wifi_scan          (后台)
 **初始化流程**:
 ```
 app_main()
-├── nvs_flash_init()        # NVS 分区初始化 (含擦除恢复)
-├── monitor_init_display()  # MIPI DSI + LVGL port → taskLVGL
-├── [NVS 亮度加载]          # 从 settings/brightness 读取并应用
-├── monitor_init_brookesia()# 5 个 App 安装 + clock timer
-├── monitor_init_sdcard()   # SPI SD 卡挂载
-├── monitor_init_audio()    # I2S Duplex + ES8311 + ES7210
-└── while(1) { heap 监控, 5s }
+├── nvs_flash_init()             # NVS 分区初始化 (含擦除恢复)
+├── bootWifiAutoConnect()        # 若 NVS 有 SSID/pass, 后台连接 WiFi
+├── monitor_init_display()       # MIPI DSI + LVGL port → taskLVGL
+├── [NVS 亮度加载]               # 从 settings/brightness 读取并应用
+├── monitor_init_brookesia()     # 6 个 App 安装 + clock timer
+└── while(1) { vTaskDelay(60s) } # 空闲循环
 ```
+SD/音频由 Audio/Music App 在 run() 中按需初始化 (monitor_init_sdcard / monitor_init_audio)，close() 中释放。使用引用计数确保多个 App 共享时不重复释放。
 
 **全局句柄** (被各 App 引用):
 | 变量 | 类型 | 用途 |
@@ -228,6 +234,31 @@ ES8311 Codec (I2S TX, 48kHz 16bit Stereo)
 - `wifi_conn` task (P4): 连接指定 AP → 等待 15s → 成功/失败处理
 - Lock 策略: `bsp_display_lock(0)` (非阻塞 try-lock) — 如果 LVGL 渲染中则跳过 UI 更新
 
+### 3.6 Camera Stream App (`phone_app_camera_stream.cpp` + `camera_stream.cpp`)
+
+**MJPEG 推流管道**:
+```
+OV5647 → MIPI CSI → V4L2 (esp_video) → HW JPEG Encoder (esp_driver_jpeg)
+    ↓ 800x800 RGBP @ ~10fps (VTS=4920)
+MJPEG Stream (port 81) + Web UI (port 80)
+    ↓ <img> + AJAX stats (分辨率/帧率/帧数/画质)
+Browser / Flutter App
+```
+
+**HTTP 架构**: 双端口 — 端口 80 (Web UI + `/api/*`), 端口 81 (MJPEG `/stream`)。
+
+### 3.7 esp_hosted (WiFi over SDIO) 稳定性
+
+ESP32-P4 通过 SDIO 4-bit 40MHz 连接 ESP32-C6 实现 WiFi。已知问题:
+
+| Issue | 状态 | 影响 |
+|-------|------|------|
+| [#167](https://github.com/espressif/esp-hosted-mcu/issues/167) | Open | C6 SLC DMA 同步 bug + CMD53 块模式死锁 |
+| [#184](https://github.com/espressif/esp-hosted-mcu/issues/184) | Closed | TCP 入站 100KB 后停滞 |
+| [#197](https://github.com/espressif/esp-hosted-mcu/issues/197) | Open | SDIO mempool 耗尽硬死锁 |
+
+**当前方案**: esp_hosted v2.12.7 + `OPTIMIZATION_RX_STREAMING` + `Q_SIZE=20` + `MEMPOOL_PREFER_SPIRAM`。v2.12.8+ 在 Waveshare 硬件上验证更快死锁。MJPEG 出站 (~98KB/s) 长期稳定。
+
 ---
 
 ## 4. 潜在 Bug 分析
@@ -321,7 +352,7 @@ if (!_detector) { ... }  // detector 已经 new 过了，不会是 nullptr
 
 ---
 
-### 4.5 🟡 中 — Camera 打开时 SD 卡状态不一致 (Camera App)
+### 4.5 🟡 中 — Camera 打开时 SD 卡状态不一致 (Camera App) ✅ 已修复 (SD 延迟初始化)
 
 **文件**: `main/phone_app_camera.cpp`, lines 152-157
 
@@ -738,3 +769,20 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 **问题**: OOM 时 `strdup` 返回 NULL，随后 `free(NULL)` 安全但 `lv_list_add_btn(NULL)` 及其他字符串访问崩溃。
 
 **修复** (2026-06-29): 加 null 检查，OOM 时跳过该文件。
+
+---
+
+### 第四轮分析 — 代码审计修复 (2026-06-30)
+
+对全项目 `main/*.cpp` + `main/*.hpp` 代码审计后，修复以下问题:
+
+| # | 严重度 | 文件 | 问题 | 修复 |
+|---|--------|------|------|------|
+| 1 | 🔴 | `main.cpp:354-360` | `s_codec_mutex` 在 codec open **之后**创建——music app 调用 `safe_set_volume` 时 crash | mutex 提前到 codec open 之前 |
+| 2 | 🔴 | `phone_app_audio.cpp:58-62` | 析构函数仅等 100ms → task 未退出时 use-after-free | 2s 等待 + force-kill + 清理 recording names |
+| 3 | 🔴 | `phone_app_audio.cpp:367-415` | 录音停止后 audio task 可能写已关闭的 `_record_file` | `_record_file=nullptr` 在 fclose 前 |
+| 4 | 🟡 | `phone_app_music.cpp:213` | 音量同步 LVGL timer 无句柄 → App 关闭后永久运行 | 保存句柄 + close() 删除 |
+| 5 | 🟡 | `phone_app_settings.cpp:186` | 状态刷新 timer 同样泄漏 | 保存句柄 + close() 删除 |
+| 6 | 🟡 | `phone_app_music.cpp:454-461` | `_asp_output_cb` 无 mutex → 与音量调节并发竞争 codec | 加 `s_codec_mutex` 保护 |
+| 7 | 🟢 | `phone_app_camera.cpp:407-426` | `_cam_buffer` 跨核并发 (timer core1 / detect core0) 画面撕裂 | 标记为非关键 (影响单帧) |
+| 8 | 🟢 | `phone_app_camera.cpp:329-336` | PPA client 注册但从未使用 (307KB PSRAM 浪费) | 标记为已知 TODO |
