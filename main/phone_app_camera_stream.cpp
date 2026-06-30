@@ -258,8 +258,8 @@ void PhoneAppCameraStream::_update_stream_info(void)
         uint32_t bytes_total = cs._fps_total_bytes;
         (void)bytes_total;  /* Used for display */
 
-        /* Calculate FPS since last update */
-        _fps = frames_since / (UI_REFRESH_MS / 1000);
+        /* Calculate FPS since last update (multiply first to avoid int division truncation) */
+        _fps = (frames_since * 1000) / UI_REFRESH_MS;
         _prev_frame_count = frame_count;
 
         lv_label_set_text_fmt(_label_stream_info,
