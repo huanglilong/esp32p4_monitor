@@ -58,6 +58,10 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
 PhoneAppMusic::~PhoneAppMusic()
 {
     _stop();
+    /* Defensive cleanup: free file names if close() wasn't called */
+    for (int i = 0; i < _track_count; i++) {
+        if (_file_names[i]) { free(_file_names[i]); _file_names[i] = nullptr; }
+    }
 }
 
 bool PhoneAppMusic::run(void)
