@@ -17,6 +17,7 @@
 #include "sdmmc_cmd.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_ldo_regulator.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
@@ -457,6 +458,105 @@ void monitor_deinit_audio(void)
 }
 
 /*============================================================================
+ * SD Card WiFi Config (first-boot fallback)
+ * If NVS has no WiFi SSID, try reading wifi.txt from SD card.
+ *============================================================================*/
+static void boot_sdcard_wifi_config(void)
+{
+    /* Check if WiFi SSID already exists in NVS */
+    nvs_handle_t nvs_h;
+    esp_err_t err = nvs_open("settings", NVS_READONLY, &nvs_h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        /* Namespace doesn't exist yet — no SSID stored, proceed to SD */
+        ESP_LOGI(TAG, "No NVS settings namespace, trying SD wifi.txt...");
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS open failed: %s", esp_err_to_name(err));
+        return;
+    } else {
+        char ssid[33] = {};
+        size_t len = sizeof(ssid);
+        nvs_get_str(nvs_h, "ssid", ssid, &len);
+        nvs_close(nvs_h);
+        if (strlen(ssid) > 0) {
+            ESP_LOGI(TAG, "WiFi SSID already in NVS (%s), skip SD wifi.txt", ssid);
+            return;
+        }
+    }
+
+    ESP_LOGI(TAG, "No WiFi SSID in NVS, trying SD card wifi.txt...");
+
+    /* Mount SD via native SDMMC Slot 0 (same as BSP, works before WiFi takes Slot 1) */
+    ESP_LOGI(TAG, "Mounting SD card (SDMMC Slot 0)...");
+    sdmmc_card_t *sd_card = NULL;
+    {
+        esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+            .format_if_mount_failed = false,
+            .max_files = 2,
+            .allocation_unit_size = 16 * 1024,
+        };
+        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+        host.slot = SDMMC_HOST_SLOT_0;
+        host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+        sdmmc_slot_config_t slot_cfg = SDMMC_SLOT_CONFIG_DEFAULT();
+        slot_cfg.width = 1;
+        slot_cfg.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+        esp_err_t ret = esp_vfs_fat_sdmmc_mount(SDMMC_MOUNT_POINT, &host,
+                                                 &slot_cfg, &mount_cfg, &sd_card);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SD mount failed (%s), cannot read wifi.txt", esp_err_to_name(ret));
+            return;
+        }
+    }
+
+    FILE *f = fopen(SDMMC_MOUNT_POINT "/wifi.txt", "r");
+    if (!f) {
+        ESP_LOGW(TAG, "wifi.txt not found on SD card");
+        if (sd_card) esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
+        return;
+    }
+
+    char line[128];
+    char file_ssid[33] = {};
+    char file_pass[65] = {};
+
+    while (fgets(line, sizeof(line), f)) {
+        /* Trim trailing newline */
+        size_t sl = strlen(line);
+        while (sl > 0 && (line[sl - 1] == '\n' || line[sl - 1] == '\r'))
+            line[--sl] = '\0';
+
+        if (strncmp(line, "ssid:", 5) == 0) {
+            const char *val = line + 5;
+            while (*val == ' ' || *val == '\t') val++;
+            strlcpy(file_ssid, val, sizeof(file_ssid));
+        } else if (strncmp(line, "password:", 9) == 0) {
+            const char *val = line + 9;
+            while (*val == ' ' || *val == '\t') val++;
+            strlcpy(file_pass, val, sizeof(file_pass));
+        }
+    }
+    fclose(f);
+    esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
+
+    if (strlen(file_ssid) == 0) {
+        ESP_LOGW(TAG, "wifi.txt missing ssid field");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Read from wifi.txt: ssid=%s, pass_len=%d", file_ssid, (int)strlen(file_pass));
+
+    /* Save to NVS */
+    if (nvs_open("settings", NVS_READWRITE, &nvs_h) != ESP_OK) return;
+    nvs_set_str(nvs_h, "ssid", file_ssid);
+    if (strlen(file_pass) > 0)
+        nvs_set_str(nvs_h, "pass", file_pass);
+    nvs_set_i32(nvs_h, "wifi_en", 1);
+    nvs_commit(nvs_h);
+    nvs_close(nvs_h);
+    ESP_LOGI(TAG, "WiFi config saved to NVS from SD wifi.txt");
+}
+
+/*============================================================================
  * Main
  *============================================================================*/
 extern "C" void app_main(void)
@@ -473,13 +573,17 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(nvs_err);
     ESP_LOGI(TAG, "NVS initialized");
 
-    /* 0b. Boot WiFi auto-connect: connect if SSID/password stored in NVS */
-    PhoneAppSettings::bootWifiAutoConnect();
-
 #if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
-    /* 1. MIPI DSI Display */
+    /* 1. MIPI DSI Display (BSP enables LDO VO4 for SD power) */
     lv_display_t *disp = NULL;
     monitor_init_display(&disp);
+
+    /* 1b. If NVS has no WiFi SSID, try reading wifi.txt from SD card.
+     * Must be AFTER display init (BSP powers SD slot). */
+    boot_sdcard_wifi_config();
+
+    /* 1c. Boot WiFi auto-connect: connect if SSID/password stored in NVS */
+    PhoneAppSettings::bootWifiAutoConnect();
 
     /* Apply saved brightness from NVS (if available) */
     {
@@ -505,6 +609,20 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "=== Core peripherals initialized (SD/Audio deferred to apps) ===");
     web_config_server_start();
 #else
+    /* WIFI6: no BSP display init — enable LDO VO4 manually for SD power */
+    {
+        esp_ldo_channel_config_t ldo_cfg = { .chan_id = 4, .voltage_mv = 3300 };
+        esp_ldo_channel_handle_t ldo_chan = NULL;
+        esp_ldo_acquire_channel(&ldo_cfg, &ldo_chan);
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    /* Try SD card wifi.txt if NVS has no SSID */
+    boot_sdcard_wifi_config();
+
+    /* Boot WiFi auto-connect */
+    PhoneAppSettings::bootWifiAutoConnect();
+
     ESP_LOGI(TAG, "=== WIFI6 board (no display) — WiFi + Web Config ===");
     web_config_server_start();
 #endif
