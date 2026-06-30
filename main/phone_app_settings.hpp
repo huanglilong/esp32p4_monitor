@@ -121,6 +121,7 @@ private:
     static EventGroupHandle_t _wifi_event_group;
     static bool              _wifi_initialized;  // one-time netif/wifi init done
     volatile bool            _wifi_scanning;
+    volatile bool            _wifi_connecting;     // Guard against multiple connect tasks
 
     static constexpr int   WIFI_SCAN_MAX = 20;
     static constexpr int   TASK_STACK_WIFI_SCAN = 6 * 1024;

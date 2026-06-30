@@ -51,7 +51,8 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     _scr_wifi_list(nullptr), _list_wifi(nullptr), _spinner_wifi(nullptr),
     _scr_wifi_pass(nullptr), _label_pass_ssid(nullptr),
 
-    _wifi_scanning(false)
+    _wifi_scanning(false),
+    _wifi_connecting(false)
 {
     memset(_wifi_ssid, 0, sizeof(_wifi_ssid));
     memset(_wifi_password, 0, sizeof(_wifi_password));
@@ -887,6 +888,7 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
             app->processWifiConnect(WIFI_CONNECT_HIDE);
         }
     }
+    app->_wifi_connecting = false;
     vTaskDelete(NULL);
 }
 
@@ -990,7 +992,8 @@ void PhoneAppSettings::onWifiItemClicked(lv_event_t *e)
 void PhoneAppSettings::onKeyboardEnterClicked(lv_event_t *e)
 {
     PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
-    if (!app) return;
+    if (!app || app->_wifi_connecting) return;  // Guard against multiple connect tasks
+    app->_wifi_connecting = true;
     xTaskCreate(wifiConnectTaskHandler, "wifi_conn", TASK_STACK_WIFI_CONNECT, app, TASK_PRIO_WIFI_CONNECT, NULL);
 }
 
