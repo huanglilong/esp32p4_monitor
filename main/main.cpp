@@ -33,6 +33,7 @@
 #include "phone_app_music.hpp"
 #include "phone_app_settings.hpp"
 #include "phone_app_camera_stream.hpp"
+#include "web_config_server.hpp"
 #include "example_config.h"
 
 static const char *TAG = "monitor";
@@ -501,8 +502,10 @@ extern "C" void app_main(void)
 
     /* 4. SDMMC SD Card & Audio — deferred to Music/Audio apps */
     ESP_LOGI(TAG, "=== Core peripherals initialized (SD/Audio deferred to apps) ===");
+    web_config_server_start();
 #else
-    ESP_LOGI(TAG, "=== WIFI6 board (no display) — WiFi + SD/Audio available ===");
+    ESP_LOGI(TAG, "=== WIFI6 board (no display) — WiFi + Web Config ===");
+    web_config_server_start();
 #endif
 
     /* Idle loop */

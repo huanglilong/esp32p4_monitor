@@ -9,6 +9,8 @@
 - **SDMMC** SD 卡 (SDSPI 1-bit 模式, SPI 20MHz, FAT 文件系统)
 - **音频输入/输出** (ES8311 DAC + ES7210 ADC, I2S)
 - **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
+- **多板支持** `CONFIG_BOARD_WIFI6_TOUCH_LCD_4B` 切换 LCD-4B / WIFI6 基板
+- **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS
 
 ### ESP-Brookesia App 列表
 
@@ -38,10 +40,12 @@ esp32p4_monitor/
 ├── main/
 │   ├── CMakeLists.txt          # 主组件编译配置 (C++)
 │   ├── idf_component.yml       # 组件依赖声明
-│   ├── Kconfig.projbuild       # 项目 Kconfig 菜单
+│   ├── Kconfig.projbuild           # 项目 Kconfig 菜单 (含 BOARD_TYPE)
 │   ├── example_config.h        # 引脚和参数宏定义
-│   ├── main.cpp                # 主程序 (C++): BSP 外设初始化 + 5 个 App 安装
-│   ├── phone_app_camera.hpp    # Camera App 头文件
+│   ├── main.cpp                    # 主程序 (C++): 多板支持, 按需初始化
+│   ├── web_config_server.hpp       # Web 配置服务器头文件
+│   ├── web_config_server.cpp       # Web 配置服务器 (HTTP :8080, WiFi/音量设置)
+│   ├── phone_app_camera.hpp        # Camera App 头文件
 │   ├── phone_app_camera.cpp    # Camera App (V4L2 + OV5647 sensor + ESP-DL 人体检测)
 │   ├── phone_app_audio.hpp     # Audio App 头文件
 │   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + MP3 录音)
@@ -53,6 +57,10 @@ esp32p4_monitor/
 │   ├── phone_app_camera_stream.cpp # Camera Stream App (WiFi状态 + MJPEG切换 + 系统监控)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件
 │   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → HTTP MJPEG + mDNS)
+├── doc/
+│   ├── waveshare_esp32p4_wifi_vs_lcd_4b.md  # 两板外设接线对比
+│   ├── ESP32-P4-WIFI6-datasheet.pdf          # WIFI6 基板原理图
+│   └── ESP32-P4-WIFI6-Touch-LCD-4B.pdf       # LCD-4B 原理图
 ├── components/
 │   ├── espressif__esp_lvgl_port/   # 本地补丁版 esp_lvgl_port
 │   └── example_video_common/       # V4L2 视频初始化 + JPEG 编码 (NEW)
@@ -438,6 +446,27 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 
 > **已知风险**: 高带宽入站 TCP (>200KB/s) 在 v2.12.7 仍可能触发死锁 (#197)。Camera Stream 为出站 (MJPEG ~98KB/s @ 7fps), 验证稳定。
 
+### 16. 多板支持 (CONFIG_BOARD_WIFI6_TOUCH_LCD_4B)
+
+通过 Kconfig `BOARD_TYPE` 选择目标开发板:
+
+| 配置 | 板子 | 显示/LVGL | 音频 Codec | Web 配置 |
+|------|------|:---:|------|:---:|
+| `BOARD_WIFI6_TOUCH_LCD_4B` (默认) | LCD-4B | ✅ Phone UI | ES8311(0x30)+ES7210(0x80) | ✅ 8080 |
+| `BOARD_WIFI6` | WIFI6 基板 | ❌ 无屏幕 | ES8311(0x18) 单芯片 | ✅ 8080 |
+
+差异点详见 `doc/waveshare_esp32p4_wifi_vs_lcd_4b.md`。
+
+### 17. Web 配置服务器 (web_config_server)
+
+端口 **8080**，提供网页设置界面:
+- **WiFi**: SSID / 密码 / 开关
+- **音量**: 滑条 0-100
+- **连接验证**: 点 Save 后先尝试连接，成功才写 NVS，失败回连旧 WiFi
+- **WiFi 门控**: 任务等待 `IP_EVENT_STA_GOT_IP` 后才启动 HTTP，WiFi 未连时不占用 socket
+
+> **已知限制**: 首次启动 NVS 为空时无法配网 (AP 模式因 esp-hosted SDIO 限制不稳定)。需预先通过 UART 烧录或 Settings App (LCD-4B) 写入 WiFi 凭据。
+
 ## 构建和烧录
 
 ```bash
@@ -448,6 +477,10 @@ source ~/.espressif/v6.0.1/esp-idf/export.sh
 cd esp32p4_monitor
 idf.py set-target esp32p4
 idf.py build
+
+# 切换板子 (WIFI6 无屏)
+# idf.py menuconfig → Monitor Example Configuration → Select Board Type → ESP32-P4-WIFI6
+# 或修改 sdkconfig.defaults: # CONFIG_BOARD_WIFI6_TOUCH_LCD_4B is not set
 
 # 烧录
 idf.py -p /dev/ttyUSB0 flash monitor
@@ -471,8 +504,12 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **CPU/PSRAM 实时监控日志 (1s 间隔, FreeRTOS 运行时统计)**
 - [x] **SD/音频延迟初始化 + 引用计数**
 - [x] **esp_cam_sensor 升级 1.7.0 → 2.2.0**
+- [x] **多板支持: CONFIG_BOARD_WIFI6_TOUCH_LCD_4B + WIFI6 无屏模式**
+- [x] **Web 配置服务器 (端口 8080, WiFi/音量网页设置, connect-before-save)**
+- [x] **WiFi 门控启动: web_config_task 等待 STA_GOT_IP 才启 HTTP**
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
 - [ ] Camera App 回放/录制功能
+- [ ] **WIFI6 无屏配网**: 首次启动 NVS 为空时需要 WiFi AP 模式配网。当前 esp-hosted SDIO 不支持稳定 SoftAP (客户端连接时 SDIO 缓冲区溢出 → C6 崩溃)。需修复 C6 SDIO 驱动或通过其他方式配网（UART CLI / BLE provisioning）。**当前假定 NVS 已有 WiFi SSID/密码**。
 - [x] Audio App Speaker 输出功能 (需解决回声消除)
 - [x] Audio App MP3 录音 (Shine encoder, SD 卡)
 - [x] Music App LVGL 线程安全 (GMF 回调加 lvgl_port_lock)
