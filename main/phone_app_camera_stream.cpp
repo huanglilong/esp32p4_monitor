@@ -337,11 +337,11 @@ void PhoneAppCameraStream::_wifi_event_handler(void *arg, esp_event_base_t event
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(TAG, "WiFi DISCONNECT event — stopping stream if active");
+        /* Stop camera stream (safe to call from event context).
+         * LVGL switch state will be updated by UI timer (_update_wifi_status),
+         * which runs in LVGL context and already handles the disconnect case. */
         if (CameraStream::instance().isRunning()) {
             CameraStream::instance().stop();
-            if (app->_sw_cam_stream) {
-                lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
-            }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)event_data;
