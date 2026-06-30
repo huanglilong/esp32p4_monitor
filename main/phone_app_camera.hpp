@@ -62,8 +62,6 @@ private:
     /* Draw helper: draw hollow rectangle directly on canvas buffer */
     void _draw_box_on_canvas(int x1, int y1, int x2, int y2, lv_color_t color);
 
-    /* PPA hardware accelerator for image resize (RGB888 800x→320x) */
-    void                       *_ppa_handle;         // ppa_client_handle_t
-    void                       *_ppa_buf;            // PPA output buffer (320x320x3 RGB888)
-    size_t                      _ppa_buf_size;
+    /* PPA hardware accelerator — deprecated, unused */
+    void                       *_ppa_handle;
 };

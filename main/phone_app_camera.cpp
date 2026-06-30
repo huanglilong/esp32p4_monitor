@@ -16,7 +16,6 @@ extern "C" {
 #include "coco_detect.hpp"
 #include "camera_stream.hpp"
 #include "dl_image_define.hpp"
-#include "dl_image_ppa.hpp"
 
 #include <cstring>
 
@@ -38,8 +37,7 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     _cam_canvas(nullptr), _refresh_timer(nullptr), _btn_back(nullptr),
     _cam_running(false),
     _detector(nullptr),
-    _detect_available(false), _detect_task_handle(nullptr), _detect_mutex(nullptr),
-    _ppa_handle(nullptr), _ppa_buf(nullptr), _ppa_buf_size(0)
+    _detect_available(false), _detect_task_handle(nullptr), _detect_mutex(nullptr)
 {
 }
 
@@ -321,23 +319,8 @@ bool PhoneAppCamera::_init_detection(void)
     /* Create COCODetect instance (YOLO11n 320x320 for P4) */
     _detector = new COCODetect(COCODetect::YOLO11N_320_S8_V1, true);  // lazy load
 
-    /* Register PPA SRM client for hardware-accelerated image resize */
-    ppa_client_config_t ppa_cfg = {PPA_OPERATION_SRM, 0, PPA_DATA_BURST_LENGTH_128};
-    ESP_ERROR_CHECK(ppa_register_client(&ppa_cfg, (ppa_client_handle_t *)&_ppa_handle));
-    ESP_LOGI(TAG, "PPA SRM client registered");
-
-    /* Allocate PPA output buffer (320x320 RGB888) */
-    _ppa_buf_size = 320 * 320 * 3;
-    _ppa_buf = dl::image::alloc_ppa_outbuf(_ppa_buf_size);
-    if (!_ppa_buf) {
-        ESP_LOGE(TAG, "Failed to allocate PPA output buffer, falling back to CPU resize");
-        ppa_unregister_client((ppa_client_handle_t)_ppa_handle);
-        _ppa_handle = nullptr;
-    }
     if (!_detector) {
         ESP_LOGE(TAG, "Failed to create COCODetect instance");
-        if (_ppa_buf) { free(_ppa_buf); _ppa_buf = nullptr; }
-        if (_ppa_handle) { ppa_unregister_client((ppa_client_handle_t)_ppa_handle); _ppa_handle = nullptr; }
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
         return false;
@@ -351,8 +334,6 @@ bool PhoneAppCamera::_init_detection(void)
         ESP_LOGE(TAG, "Failed to create detection task");
         delete _detector;
         _detector = nullptr;
-        if (_ppa_buf) { free(_ppa_buf); _ppa_buf = nullptr; }
-        if (_ppa_handle) { ppa_unregister_client((ppa_client_handle_t)_ppa_handle); _ppa_handle = nullptr; }
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
         return false;
@@ -372,16 +353,6 @@ void PhoneAppCamera::_deinit_detection(void)
     if (_detector) {
         delete _detector;
         _detector = nullptr;
-    }
-
-    /* Free PPA output buffer and deregister client */
-    if (_ppa_buf) {
-        free(_ppa_buf);
-        _ppa_buf = nullptr;
-    }
-    if (_ppa_handle) {
-        ppa_unregister_client((ppa_client_handle_t)_ppa_handle);
-        _ppa_handle = nullptr;
     }
 
     /* Delete mutex */
@@ -414,8 +385,7 @@ void PhoneAppCamera::_detection_task(void *arg)
          * Invalidate CPU cache to see fresh data (PSRAM needs explicit sync on P4). */
         esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* PPA does NOT support RGB565→RGB888 resize.
-         * Let COCODetect's built-in CPU preprocessor handle resize + format conversion. */
+        /* COCODetect's built-in CPU preprocessor handles resize + format conversion. */
         dl::image::img_t img = {
             .data = app->_cam_buffer,
             .width = (uint16_t)app->_cam_width,
