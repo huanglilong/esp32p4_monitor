@@ -30,6 +30,7 @@
 #include "phone_app_audio.hpp"
 #include "phone_app_music.hpp"
 #include "phone_app_settings.hpp"
+#include "phone_app_camera_stream.hpp"
 #include "example_config.h"
 
 static const char *TAG = "monitor";
@@ -37,8 +38,10 @@ static const char *TAG = "monitor";
 /* Forward declarations */
 static void monitor_init_display(lv_display_t **disp);
 static void monitor_init_brookesia(lv_display_t *disp);
-void monitor_init_sdcard(void);
-static void monitor_init_audio(void);
+bool monitor_init_sdcard(void);
+void monitor_deinit_sdcard(void);
+void monitor_init_audio(void);
+void monitor_deinit_audio(void);
 static void on_clock_update_timer_cb(struct _lv_timer_t *t);
 
 /* LVGL port config — pin to core 1 (core 0 reserved for detection/NPU inference) */
@@ -60,6 +63,10 @@ SemaphoreHandle_t s_codec_mutex = NULL;           // Protect concurrent codec ac
 
 /* SD card */
 sdmmc_card_t *s_card = NULL;
+static int s_sdcard_refcount = 0;
+
+/* Audio reference counting: shared by Audio and Music apps */
+static int s_audio_refcount = 0;
 
 /*============================================================================
  * MIPI DSI Display + ESP-Brookesia
@@ -142,6 +149,10 @@ static void monitor_init_brookesia(lv_display_t *disp)
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_settings, "Create settings app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_settings) >= 0), "Install settings app failed");
 
+    PhoneAppCameraStream *app_cam_stream = new PhoneAppCameraStream(false, false);
+    ESP_BROOKESIA_CHECK_NULL_EXIT(app_cam_stream, "Create camera stream app failed");
+    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_cam_stream) >= 0), "Install camera stream app failed");
+
     lv_timer_create(on_clock_update_timer_cb, 1000, phone);
     bsp_display_unlock();
     ESP_LOGI(TAG, "ESP-Brookesia Phone UI initialized");
@@ -164,10 +175,16 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t)
  * SD Card (SPI mode — SDMMC slot 0 blocked by esp_hosted C6 WiFi on slot 1)
  * SPI pins: CS=GPIO42(D3), MOSI=GPIO44(CMD), SCLK=GPIO43(CLK), MISO=GPIO39(D0)
  *============================================================================*/
-static bool s_spi_bus_initialized = false;
 
-void monitor_init_sdcard(void)
+bool monitor_init_sdcard(void)
 {
+    /* Already initialized — just bump refcount */
+    if (s_sdcard_refcount > 0) {
+        s_sdcard_refcount++;
+        ESP_LOGI(TAG, "SD card already initialized (refcount=%d)", s_sdcard_refcount);
+        return true;
+    }
+
     esp_err_t ret;
     ESP_LOGI(TAG, "Initializing SD card via SPI...");
 
@@ -185,37 +202,67 @@ void monitor_init_sdcard(void)
     slot_config.gpio_cs   = GPIO_NUM_42;  /* D3 → CS */
     slot_config.host_id   = SPI2_HOST;
 
-    if (!s_spi_bus_initialized) {
-        spi_bus_config_t bus_cfg = {
-            .mosi_io_num = GPIO_NUM_44,  /* CMD → MOSI (DI) */
-            .miso_io_num = GPIO_NUM_39,  /* D0  → MISO (DO) */
-            .sclk_io_num = GPIO_NUM_43,  /* CLK → SCLK */
-            .quadwp_io_num = -1,
-            .quadhd_io_num = -1,
-            .max_transfer_sz = 4000,
-        };
-        ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
-            return;
-        }
-        s_spi_bus_initialized = true;
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = GPIO_NUM_44,  /* CMD → MOSI (DI) */
+        .miso_io_num = GPIO_NUM_39,  /* D0  → MISO (DO) */
+        .sclk_io_num = GPIO_NUM_43,  /* CLK → SCLK */
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4000,
+    };
+    ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
+        return false;
     }
 
     ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &s_card);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SD card mount failed (%s), continuing without SD", esp_err_to_name(ret));
-        return;
+        spi_bus_free(SPI2_HOST);
+        return false;
     }
+
     ESP_LOGI(TAG, "SD card mounted at %s", mount_point);
     sdmmc_card_print_info(stdout, s_card);
+    s_sdcard_refcount = 1;
+    return true;
+}
+
+void monitor_deinit_sdcard(void)
+{
+    if (s_sdcard_refcount <= 0) {
+        ESP_LOGW(TAG, "SD card refcount already 0, skipping deinit");
+        return;
+    }
+    s_sdcard_refcount--;
+    if (s_sdcard_refcount > 0) {
+        ESP_LOGI(TAG, "SD card still in use (refcount=%d), skipping deinit", s_sdcard_refcount);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Deinitializing SD card...");
+    if (s_card) {
+        esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, s_card);
+        s_card = NULL;
+    }
+    spi_bus_free(SPI2_HOST);
+    ESP_LOGI(TAG, "SD card deinitialized");
 }
 
 /*============================================================================
  * Audio I2S (ES8311 DAC + ES7210 ADC)
  *============================================================================*/
-static void monitor_init_audio(void)
+
+void monitor_init_audio(void)
 {
+    /* Already initialized — just bump refcount */
+    if (s_audio_refcount > 0) {
+        s_audio_refcount++;
+        ESP_LOGI(TAG, "Audio already initialized (refcount=%d)", s_audio_refcount);
+        return;
+    }
+
     ESP_LOGI(TAG, "Initializing audio (ES8311 + ES7210)...");
 
     /* Enable PA GPIO 53 (critical for speaker output) */
@@ -311,6 +358,54 @@ static void monitor_init_audio(void)
 
     ESP_LOGI(TAG, "Audio initialized: ES8311 + ES7210, vol=%d", EXAMPLE_VOICE_VOLUME);
     s_codec_mutex = xSemaphoreCreateMutex();
+    s_audio_refcount = 1;
+}
+
+void monitor_deinit_audio(void)
+{
+    if (s_audio_refcount <= 0) {
+        ESP_LOGW(TAG, "Audio refcount already 0, skipping deinit");
+        return;
+    }
+    s_audio_refcount--;
+    if (s_audio_refcount > 0) {
+        ESP_LOGI(TAG, "Audio still in use (refcount=%d), skipping deinit", s_audio_refcount);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Deinitializing audio...");
+
+    /* Close and delete codec devices */
+    if (s_codec_handle) {
+        esp_codec_dev_close(s_codec_handle);
+        esp_codec_dev_delete(s_codec_handle);
+        s_codec_handle = NULL;
+    }
+    if (s_codec_mic_handle) {
+        esp_codec_dev_close(s_codec_mic_handle);
+        esp_codec_dev_delete(s_codec_mic_handle);
+        s_codec_mic_handle = NULL;
+    }
+
+    /* Delete I2S channels (i2s_del_channel handles disable internally) */
+    if (s_tx_handle) {
+        i2s_del_channel(s_tx_handle);
+        s_tx_handle = NULL;
+    }
+    if (s_rx_handle) {
+        i2s_del_channel(s_rx_handle);
+        s_rx_handle = NULL;
+    }
+
+    /* Disable PA (speaker amplifier) */
+    gpio_set_level((gpio_num_t)53, 0);
+
+    if (s_codec_mutex) {
+        vSemaphoreDelete(s_codec_mutex);
+        s_codec_mutex = NULL;
+    }
+
+    ESP_LOGI(TAG, "Audio deinitialized");
 }
 
 /*============================================================================
@@ -353,16 +448,11 @@ extern "C" void app_main(void)
     /* 3. MIPI CSI Camera - available via Camera app on launcher */
     /* (Camera init is handled by PhoneAppCamera, not here) */
 
-    /* 4. SDMMC SD Card */
-    monitor_init_sdcard();
+    /* 4. SDMMC SD Card & Audio — deferred to Music/Audio apps */
+    ESP_LOGI(TAG, "=== Core peripherals initialized (SD/Audio deferred to apps) ===");
 
-    /* 5. Audio I2S (ES8311 + ES7210) */
-    monitor_init_audio();
-
-    ESP_LOGI(TAG, "=== All peripherals initialized ===");
-
-    /* Memory monitor loop */
+    /* Idle loop */
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }

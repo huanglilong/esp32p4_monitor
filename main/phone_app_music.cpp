@@ -13,6 +13,12 @@
 
 static const char *TAG = "MusicApp";
 
+/* External peripheral init/deinit from main.cpp */
+extern bool monitor_init_sdcard(void);
+extern void monitor_deinit_sdcard(void);
+extern void monitor_init_audio(void);
+extern void monitor_deinit_audio(void);
+
 extern esp_codec_dev_handle_t s_codec_handle;
 extern SemaphoreHandle_t s_codec_mutex;
 static inline void safe_set_volume(int vol) {
@@ -56,6 +62,15 @@ PhoneAppMusic::~PhoneAppMusic()
 bool PhoneAppMusic::run(void)
 {
     ESP_LOGI(TAG, "Music app starting...");
+
+    /* Init audio I2S + DAC (speaker output) */
+    monitor_init_audio();
+
+    /* Init SD card for music files */
+    if (!monitor_init_sdcard()) {
+        ESP_LOGW(TAG, "SD card not available, music app may have no files");
+    }
+
     lv_obj_t *screen = lv_scr_act();
 
     /* Back button */
@@ -285,6 +300,11 @@ bool PhoneAppMusic::close(void)
         esp_audio_simple_player_destroy(_asp_handle);
         _asp_handle = nullptr;
     }
+
+    /* Deinit audio and SD card — release DMA/PSRAM resources */
+    monitor_deinit_audio();
+    monitor_deinit_sdcard();
+
     ESP_LOGI(TAG, "Music app closed");
     return true;
 }

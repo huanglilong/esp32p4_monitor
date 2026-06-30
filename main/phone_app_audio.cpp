@@ -11,6 +11,12 @@
 
 static const char *TAG = "PhoneAppAudio";
 
+/* External peripheral init/deinit from main.cpp */
+extern bool monitor_init_sdcard(void);
+extern void monitor_deinit_sdcard(void);
+extern void monitor_init_audio(void);
+extern void monitor_deinit_audio(void);
+
 /* External audio handles from main.cpp */
 extern i2s_chan_handle_t s_rx_handle;              // I2S RX for mic
 
@@ -59,6 +65,13 @@ PhoneAppAudio::~PhoneAppAudio()
 bool PhoneAppAudio::run(void)
 {
     ESP_LOGI(TAG, "Audio app starting...");
+
+    /* Init audio I2S + codecs (mic + speaker) */
+    monitor_init_audio();
+
+    /* Init SD card for recording storage */
+    monitor_init_sdcard();
+
     lv_obj_t *screen = lv_scr_act();
     int32_t screen_w = BSP_LCD_H_RES;
     int32_t screen_h = BSP_LCD_V_RES;
@@ -185,6 +198,10 @@ bool PhoneAppAudio::close(void)
     for (int i = 0; i < _recording_count; i++) {
         if (_recording_names[i]) { free(_recording_names[i]); _recording_names[i] = nullptr; }
     }
+
+    /* Deinit audio and SD card — release DMA/PSRAM resources */
+    monitor_deinit_audio();
+    monitor_deinit_sdcard();
 
     ESP_LOGI(TAG, "Audio app closed");
     return true;

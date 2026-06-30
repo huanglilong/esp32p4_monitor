@@ -73,4 +73,27 @@ menu "Example Video Configuration"
         default "esp-web"
         help
             mDNS host name for the device.
+
+    choice EXAMPLE_SELECT_JPEG_ENCODER
+        prompt "Select JPEG Encoder Type"
+        default EXAMPLE_SELECT_JPEG_HW_DRIVER if IDF_TARGET_ESP32P4
+        default EXAMPLE_SELECT_JPEG_ESP_NEW_JPEG if IDF_TARGET_ESP32S3
+        help
+            Select the JPEG encoder implementation for image compression.
+            - Hardware JPEG: Uses dedicated JPEG encoding hardware (faster, lower CPU usage)
+            - Software JPEG: Uses CPU-based JPEG encoding (compatible with all targets)
+
+        config EXAMPLE_SELECT_JPEG_HW_DRIVER
+            bool "Hardware JPEG Encoder"
+            depends on SOC_JPEG_CODEC_SUPPORTED
+            help
+                Use dedicated hardware JPEG encoder for image compression.
+                Available on ESP32-P4 and other chips with JPEG codec support.
+
+        config EXAMPLE_SELECT_JPEG_ESP_NEW_JPEG
+            bool "Software JPEG Encoder (esp_new_jpeg)"
+            help
+                Use software-based JPEG encoder for image compression.
+                Compatible with all ESP32 variants, higher CPU usage.
+    endchoice
 endmenu

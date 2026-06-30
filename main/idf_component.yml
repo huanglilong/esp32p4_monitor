@@ -13,6 +13,8 @@ dependencies:
     version: ^1.0.0
   espressif/esp_wifi_remote:
     version: '*'
+  espressif/esp_hosted:
+    version: "==2.12.7"   # v2.12.7 — verified stable on Waveshare P4 (#184, #197)
   espressif/esp-dl:
     version: ^3.3
   espressif/coco_detect:

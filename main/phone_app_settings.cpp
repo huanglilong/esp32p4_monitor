@@ -9,7 +9,6 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "camera_stream.hpp"
 #include <string.h>
 #include <stdio.h>
 
@@ -19,6 +18,11 @@ static const char *TAG = "Settings";
 
 extern esp_codec_dev_handle_t s_codec_handle;
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
+
+/* Static WiFi state — persists across Settings app open/close cycles */
+TaskHandle_t PhoneAppSettings::_wifi_scan_task = nullptr;
+EventGroupHandle_t PhoneAppSettings::_wifi_event_group = nullptr;
+bool PhoneAppSettings::_wifi_initialized = false;
 
 #define NVS_NAMESPACE            "settings"
 #define NVS_KEY_WIFI_EN          "wifi_en"
@@ -43,13 +47,10 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     _slider_vol(nullptr), _label_vol(nullptr),
     _slider_brightness(nullptr), _label_brightness(nullptr),
 
-    _sw_cam_stream(nullptr), _label_cam_stream(nullptr),
-
     _scr_wifi_list(nullptr), _list_wifi(nullptr), _spinner_wifi(nullptr),
     _scr_wifi_pass(nullptr), _label_pass_ssid(nullptr),
 
-    _wifi_scan_task(nullptr), _wifi_event_group(nullptr), _wifi_scanning(false),
-    _wifi_initialized(false)
+    _wifi_scanning(false)
 {
     memset(_wifi_ssid, 0, sizeof(_wifi_ssid));
     memset(_wifi_password, 0, sizeof(_wifi_password));
@@ -165,12 +166,6 @@ bool PhoneAppSettings::back(void)
 bool PhoneAppSettings::close(void)
 {
     stopWifiScan();
-
-    /* Stop camera stream on app close */
-    CameraStream::instance().stop();
-    if (_sw_cam_stream) {
-        lv_obj_clear_state(_sw_cam_stream, LV_STATE_CHECKED);
-    }
 
     /* Flush pending NVS writes before cleaning up */
     if (_nvs_save_timer) {
@@ -388,29 +383,6 @@ void PhoneAppSettings::createMainScreen(void)
     lv_obj_align(_slider_brightness, LV_ALIGN_BOTTOM_MID, 0, -10);
     lv_slider_set_range(_slider_brightness, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
     lv_obj_add_event_cb(_slider_brightness, onBrightnessSliderChanged, LV_EVENT_VALUE_CHANGED, this);
-
-    /* --- Camera Stream row --- */
-    lv_obj_t *cont_cam = lv_obj_create(_scr_main);
-    lv_obj_set_size(cont_cam, 620, 60);
-    lv_obj_align(cont_cam, LV_ALIGN_TOP_MID, 0, 355);
-    lv_obj_set_style_border_width(cont_cam, 0, 0);
-    lv_obj_set_style_bg_opa(cont_cam, LV_OPA_20, 0);
-    lv_obj_set_style_bg_color(cont_cam, lv_color_hex(0xE0E0E0), 0);
-
-    lv_obj_t *icon_cam = lv_label_create(cont_cam);
-    lv_label_set_text(icon_cam, LV_SYMBOL_IMAGE);
-    lv_obj_align(icon_cam, LV_ALIGN_LEFT_MID, 15, 0);
-
-    _label_cam_stream = lv_label_create(cont_cam);
-    lv_label_set_text(_label_cam_stream, "Camera Stream");
-    lv_obj_set_style_text_color(_label_cam_stream, lv_color_hex(0x000000), 0);
-    lv_obj_align(_label_cam_stream, LV_ALIGN_LEFT_MID, 55, 0);
-
-    _sw_cam_stream = lv_switch_create(cont_cam);
-    lv_obj_align(_sw_cam_stream, LV_ALIGN_RIGHT_MID, -15, 0);
-    /* Default OFF, no NVS persist */
-    lv_obj_clear_state(_sw_cam_stream, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(_sw_cam_stream, onCamStreamSwitchChanged, LV_EVENT_VALUE_CHANGED, this);
 
     updateMainScreenFromNvs();
 }
@@ -848,11 +820,6 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
         app->_wifi_rssi = -100;
         memset(app->_wifi_ip, 0, sizeof(app->_wifi_ip));
         ESP_LOGI(TAG, "WiFi disconnected");
-        /* WiFi disconnected → stop camera stream */
-        CameraStream::instance().stop();
-        if (app->_sw_cam_stream) {
-            lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
-        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)event_data;
         snprintf(app->_wifi_ip, sizeof(app->_wifi_ip), IPSTR, IP2STR(&evt->ip_info.ip));
@@ -916,37 +883,6 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             vEventGroupDelete(app->_wifi_event_group);
             app->_wifi_event_group = nullptr;
         }
-        /* WiFi OFF → stop camera stream */
-        CameraStream::instance().stop();
-        if (app->_sw_cam_stream) {
-            lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
-        }
-    }
-}
-
-void PhoneAppSettings::onCamStreamSwitchChanged(lv_event_t *e)
-{
-    PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
-    if (!app) return;
-    bool on = lv_obj_has_state(app->_sw_cam_stream, LV_STATE_CHECKED);
-
-    if (on) {
-        /* Only allow start if WiFi is connected */
-        bool wifi_connected = app->_wifi_event_group &&
-            (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT);
-        if (!wifi_connected) {
-            ESP_LOGW(TAG, "Camera Stream: WiFi not connected, cannot start");
-            lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
-            return;
-        }
-        ESP_LOGI(TAG, "Camera Stream: starting...");
-        if (!CameraStream::instance().start()) {
-            ESP_LOGE(TAG, "Camera Stream: start failed");
-            lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
-        }
-    } else {
-        ESP_LOGI(TAG, "Camera Stream: stopping...");
-        CameraStream::instance().stop();
     }
 }
 

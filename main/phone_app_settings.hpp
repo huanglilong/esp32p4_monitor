@@ -72,7 +72,6 @@ private:
     static void onVolumeSliderChanged(lv_event_t *e);
     static void onBrightnessSliderChanged(lv_event_t *e);
     static void onMainScreenLoaded(lv_event_t *e);
-    static void onCamStreamSwitchChanged(lv_event_t *e);
 
     /* NVS debounce save (avoids flash wear from rapid slider events) */
     static void _nvs_save_timer_cb(lv_timer_t *timer);
@@ -100,10 +99,6 @@ private:
     lv_obj_t              *_slider_brightness;
     lv_obj_t              *_label_brightness;
 
-    /* Camera Stream toggle (no NVS persist) */
-    lv_obj_t              *_sw_cam_stream;
-    lv_obj_t              *_label_cam_stream;
-
     /* LVGL objects - WiFi list screen */
     lv_obj_t              *_scr_wifi_list;
     lv_obj_t              *_list_wifi;
@@ -116,11 +111,12 @@ private:
     lv_obj_t              *_kb_password;
     lv_obj_t              *_spinner_connect;
     lv_obj_t              *_label_connect_status;
-    /* WiFi state */
-    TaskHandle_t           _wifi_scan_task;
-    EventGroupHandle_t     _wifi_event_group;
-    volatile bool          _wifi_scanning;
-    bool                   _wifi_initialized;  // one-time netif/wifi init done
+    /* WiFi state — static to persist across Settings app open/close cycles.
+     * WiFi runs in background even when Settings app is closed. */
+    static TaskHandle_t      _wifi_scan_task;
+    static EventGroupHandle_t _wifi_event_group;
+    static bool              _wifi_initialized;  // one-time netif/wifi init done
+    volatile bool            _wifi_scanning;
 
     static constexpr int   WIFI_SCAN_MAX = 20;
     static constexpr int   TASK_STACK_WIFI_SCAN = 6 * 1024;

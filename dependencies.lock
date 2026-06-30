@@ -207,15 +207,15 @@ dependencies:
     - esp32p4
     version: 1.3.0
   espressif/esp_hosted:
-    component_hash: 59c68fc3a8f25388b9a239ddec5f7bc81e6310d51108db1688e129e791450c31
+    component_hash: a424e4cf8de13b657d09f14dbd615cc946cffdc3f032509915d3058f4637fa72
     dependencies:
     - name: idf
       require: private
       version: '>=5.3'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
-    version: 2.12.9
+    version: 2.12.7
   espressif/esp_ipa:
     component_hash: 668dfaa406c089104294c908546e5c641879585e088ad6b2186f6322c6227dac
     dependencies:
@@ -701,6 +701,7 @@ direct_dependencies:
 - espressif/esp_audio_simple_player
 - espressif/esp_cam_sensor
 - espressif/esp_codec_dev
+- espressif/esp_hosted
 - espressif/esp_new_jpeg
 - espressif/esp_sccb_intf
 - espressif/esp_video
@@ -710,6 +711,6 @@ direct_dependencies:
 - lvgl/lvgl
 - protocol_examples_common
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 75d50f26026d1c7cc26e2d6765393f5c70ce68873d5a4979efa61e6ffcc81a19
+manifest_hash: d07b9151d364a19c2df6bbdc9393200b8ee41a493b68e735f4207889f30818d6
 target: esp32p4
 version: 3.0.0

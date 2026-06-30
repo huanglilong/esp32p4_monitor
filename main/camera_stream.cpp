@@ -521,6 +521,8 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "width", cs->_cam_width);
     cJSON_AddNumberToObject(root, "height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality);
+    cJSON_AddNumberToObject(root, "frame_rate", 3);   /* actual ~3fps from VTS=16400 */
+    cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
 
     const char *fmt_str = "UNKNOWN";
     if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) fmt_str = "JPEG";
@@ -536,15 +538,43 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     return ret;
 }
 
-/** Simple index page (no gzip frontend — minimal HTML for testing) */
 static esp_err_t index_handler(httpd_req_t *req)
 {
-    const char *html = "<html><body>"
-        "<h1>ESP32-P4 Camera Stream</h1>"
-        "<p><a href='/stream'>MJPEG Stream (port 81)</a></p>"
-        "<p><a href='/api/capture_image'>Capture JPEG</a></p>"
-        "<p><a href='/api/get_camera_info'>Camera Info</a></p>"
-        "</body></html>";
+    CameraStream *cs = (CameraStream *)req->user_ctx;
+    (void)cs;
+
+    const char *html =
+        "<!DOCTYPE html><html><head>"
+        "<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>ESP32-P4 Camera</title>"
+        "<style>"
+        "body{margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:sans-serif}"
+        "img#stream{max-width:100vw;max-height:80vh}"
+        ".panel{position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.8);padding:8px 16px;display:flex;gap:20px;justify-content:center;align-items:center;flex-wrap:wrap}"
+        ".stat{color:#ccc;font-size:12px} .stat b{color:#4CAF50}"
+        "input[type=range]{width:80px;accent-color:#4CAF50}"
+        "a{color:#4CAF50;text-decoration:none;font-size:11px}"
+        "</style></head><body>"
+        "<img id='stream' src='http://' + window.location.hostname + ':81/stream'>"
+        "<div class='panel'>"
+        "<span class='stat'>Res: <b id='res'>--</b></span>"
+        "<span class='stat'>FPS: <b id='fps'>--</b></span>"
+        "<span class='stat'>Frames: <b id='fr'>0</b></span>"
+        "<label>Q: <b id='ql'>30</b></label>"
+        "<input type='range' id='qs' min='1' max='100' value='30' oninput=\"setQ(this.value)\">"
+        "<a href='http://' + window.location.hostname + ':81/stream'>Direct</a>"
+        "<a href='/api/capture_image'>Shot</a>"
+        "</div><script>"
+        "var stream_url='http://'+window.location.hostname+':81/stream';"
+        "document.getElementById('stream').src=stream_url;"
+        "function setQ(v){document.getElementById('ql').textContent=v;fetch('/api/set_quality?value='+v)}"
+        "function upd(){fetch('/api/get_camera_info').then(r=>r.json()).then(d=>{"
+        "document.getElementById('res').textContent=d.width+'x'+d.height;"
+        "document.getElementById('fps').textContent=d.frame_rate;"
+        "document.getElementById('fr').textContent=d.total_frames;"
+        "document.getElementById('ql').textContent=d.jpeg_quality;"
+        "document.getElementById('qs').value=d.jpeg_quality}).catch(function(){})}"
+        "setInterval(upd,3000);upd()</script></body></html>";
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, strlen(html));
     return ESP_OK;

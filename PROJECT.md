@@ -18,7 +18,8 @@
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
-| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi + 📷 Camera Stream (HTTP MJPEG)** |
+| 🌐 **Camera Stream** | `PhoneAppCameraStream` | WiFi 启动后通过浏览器实时查看 MJPEG 摄像头流, mDNS 发现, 带 CPU/PSRAM 监控 |
+| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi** (WiFi 后台运行, 退出 App 保持连接) |
 
 ## 开发环境
 - **芯片**: ESP32-P4NRW32
@@ -46,10 +47,12 @@ esp32p4_monitor/
 │   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + MP3 录音)
 │   ├── phone_app_music.hpp     # Music App 头文件
 │   ├── phone_app_music.cpp     # Music App (MP3/WAV 播放器)
-│   ├── phone_app_settings.hpp  # Settings App 头文件
-│   ├── phone_app_settings.cpp  # Settings App (音量/亮度 + WiFi + Camera Stream)
-│   ├── camera_stream.hpp       # Camera Stream 头文件 (NEW)
-│   └── camera_stream.cpp       # Camera Stream (V4L2 + JPEG → HTTP MJPEG + mDNS)
+│   ├── phone_app_settings.hpp     # Settings App 头文件
+│   ├── phone_app_settings.cpp     # Settings App (音量/亮度 + WiFi)
+│   ├── phone_app_camera_stream.hpp # Camera Stream App 头文件 (NEW)
+│   ├── phone_app_camera_stream.cpp # Camera Stream App (WiFi状态 + MJPEG切换 + 系统监控)
+│   ├── camera_stream.hpp          # Camera Stream 核心头文件
+│   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → HTTP MJPEG + mDNS)
 ├── components/
 │   ├── espressif__esp_lvgl_port/   # 本地补丁版 esp_lvgl_port
 │   └── example_video_common/       # V4L2 视频初始化 + JPEG 编码 (NEW)
@@ -63,12 +66,12 @@ esp32p4_monitor/
 | `espressif/esp-brookesia` | 0.5.0 | ESP Registry |
 | `waveshare/esp32_p4_wifi6_touch_lcd_4b` | 2.0.0 | ESP Registry |
 | `espressif/esp_codec_dev` | 1.5.10 | ESP Registry |
-| `espressif/esp_cam_sensor` | **2.2.0** (升级) | ESP Registry |
+| `espressif/esp_cam_sensor` | 2.2.0 | ESP Registry |
 | `espressif/esp_sccb_intf` | 0.0.8 | ESP Registry |
-| `espressif/esp_video` | **2.2.0** (新增) | ESP Registry |
-| `espressif/esp_new_jpeg` | **1.0.2** (新增) | ESP Registry |
-| `espressif/mdns` | **1.11.2** (新增) | ESP Registry |
-| `espressif/cjson` | **1.7.19** (新增) | ESP Registry |
+| `espressif/esp_video` | 2.2.0 | ESP Registry |
+| `espressif/esp_new_jpeg` | 1.0.2 | ESP Registry |
+| `espressif/mdns` | 1.11.2 | ESP Registry |
+| `espressif/cjson` | 1.7.19 | ESP Registry |
 | `protocol_examples_common` | local | IDF examples |
 | `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
 | `lvgl/lvgl` | 9.2.2 | ESP Registry |
@@ -82,9 +85,11 @@ esp32p4_monitor/
 
 | # | 任务名 | 优先级 | 栈(KB) | 创建者 | 职责 |
 |---|--------|--------|--------|--------|------|
-| 1 | main | 默认(1) | 10 | ESP-IDF | 外设初始化 + 内存监控循环 (5s) |
+| 1 | main | 默认(1) | 10 | ESP-IDF | 外设初始化 + 空闲循环 |
 | 2 | taskLVGL | 4 | 10 | `esp_lvgl_port` | LVGL 渲染 + 触摸输入 |
 | 3 | audio_echo | 5 | 4 | `PhoneAppAudio::run()` | Mic 读取 + 电平计算 (运行时创建, 退出时销毁) |
+| 4 | httpd | 默认 | 6 | `CameraStream` | HTTP 服务器 (端口 80: Web UI, 端口 81: MJPEG) |
+| 5 | wifi_scan | 1 | 6 | `PhoneAppSettings::run()` | WiFi 扫描 + 后台连接维护 (Settings 退出后保持运行) |
 
 ## 引脚配置
 
@@ -160,7 +165,7 @@ esp32p4_monitor/
 | OV5647 Camera | (auto-detect) |
 
 
-## 外设初始化流程
+## 外设初始化流程 (按需初始化, App 退出时释放)
 
 ```
 app_main()
@@ -169,20 +174,23 @@ app_main()
   │      → ST7703 720×720 LCD + GT911 Touch
   │      → LVGL taskLVGL 创建
   │
-  ├─ 2. ESP-Brookesia Phone UI (5 apps installed)
+  ├─ 2. ESP-Brookesia Phone UI (6 apps installed)
   │      → PhoneAppSquareline
-  │      → PhoneAppCamera, PhoneAppAudio
+  │      → PhoneAppCamera        (CSI camera: run→init, close→deinit)
+  │      → PhoneAppAudio         (I2S+ES8311+ES7210 + SD卡: run→init, close→deinit)
+  │      → PhoneAppMusic         (I2S+ES8311 + SD卡: run→init, close→deinit)
+  │      → PhoneAppSettings      (WiFi: run→init)
+  │      → PhoneAppCameraStream  (CSI camera + mDNS + HTTP: run→init, close→deinit)
   │
-  ├─ 3. SDMMC SD Card (SPI 1-bit, 20MHz, FAT)
+  ├─ 3. (SD/Audio deferred to Audio & Music apps)
   │
-  ├─ 4. Audio (手动 I2S + ES8311 + ES7210)
-  │      → PA GPIO 53 HIGH
-  │      → I2S 16000Hz Stereo Duplex
-  │      → ES8311 codec (speaker output)
-  │      → ES7210 codec (dual mic input, 30dB gain)
-  │
-  └─ 5. Memory Monitor Loop (每 5s)
+  └─ 4. Memory Monitor Loop (每 5s)
 ```
+
+> **注意**: SD 卡和音频 I2S 不再在 `app_main()` 中初始化, 而是由 Audio/Music App 在 `run()` 中按需初始化,
+>   在 `close()` 中释放。这减少了空闲时的 DMA 对 PSRAM 的占用, 降低因负载导致 crash 的风险。
+>   **引用计数**: `monitor_init_sdcard()` / `monitor_init_audio()` 使用引用计数保证多次调用安全。
+>   每次打开 App 引用计数 +1, 退出 -1, 只有计数归零才真正释放硬件资源。
 
 
 ## 关键修改和问题解决
@@ -392,6 +400,44 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - 主程序启动后从 NVS 读取并应用亮度
 - 所有更改立即保存到 NVS
 
+### 14. Camera Stream App — 流媒体优化与 Web UI
+
+`PhoneAppCameraStream` 独立于 Settings App, 通过浏览器实时查看 MJPEG 摄像头流。
+
+| 项目 | 配置 |
+|------|------|
+| 传感器 | OV5647, VTS=4920 (~10fps) |
+| 编码 | **HW JPEG** (`CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER=y`, esp_driver_jpeg), CPU 几乎无负载 |
+| 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~14KB/帧) |
+| 帧率实测 | **6.9fps** @ 10fps sensor, CPU 7% |
+| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`), 端口 81: MJPEG `/stream` |
+| Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块) |
+
+**调试过程中发现并修复的关键问题**:
+- **编码器信号量死锁**: `xSemaphoreGive` 在流处理器成功路径被误删, 第一帧后信号量永不归还, 后续帧全部超时 (0fps)。
+- **`<iframe>` 不兼容 MJPEG**: Chrome 只能在 `<img>` 标签中渲染 MJPEG 流, `<iframe>` 无法显示。
+- **JPEG 缓存对齐**: HW 编码器输出缓冲区需 `esp_cache_msync` 且大小向上取整到 128B 缓存行边界。
+- **客户端断连处理**: `httpd_resp_send_chunk` 失败时 `break` 优雅退出, 避免 `httpd_sock_err` 刷屏。
+
+### 15. esp_hosted (WiFi over SDIO) 稳定性
+
+ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 死锁:
+
+| Issue | 状态 | 根因 |
+|-------|------|------|
+| [#167](https://github.com/espressif/esp-hosted-mcu/issues/167) | Open | 多根因: C6 SLC DMA 同步 bug + CMD53 块模式死锁 |
+| [#184](https://github.com/espressif/esp-hosted-mcu/issues/184) | Closed | TCP 入站 100KB 后停滞。修复: `OPTIMIZATION_RX_NONE` + `Q_SIZE=5` |
+| [#197](https://github.com/espressif/esp-hosted-mcu/issues/197) | Open | SDIO RX mempool 耗尽硬死锁。**v2.12.7 是 Waveshare 硬件唯长期验证稳定版本** (12h+零错误) |
+
+**当前稳定配置**:
+- esp_hosted: **v2.12.7** (v2.12.8+ 的 PSRAM mempool 路径在 Waveshare 上验证更快死锁, #197)
+- `SDIO_OPTIMIZATION_RX_STREAMING_MODE=y` + `TX_Q_SIZE=20` + `RX_Q_SIZE=20`
+- `MEMPOOL_PREFER_SPIRAM=y` (必需: SRAM 被 LVGL 缓冲区消耗)
+- `SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` (WiFi/LWIP 缓冲移至 PSRAM)
+- 帧率降至 ~10fps (VTS=4920) 降低 DMA 压力: ISP 带宽 ~6.4 MB/s
+
+> **已知风险**: 高带宽入站 TCP (>200KB/s) 在 v2.12.7 仍可能触发死锁 (#197)。Camera Stream 为出站 (MJPEG ~98KB/s @ 7fps), 验证稳定。
+
 ## 构建和烧录
 
 ```bash
@@ -418,7 +464,12 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **Camera App 人体检测 (ESP-DL + YOLO11n 320x320 ≈ 1.8fps)**
 - [x] **Camera App 迁移到 V4L2 (esp_video) 统一接口**
 - [x] **Camera Stream WiFi 推流 (HTTP MJPEG + mDNS)**
-- [x] **Settings App Camera Stream toggle**
+- [x] **Camera Stream App 独立分离 + Web UI 优化 + HW JPEG 编码**
+- [x] **Settings App Camera Stream toggle 移除 (迁移到独立 App)**
+- [x] **esp_hosted 降级至 v2.12.7 + SDIO 稳定性配置**
+- [x] **Settings App WiFi 静态成员修复 (跨实例持久化)**
+- [x] **CPU/PSRAM 实时监控日志 (1s 间隔, FreeRTOS 运行时统计)**
+- [x] **SD/音频延迟初始化 + 引用计数**
 - [x] **esp_cam_sensor 升级 1.7.0 → 2.2.0**
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
 - [ ] Camera App 回放/录制功能
