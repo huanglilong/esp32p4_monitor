@@ -497,7 +497,7 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
         xSemaphoreTake(app->_detect_mutex, 0) == pdTRUE) {
 
         if (!app->_detect_results.empty()) {
-            lv_color_t green = lv_palette_main(LV_PALETTE_GREEN);
+            static const lv_color_t green = lv_palette_main(LV_PALETTE_GREEN);
             for (auto &r : app->_detect_results) {
                 app->_draw_box_on_canvas(r.box[0], r.box[1], r.box[2], r.box[3], green);
             }
