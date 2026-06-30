@@ -433,26 +433,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
         /* Return buffer */
         ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
 
-        /* FPS tracking */
+        /* FPS tracking — count frames only (no debug log) */
         cs->_frame_count++;
-        cs->_fps_frame_count++;
-        cs->_fps_total_bytes += jpeg_size;
-
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double elapsed_s = (now.tv_sec - cs->_fps_window_start.tv_sec) +
-                           (now.tv_nsec - cs->_fps_window_start.tv_nsec) / 1e9;
-        if (elapsed_s >= CameraStream::FPS_LOG_INTERVAL_S) {
-            double fps = cs->_fps_frame_count / elapsed_s;
-            uint32_t avg_bytes = cs->_fps_total_bytes / cs->_fps_frame_count;
-            ESP_LOGI(TAG, "FPS: %.1f fps | %lu frames sent | avg JPEG %lu bytes | %lu total",
-                     fps, (unsigned long)cs->_frame_count,
-                     (unsigned long)avg_bytes,
-                     (unsigned long)cs->_fps_total_bytes);
-            cs->_fps_frame_count = 0;
-            cs->_fps_total_bytes = 0;
-            cs->_fps_window_start = now;
-        }
 
         /* Yield CPU to prevent SDIO/WiFi starvation.
          * JPEG SW encoding of 800x800 RGB565 takes significant time
@@ -528,7 +510,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "width", cs->_cam_width);
     cJSON_AddNumberToObject(root, "height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality);
-    cJSON_AddNumberToObject(root, "frame_rate", 3);   /* actual ~3fps from VTS=16400 */
+    cJSON_AddNumberToObject(root, "frame_rate", 10);  /* ~10fps from VTS=4920 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
 
     const char *fmt_str = "UNKNOWN";
@@ -543,6 +525,73 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     esp_err_t ret = httpd_resp_sendstr(req, json_str);
     free(json_str);
     return ret;
+}
+
+/** GET /api/set_quality?value=30 */
+static esp_err_t set_quality_handler(httpd_req_t *req)
+{
+    CameraStream *cs = (CameraStream *)req->user_ctx;
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
+        return ESP_FAIL;
+    }
+    char val[8];
+    if (httpd_query_key_value(buf, "value", val, sizeof(val)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing value");
+        return ESP_FAIL;
+    }
+    int q = atoi(val);
+    if (q < 1) q = 1;
+    if (q > 100) q = 100;
+    cs->_jpeg_quality = (uint8_t)q;
+
+    if (cs->_encoder_handle) {
+        example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
+    }
+    ESP_LOGI(TAG, "JPEG quality set to %d", q);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":1}");
+    return ESP_OK;
+}
+
+/** POST /api/set_camera_config — Flutter app quality control */
+static esp_err_t set_camera_config_handler(httpd_req_t *req)
+{
+    CameraStream *cs = (CameraStream *)req->user_ctx;
+
+    char buf[128];
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    buf[len] = '\0';
+
+    cJSON *json = cJSON_Parse(buf);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *q = cJSON_GetObjectItem(json, "jpeg_quality");
+    if (q && cJSON_IsNumber(q)) {
+        int quality = q->valueint;
+        if (quality < 1) quality = 1;
+        if (quality > 100) quality = 100;
+        cs->_jpeg_quality = (uint8_t)quality;
+        if (cs->_encoder_handle) {
+            example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
+        }
+        ESP_LOGI(TAG, "JPEG quality set to %d (via POST)", quality);
+    }
+    cJSON_Delete(json);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+    return ESP_OK;
 }
 
 static esp_err_t index_handler(httpd_req_t *req)
@@ -605,9 +654,13 @@ bool CameraStream::_start_http_server(void)
     httpd_uri_t uri_index = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = this };
     httpd_uri_t uri_info = { .uri = "/api/get_camera_info", .method = HTTP_GET, .handler = camera_info_handler, .user_ctx = this };
     httpd_uri_t uri_capture = { .uri = "/api/capture_image", .method = HTTP_GET, .handler = capture_handler, .user_ctx = this };
+    httpd_uri_t uri_quality = { .uri = "/api/set_quality", .method = HTTP_GET, .handler = set_quality_handler, .user_ctx = this };
+    httpd_uri_t uri_config  = { .uri = "/api/set_camera_config", .method = HTTP_POST, .handler = set_camera_config_handler, .user_ctx = this };
     httpd_register_uri_handler(_httpd_80, &uri_index);
     httpd_register_uri_handler(_httpd_80, &uri_info);
     httpd_register_uri_handler(_httpd_80, &uri_capture);
+    httpd_register_uri_handler(_httpd_80, &uri_quality);
+    httpd_register_uri_handler(_httpd_80, &uri_config);
 
     /* Port 81: MJPEG stream */
     config.server_port += 1;   // 80 → 81 (matches reference: config.server_port += 1)
