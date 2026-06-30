@@ -16,6 +16,7 @@
 # Git
 1. every commit and push must be approved by user!
 2. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
+3. git push must be approved by user!
 
 ## ESP-DIF Build, Flash, and Monitor
 1. source ~/.espressif/v6.0.1/esp-idf/export.sh

@@ -386,7 +386,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
         /* Send boundary */
-        httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+        if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK) {
+            break;
+        }
 
         uint32_t jpeg_size;
         uint8_t *jpeg_data;
@@ -407,8 +409,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
                 continue;
             }
-            /* Invalidate cache: HW JPEG encoder writes via DMA, CPU needs fresh view */
-            esp_cache_msync(cs->_jpeg_out_buf, jpeg_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            /* HW encoder output buffer from jpeg_alloc_encoder_mem() is
+             * non-cacheable DMA memory — no cache sync needed. */
             jpeg_data = cs->_jpeg_out_buf;
         }
 
@@ -416,9 +418,14 @@ static esp_err_t stream_handler(httpd_req_t *req)
         clock_gettime(CLOCK_MONOTONIC, &ts);
         int hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, jpeg_size,
                             (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
-        httpd_resp_send_chunk(req, part_buf, hlen);
-        httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size);
-
+        if (httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
+            httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
+            if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+                xSemaphoreGive(cs->_encoder_sem);
+            }
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            break;
+        }
         if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
             xSemaphoreGive(cs->_encoder_sem);
         }
@@ -555,7 +562,7 @@ static esp_err_t index_handler(httpd_req_t *req)
         "input[type=range]{width:80px;accent-color:#4CAF50}"
         "a{color:#4CAF50;text-decoration:none;font-size:11px}"
         "</style></head><body>"
-        "<img id='stream' src='http://' + window.location.hostname + ':81/stream'>"
+        "<img id='stream'>"
         "<div class='panel'>"
         "<span class='stat'>Res: <b id='res'>--</b></span>"
         "<span class='stat'>FPS: <b id='fps'>--</b></span>"
