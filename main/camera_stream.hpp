@@ -10,11 +10,11 @@ extern "C" {
 #endif
 
 /**
- * @brief Write OV5647 VTS registers via I2C to reduce frame rate from ~50fps to ~10fps.
+ * @brief Write OV5647 VTS registers via I2C to reduce frame rate from ~50fps to ~5fps.
  *
  * VTS (Vertical Total Size) is the number of lines per frame including blanking.
- * Increasing VTS from 984 → 4920 (5x) proportionally reduces frame rate:
- *   Frame Rate = PCLK / (HTS × VTS) ≈ 50fps / 5 = ~10fps
+ * Increasing VTS from 984 → 9840 (10x) proportionally reduces frame rate:
+ *   Frame Rate = PCLK / (HTS × VTS) ≈ 50fps / 10 = ~5fps
  *
  * Benefits:
  *   - ISP DMA bandwidth: ~32 MB/s → ~6.4 MB/s
