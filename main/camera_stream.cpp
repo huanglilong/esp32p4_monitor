@@ -651,70 +651,6 @@ static esp_err_t stream_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/** Single JPEG snapshot handler — runs detection inline, draws boxes, encodes */
-static esp_err_t capture_handler(httpd_req_t *req)
-{
-    CameraStream *cs = (CameraStream *)req->user_ctx;
-    struct v4l2_buffer buf;
-    uint32_t jpeg_size;
-    esp_err_t http_ret;
-
-    memset(&buf, 0, sizeof(buf));
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
-    if (ioctl(cs->_video_fd, VIDIOC_DQBUF, &buf) != 0) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    if (!(buf.flags & V4L2_BUF_FLAG_DONE)) {
-        ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    /* Invalidate cache, then copy to detect_in_buf and Q buffer quickly */
-    esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
-                    ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-
-    uint32_t copy_sz = buf.bytesused;
-    if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
-    memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
-    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);  // Release V4L2 buffer, reuse later
-
-    httpd_resp_set_type(req, "image/jpeg");
-
-    /* Run detection inline on the captured frame, then draw boxes on detect_in_buf */
-    if (cs->_detector) {
-        cs->_run_inference(cs->_detect_in_buf, copy_sz);
-        if (cs->_detect_available && !cs->_detect_results.empty()) {
-            for (auto &r : cs->_detect_results) {
-                cs->_draw_box_on_buffer(cs->_detect_in_buf,
-                                        cs->_cam_width, cs->_cam_height,
-                                        r.box[0], r.box[1], r.box[2], r.box[3],
-                                        0x07E0);  // Green in RGB565
-            }
-        }
-    }
-
-    /* Encode the detection buffer (with boxes) to JPEG */
-    if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                             cs->_detect_in_buf, copy_sz,
-                                             cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
-    if (ret != ESP_OK) {
-        xSemaphoreGive(cs->_encoder_sem);
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    xSemaphoreGive(cs->_encoder_sem);
-
-    http_ret = httpd_resp_send(req, (char *)cs->_jpeg_out_buf, jpeg_size);
-
-    return http_ret;
-}
 
 /** Camera info JSON handler */
 static esp_err_t camera_info_handler(httpd_req_t *req)
@@ -867,8 +803,6 @@ static esp_err_t index_handler(httpd_req_t *req)
         "<input type='range' id='qs' min='1' max='100' value='30' oninput=\"setQ(this.value)\">"
         "<span class='stat'>People: <b id='ppl'>--</b></span>"
         "<span class='stat'>Conf: <b id='conf'>--</b></span>"
-        "<a href='http://' + window.location.hostname + ':81/stream'>Direct</a>"
-        "<a href='/api/capture_image'>Shot</a>"
         "</div><script>"
         "document.getElementById('settings-link').href='http://'+window.location.hostname+':8080/';"
         "var stream_url='http://'+window.location.hostname+':81/stream';"
@@ -907,13 +841,11 @@ bool CameraStream::_start_http_server(void)
 
     httpd_uri_t uri_index = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = this };
     httpd_uri_t uri_info = { .uri = "/api/get_camera_info", .method = HTTP_GET, .handler = camera_info_handler, .user_ctx = this };
-    httpd_uri_t uri_capture = { .uri = "/api/capture_image", .method = HTTP_GET, .handler = capture_handler, .user_ctx = this };
     httpd_uri_t uri_quality = { .uri = "/api/set_quality", .method = HTTP_GET, .handler = set_quality_handler, .user_ctx = this };
     httpd_uri_t uri_config  = { .uri = "/api/set_camera_config", .method = HTTP_POST, .handler = set_camera_config_handler, .user_ctx = this };
     httpd_uri_t uri_detect  = { .uri = "/api/get_detection_info", .method = HTTP_GET, .handler = detection_info_handler, .user_ctx = this };
     httpd_register_uri_handler(_httpd_80, &uri_index);
     httpd_register_uri_handler(_httpd_80, &uri_info);
-    httpd_register_uri_handler(_httpd_80, &uri_capture);
     httpd_register_uri_handler(_httpd_80, &uri_quality);
     httpd_register_uri_handler(_httpd_80, &uri_config);
     httpd_register_uri_handler(_httpd_80, &uri_detect);
