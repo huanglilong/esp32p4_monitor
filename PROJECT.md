@@ -511,3 +511,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] Audio App MP3 录音 (Shine encoder, SD 卡)
 - [x] Music App LVGL 线程安全 (GMF 回调加 lvgl_port_lock)
 - [x] Settings App LVGL 线程安全 (wifiConnectTaskHandler 加 bsp_display_lock)
+- [x] **字体裁剪**: 仅保留实际使用的 8 种字体 (10/12/14/18/20/22/24/28), 回收 ~560KB Flash
+- [x] **SD LDO 句柄泄漏**: monitor_init_sdcard() 中 LDO handle 改为静态变量, deinit 时释放
+- [x] **CORS 预检**: Web Config Server 添加 OPTIONS 处理器, 修复浏览器跨域 POST 请求
+- [x] **WiFi 扫描优化**: 扫描任务空闲轮询从 200ms 降到 500ms

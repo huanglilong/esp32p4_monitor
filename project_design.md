@@ -800,3 +800,16 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 | 5 | 🟢 | `main/CMakeLists.txt:28` | `-Wno-attributes PUBLIC` 抑制所有下游代码的属性警告 | 改为 `PRIVATE`，仅对 LVGL 自身编译生效 |
 | 6 | 🟢 | `phone_app_music.cpp:237` | 音量 NVS 同步定时器每 1s 轮询一次 | 降频到 5s |
 | 7 | 🟢 | `sdkconfig.defaults` | 4 个未知 kconfig 符号产生 CMake 警告 | 移除 `ESP_AUDIO_CODEC_DECODER_AAC/AMR/OPUS` 和 `ESP_HOSTED_MEMPOOL_PREFER_SPIRAM` |
+
+### 第六轮分析 — 遗留问题修复 (2026-07-01)
+
+对全项目代码重新审计，发现并修复以下遗留问题:
+
+| # | 严重度 | 文件 | 问题 | 修复 |
+|---|--------|------|------|------|
+| 1 | 🔴 | `sdkconfig.defaults:32-49` | **字体未实际裁剪**: 第 3 轮声称"禁用 12 个未使用字体"，但 `sdkconfig.defaults` 仍启用全部 18 个字体（8-44）。实际仅使用 10/12/14/18/20/22/24/28 | 移除 10 个未使用字体，回收 ~560KB Flash |
+| 2 | 🔴 | `main/main.cpp:197-207` | **LDO 句柄泄漏**: `esp_ldo_acquire_channel` 返回的 handle 存储在栈变量中，离开作用域后泄漏。每次 SD 卡初始化泄漏一个 LDO 句柄 | LDO handle 改为静态变量 `s_sdcard_ldo_chan`，在 `monitor_deinit_sdcard()` 和错误路径中释放 |
+| 3 | 🟡 | `web_config_server.cpp` | **缺少 CORS 预检**: 3 个 POST 端点设置了 `Access-Control-Allow-Origin` 响应头但未注册 `HTTP_OPTIONS` 方法处理。浏览器对跨域 POST 先发 OPTIONS 预检请求，无处理器则 CORS 阻止 | 添加 `cors_preflight_handler()` + 为 3 个 POST 端点注册 OPTIONS URI |
+| 4 | 🟢 | `phone_app_settings.cpp:823` | WiFi 扫描任务空闲轮询 200ms (5Hz)，RSSI 和扫描标志不需要这么高频率 | 降为 500ms (2Hz)，节省 CPU |
+| 5 | 🟢 | `phone_app_camera.cpp:89` | **Camera Canvas 800→720** (已知 TODO): Canvas 800×800 但显示仅 720×720，多处理 21% 像素 | **跳过**: 需同步修改 buffer stride/memcpy/检测框坐标，高风险 |
+| 6 | 🟢 | `main/main.cpp:698-699` | **5s 内存日志** (project_design.md #5.8) | **已修复**: 空闲循环改为 `vTaskDelay(60s)`，无内存日志输出 |
