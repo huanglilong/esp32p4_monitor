@@ -10,9 +10,7 @@
 #include "bitstream.h"
 #include "types.h"
 
-#if !defined(__APPLE__) && !defined(__FreeBSD__)
-#include <malloc.h>
-#endif
+#include <stdlib.h>  /* malloc() — standard POSIX header */
 
 /* open the device to write the bit stream into it */
 void shine_open_bit_stream(bitstream_t *bs, int size) {
