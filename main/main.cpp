@@ -20,7 +20,7 @@
 #include "esp_ldo_regulator.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 #include "es7210_adc.h"
 #endif
 #include "nvs_flash.h"
@@ -40,7 +40,7 @@
 static const char *TAG = "monitor";
 
 /* Forward declarations */
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 static void monitor_init_display(lv_display_t **disp);
 static void monitor_init_brookesia(lv_display_t *disp);
 static void on_clock_update_timer_cb(struct _lv_timer_t *t);
@@ -50,7 +50,7 @@ void monitor_deinit_sdcard(void);
 void monitor_init_audio(void);
 void monitor_deinit_audio(void);
 
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 /* LVGL port config — pin to core 1 (core 0 reserved for detection/NPU inference) */
 #define LVGL_PORT_INIT_CONFIG() \
     {                               \
@@ -64,7 +64,7 @@ void monitor_deinit_audio(void);
 
 /* Audio handles - exposed for audio app */
 esp_codec_dev_handle_t s_codec_handle = NULL;     // Speaker (ES8311)
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 esp_codec_dev_handle_t s_codec_mic_handle = NULL; // Microphone (ES7210)
 #else
 esp_codec_dev_handle_t s_codec_mic_handle = NULL; // Not used (ES8311 BOTH mode)
@@ -83,7 +83,7 @@ static int s_audio_refcount = 0;
 /*============================================================================
  * MIPI DSI Display + ESP-Brookesia (LCD-4B only)
  *============================================================================*/
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 static void monitor_init_display(lv_display_t **disp)
 {
     bsp_display_cfg_t cfg = {
@@ -183,7 +183,7 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t)
         "Refresh status bar failed"
     );
 }
-#endif // CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#endif // CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 
 /*============================================================================
  * SD Card (SPI mode — SDMMC slot 0 blocked by esp_hosted C6 WiFi on slot 1)
@@ -279,7 +279,7 @@ void monitor_init_audio(void)
         return;
     }
 
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     ESP_LOGI(TAG, "Initializing audio (ES8311 + ES7210)...");
 #else
     ESP_LOGI(TAG, "Initializing audio (ES8311 single-chip)...");
@@ -332,7 +332,7 @@ void monitor_init_audio(void)
     const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
     assert(gpio_if);
 
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     audio_codec_i2s_cfg_t i2s_in_cfg = {
         .port = 0,
         .rx_handle = s_rx_handle,
@@ -397,12 +397,12 @@ void monitor_init_audio(void)
     esp_codec_dev_sample_info_t fs = { .bits_per_sample = 16, .channel = 2, .channel_mask = 0x03, .sample_rate = EXAMPLE_AUDIO_SAMPLE_RATE };
     ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
     esp_codec_dev_set_out_vol(s_codec_handle, EXAMPLE_VOICE_VOLUME);
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_mic_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
     esp_codec_dev_set_in_gain(s_codec_mic_handle, 42);  // Max gain for ES7210 dual-mic
 #endif
 
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     ESP_LOGI(TAG, "Audio initialized: ES8311 + ES7210, vol=%d", EXAMPLE_VOICE_VOLUME);
 #else
     ESP_LOGI(TAG, "Audio initialized: ES8311 (single-chip BOTH mode), vol=%d", EXAMPLE_VOICE_VOLUME);
@@ -562,7 +562,11 @@ static void boot_sdcard_wifi_config(void)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== ESP32-P4 Monitor Starting ===");
-    ESP_LOGI(TAG, "CONFIG_BOARD_WIFI6_TOUCH_LCD_4B=%d", CONFIG_BOARD_WIFI6_TOUCH_LCD_4B);
+#ifdef CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
+    ESP_LOGI(TAG, "CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B=%d", CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B);
+#else
+    ESP_LOGI(TAG, "CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B=n");
+#endif
 
     /* 0. NVS init (for persistent settings) */
     esp_err_t nvs_err = nvs_flash_init();
@@ -573,7 +577,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(nvs_err);
     ESP_LOGI(TAG, "NVS initialized");
 
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     /* 1. MIPI DSI Display (BSP enables LDO VO4 for SD power) */
     lv_display_t *disp = NULL;
     monitor_init_display(&disp);

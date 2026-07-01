@@ -30,7 +30,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "cJSON.h"
-#if !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 #include "camera_stream.hpp"
 #endif
 
@@ -43,7 +43,7 @@ static const char *TAG = "WebConfig";
 #define NVS_KEY_WIFI_SSID       "ssid"
 #define NVS_KEY_WIFI_PASS       "pass"
 #define NVS_KEY_VOLUME          "volume"
-#if !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 #define NVS_KEY_CAM_STREAM      "cam_stream"
 #endif
 
@@ -281,7 +281,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     nvs_get_str(NVS_KEY_WIFI_PASS, pass, sizeof(pass));
     int32_t wifi_en = nvs_get_i32_def(NVS_KEY_WIFI_EN, 0);
     int32_t volume  = nvs_get_i32_def(NVS_KEY_VOLUME, VOLUME_DEFAULT);
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     /* LCD-4B: Camera Stream managed by Phone App, not web */
     int32_t cam_en = 0;
     bool cam_running = false;
@@ -429,7 +429,7 @@ static esp_err_t settings_handler(httpd_req_t *req)
 
 static esp_err_t camera_stream_handler(httpd_req_t *req)
 {
-#if CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     /* LCD-4B: Camera Stream managed by Phone App, not available via web */
     const char *resp = "{\"ok\":0,\"error\":\"Use Camera Stream App on the display\"}";
     httpd_resp_set_type(req, "application/json");
@@ -486,7 +486,7 @@ static esp_err_t camera_stream_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
-#endif /* !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B */
+#endif /* !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B */
 }
 
 /*============================================================================
@@ -548,7 +548,7 @@ static void web_config_task(void *arg)
     ESP_LOGI(TAG, "Web config server started on port %d", WEB_CONFIG_PORT);
     s_running = true;
 
-#if !CONFIG_BOARD_WIFI6_TOUCH_LCD_4B
+#if !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
     /* Auto-start camera stream if NVS says it was enabled */
     if (nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
         ESP_LOGI(TAG, "NVS cam_stream=1, auto-starting camera stream...");
