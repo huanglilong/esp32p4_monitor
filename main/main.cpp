@@ -18,6 +18,7 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_ldo_regulator.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
@@ -485,8 +486,17 @@ static void boot_sdcard_wifi_config(void)
 
     ESP_LOGI(TAG, "No WiFi SSID in NVS, trying SD card wifi.txt...");
 
-    /* Mount SD via native SDMMC Slot 0 (same as BSP, works before WiFi takes Slot 1) */
-    ESP_LOGI(TAG, "Mounting SD card (SDMMC Slot 0)...");
+    /* Init SD card power (on-chip LDO, may already be on from BSP) */
+    sd_pwr_ctrl_handle_t pwr_ctrl = NULL;
+    sd_pwr_ctrl_ldo_config_t ldo_config = { .ldo_chan_id = 4 };
+    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SD LDO init: %s (may already be on)", esp_err_to_name(ret));
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    /* Mount SD via SDSPI (SDMMC controller claimed by C6 WiFi SDIO on Slot 1) */
+    ESP_LOGI(TAG, "Mounting SD card (SDSPI)...");
     sdmmc_card_t *sd_card = NULL;
     {
         esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
@@ -494,16 +504,32 @@ static void boot_sdcard_wifi_config(void)
             .max_files = 2,
             .allocation_unit_size = 16 * 1024,
         };
-        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-        host.slot = SDMMC_HOST_SLOT_0;
-        host.max_freq_khz = SDMMC_FREQ_DEFAULT;
-        sdmmc_slot_config_t slot_cfg = SDMMC_SLOT_CONFIG_DEFAULT();
-        slot_cfg.width = 1;
-        slot_cfg.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-        esp_err_t ret = esp_vfs_fat_sdmmc_mount(SDMMC_MOUNT_POINT, &host,
-                                                 &slot_cfg, &mount_cfg, &sd_card);
+        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+        host.slot = SPI2_HOST;
+
+        sdspi_device_config_t slot_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
+        slot_cfg.gpio_cs = GPIO_NUM_42;
+        slot_cfg.host_id = SPI2_HOST;
+
+        spi_bus_config_t bus_cfg = {
+            .mosi_io_num = GPIO_NUM_44,
+            .miso_io_num = GPIO_NUM_39,
+            .sclk_io_num = GPIO_NUM_43,
+            .quadwp_io_num = -1, .quadhd_io_num = -1,
+            .max_transfer_sz = 4000,
+        };
+        ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SD mount failed (%s), cannot read wifi.txt", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
+            if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
+            return;
+        }
+        ret = esp_vfs_fat_sdspi_mount(SDMMC_MOUNT_POINT, &host, &slot_cfg,
+                                       &mount_cfg, &sd_card);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SD mount failed (%s)", esp_err_to_name(ret));
+            spi_bus_free(SPI2_HOST);
+            if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
             return;
         }
     }
@@ -512,6 +538,8 @@ static void boot_sdcard_wifi_config(void)
     if (!f) {
         ESP_LOGW(TAG, "wifi.txt not found on SD card");
         if (sd_card) esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
+        spi_bus_free(SPI2_HOST);
+        if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
         return;
     }
 
@@ -537,6 +565,8 @@ static void boot_sdcard_wifi_config(void)
     }
     fclose(f);
     esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
+    spi_bus_free(SPI2_HOST);
+    if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
 
     if (strlen(file_ssid) == 0) {
         ESP_LOGW(TAG, "wifi.txt missing ssid field");
@@ -613,13 +643,7 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "=== Core peripherals initialized (SD/Audio deferred to apps) ===");
     web_config_server_start();
 #else
-    /* WIFI6: no BSP display init — enable LDO VO4 manually for SD power */
-    {
-        esp_ldo_channel_config_t ldo_cfg = { .chan_id = 4, .voltage_mv = 3300 };
-        esp_ldo_channel_handle_t ldo_chan = NULL;
-        esp_ldo_acquire_channel(&ldo_cfg, &ldo_chan);
-    }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "=== WIFI6 board (no display) — WiFi + Web Config ===");
 
     /* Try SD card wifi.txt if NVS has no SSID */
     boot_sdcard_wifi_config();
