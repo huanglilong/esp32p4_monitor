@@ -70,6 +70,7 @@ SemaphoreHandle_t s_codec_mutex = NULL;           // Protect concurrent codec ac
 /* SD card */
 sdmmc_card_t *s_card = NULL;
 static int s_sdcard_refcount = 0;
+static esp_ldo_channel_handle_t s_sdcard_ldo_chan = NULL;  /* SD power LDO, released in deinit */
 
 /* Audio reference counting: shared by Audio and Music apps */
 static int s_audio_refcount = 0;
@@ -197,12 +198,11 @@ bool monitor_init_sdcard(void)
     /* Power-cycle SD via LDO VO4 to reset card into clean state */
     {
         esp_ldo_channel_config_t ldo_cfg = { .chan_id = 4, .voltage_mv = 3300 };
-        esp_ldo_channel_handle_t ldo_chan = NULL;
-        esp_ldo_acquire_channel(&ldo_cfg, &ldo_chan);
+        esp_ldo_acquire_channel(&ldo_cfg, &s_sdcard_ldo_chan);
         /* Release → re-acquire toggles power, resetting SD card */
-        esp_ldo_release_channel(ldo_chan);
+        esp_ldo_release_channel(s_sdcard_ldo_chan);
         vTaskDelay(pdMS_TO_TICKS(50));
-        esp_ldo_acquire_channel(&ldo_cfg, &ldo_chan);
+        esp_ldo_acquire_channel(&ldo_cfg, &s_sdcard_ldo_chan);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
@@ -231,6 +231,8 @@ bool monitor_init_sdcard(void)
     ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
+        esp_ldo_release_channel(s_sdcard_ldo_chan);
+        s_sdcard_ldo_chan = NULL;
         return false;
     }
 
@@ -238,6 +240,8 @@ bool monitor_init_sdcard(void)
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SD card mount failed (%s), continuing without SD", esp_err_to_name(ret));
         spi_bus_free(SPI2_HOST);
+        esp_ldo_release_channel(s_sdcard_ldo_chan);
+        s_sdcard_ldo_chan = NULL;
         return false;
     }
 
@@ -265,6 +269,10 @@ void monitor_deinit_sdcard(void)
         s_card = NULL;
     }
     spi_bus_free(SPI2_HOST);
+    if (s_sdcard_ldo_chan) {
+        esp_ldo_release_channel(s_sdcard_ldo_chan);
+        s_sdcard_ldo_chan = NULL;
+    }
     ESP_LOGI(TAG, "SD card deinitialized");
 }
 
