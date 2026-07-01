@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/timers.h"
 #include "esp_brookesia.hpp"
 #include "esp_event.h"
 #include "esp_wifi.h"
@@ -63,6 +64,8 @@ private:
     /* Event handlers */
     static void wifiEventHandler(void *arg, esp_event_base_t event_base,
                                  int32_t event_id, void *event_data);
+    /** Reconnect timer: fires every 10s to retry esp_wifi_connect() on disconnect */
+    static void wifiReconnectTimerCallback(TimerHandle_t xTimer);
 
     /* WiFi callbacks */
     static void onWifiSwitchChanged(lv_event_t *e);
@@ -120,6 +123,8 @@ private:
     static TaskHandle_t      _wifi_scan_task;
     static EventGroupHandle_t _wifi_event_group;
     static bool              _wifi_initialized;  // one-time netif/wifi init done
+    static TimerHandle_t     _wifi_reconnect_timer;  // 10s periodic reconnect timer
+    static uint32_t          _wifi_reconnect_count;  // consecutive reconnect attempts
     volatile bool            _wifi_scanning;
     volatile bool            _wifi_connecting;     // Guard against multiple connect tasks
 

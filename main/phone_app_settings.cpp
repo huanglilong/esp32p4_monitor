@@ -23,6 +23,8 @@ extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_1
 TaskHandle_t PhoneAppSettings::_wifi_scan_task = nullptr;
 EventGroupHandle_t PhoneAppSettings::_wifi_event_group = nullptr;
 bool PhoneAppSettings::_wifi_initialized = false;
+TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
+uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
 
 #define NVS_NAMESPACE            "settings"
 #define NVS_KEY_WIFI_EN          "wifi_en"
@@ -906,18 +908,61 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
     if (!_wifi_event_group) return;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        /* Cancel any pending reconnection and try fresh */
+        if (_wifi_reconnect_timer) {
+            xTimerStop(_wifi_reconnect_timer, 0);
+            xTimerDelete(_wifi_reconnect_timer, 0);
+            _wifi_reconnect_timer = nullptr;
+        }
+        _wifi_reconnect_count = 0;
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         xEventGroupSetBits(_wifi_event_group, WIFI_CONNECTED_BIT);
         wifi_event_sta_connected_t *evt = (wifi_event_sta_connected_t *)event_data;
-        ESP_LOGI(TAG, "WiFi connected to %s", evt->ssid);
+        if (_wifi_reconnect_timer) {
+            ESP_LOGI(TAG, "WiFi reconnected to %s after %lu attempt(s)", evt->ssid, _wifi_reconnect_count);
+            _wifi_reconnect_count = 0;
+            xTimerStop(_wifi_reconnect_timer, 0);
+            xTimerDelete(_wifi_reconnect_timer, 0);
+            _wifi_reconnect_timer = nullptr;
+        } else {
+            ESP_LOGI(TAG, "WiFi connected to %s", evt->ssid);
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(_wifi_event_group, WIFI_CONNECTED_BIT);
-        ESP_LOGI(TAG, "WiFi disconnected");
+        wifi_event_sta_disconnected_t *evt = (wifi_event_sta_disconnected_t *)event_data;
+        ESP_LOGI(TAG, "WiFi disconnected, reason=%d", evt->reason);
+        /* Check if WiFi is enabled in NVS — if so, start 10s periodic reconnect */
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+            int32_t wifi_en = 0;
+            nvs_get_i32(nvs_h, "wifi_en", &wifi_en);
+            nvs_close(nvs_h);
+            if (wifi_en && !_wifi_reconnect_timer) {
+                _wifi_reconnect_timer = xTimerCreate("wifi_recon",
+                    pdMS_TO_TICKS(10000), pdTRUE, NULL, wifiReconnectTimerCallback);
+                if (_wifi_reconnect_timer) {
+                    xTimerStart(_wifi_reconnect_timer, 0);
+                    ESP_LOGI(TAG, "WiFi auto-reconnect timer started (10s interval)");
+                }
+            }
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
     }
+}
+
+void PhoneAppSettings::wifiReconnectTimerCallback(TimerHandle_t xTimer)
+{
+    _wifi_reconnect_count++;
+    if (_wifi_reconnect_count > 20) {
+        ESP_LOGW(TAG, "WiFi auto-reconnect stopped after %lu failed attempts", _wifi_reconnect_count);
+        xTimerStop(_wifi_reconnect_timer, 0);
+        return;
+    }
+    ESP_LOGI(TAG, "WiFi auto-reconnect [%lu]: calling esp_wifi_connect()", _wifi_reconnect_count);
+    esp_wifi_connect();
 }
 
 void PhoneAppSettings::onWifiRowClicked(lv_event_t *e)
@@ -964,6 +1009,13 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             esp_wifi_disconnect();
         }
         esp_wifi_stop();  // Power down WiFi hardware (keeps stack init'd)
+        /* Stop and delete reconnection timer, reset count */
+        if (_wifi_reconnect_timer) {
+            xTimerStop(_wifi_reconnect_timer, 0);
+            xTimerDelete(_wifi_reconnect_timer, 0);
+            _wifi_reconnect_timer = nullptr;
+        }
+        _wifi_reconnect_count = 0;
         /* Clean up scan task and event group on WiFi OFF */
         if (app->_wifi_scan_task && eTaskGetState(app->_wifi_scan_task) != eDeleted) {
             vTaskDelete(app->_wifi_scan_task);
