@@ -198,7 +198,8 @@ static const char *WEB_UI_HTML =
 "try{let r=await fetch('/api/status');let j=await r.json();"
 "document.getElementById('wifi_en').checked=j.wifi_en!=0;"
 "document.getElementById('ssid').value=j.ssid||'';"
-"document.getElementById('pass').value=j.pass||'';"
+"document.getElementById('pass').placeholder=j.has_pass?'(saved)':'WiFi password';"
+"document.getElementById('pass').value='';"
 "document.getElementById('volume').value=j.volume||60;"
 "document.getElementById('vol_val').textContent=j.volume||60;"
 "document.getElementById('cam_stream').checked=j.cam_stream!=0;"
@@ -287,7 +288,6 @@ static esp_err_t index_handler(httpd_req_t *req)
 
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    char json[512];
     char ssid[33] = {};
     char pass[65] = {};
     nvs_get_str(NVS_KEY_WIFI_SSID, ssid, sizeof(ssid));
@@ -297,14 +297,25 @@ static esp_err_t status_handler(httpd_req_t *req)
     int32_t cam_en = g_has_lcd ? 0 : nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0);
     bool cam_running = g_has_lcd ? false : CameraStream::instance().isRunning();
 
-    snprintf(json, sizeof(json),
-        "{\"wifi_en\":%ld,\"ssid\":\"%s\",\"pass\":\"%s\",\"volume\":%ld,"
-        "\"cam_stream\":%ld,\"cam_running\":%s}",
-        wifi_en, ssid, pass, volume, cam_en, cam_running ? "true" : "false");
+    /* Build JSON safely with cJSON — avoids injection from SSID special chars */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "wifi_en", wifi_en);
+    cJSON_AddStringToObject(root, "ssid", ssid);
+    cJSON_AddBoolToObject(root, "has_pass", strlen(pass) > 0);  /* Never expose plaintext password */
+    cJSON_AddNumberToObject(root, "volume", volume);
+    cJSON_AddNumberToObject(root, "cam_stream", cam_en);
+    cJSON_AddBoolToObject(root, "cam_running", cam_running);
 
+    char *json_str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    if (json_str) {
+        httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+        cJSON_free(json_str);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
+    cJSON_Delete(root);
     return ESP_OK;
 }
 
