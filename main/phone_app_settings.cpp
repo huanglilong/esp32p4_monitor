@@ -847,6 +847,14 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
     const char *pass = pass_buf;
     if (strncmp(ssid, "SSID: ", 6) == 0) ssid += 6;
 
+    /* Guard: skip if SSID is empty */
+    if (strlen(ssid) == 0) {
+        ESP_LOGW(TAG, "WiFi SSID is empty — skipping connect");
+        app->_wifi_connecting = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
     size_t slen = strlen(ssid);
     if (slen >= sizeof(wifi_cfg.sta.ssid)) slen = sizeof(wifi_cfg.sta.ssid) - 1;
     memcpy(wifi_cfg.sta.ssid, ssid, slen); wifi_cfg.sta.ssid[slen] = '\0';

@@ -382,11 +382,25 @@ static esp_err_t settings_handler(httpd_req_t *req)
         }
     }
 
+    /* WiFi: skip if ssid or password is explicitly provided but empty */
+    bool skip_wifi = false;
+    if (j_ssid && cJSON_IsString(j_ssid) && j_ssid->valuestring &&
+        strlen(j_ssid->valuestring) == 0) {
+        ESP_LOGW(TAG, "WiFi SSID is empty — skipping WiFi settings");
+        skip_wifi = true;
+    }
+    if (j_pass && cJSON_IsString(j_pass) && j_pass->valuestring &&
+        strlen(j_pass->valuestring) == 0) {
+        ESP_LOGW(TAG, "WiFi password is empty — skipping WiFi settings");
+        skip_wifi = true;
+    }
+
     /* WiFi: try connecting first, save to NVS only on success */
     bool wifi_ok = true;  /* default true if no WiFi change */
-    bool need_reconnect = (j_wifi_en && j_wifi_en->valueint != 0
-                           && j_ssid && cJSON_IsString(j_ssid)
-                           && j_ssid->valuestring && strlen(j_ssid->valuestring) > 0);
+    bool need_reconnect = !skip_wifi
+                          && j_wifi_en && j_wifi_en->valueint != 0
+                          && j_ssid && cJSON_IsString(j_ssid)
+                          && j_ssid->valuestring && strlen(j_ssid->valuestring) > 0;
     if (need_reconnect) {
         const char *target_ssid = j_ssid->valuestring;
         const char *target_pass = (j_pass && cJSON_IsString(j_pass) && j_pass->valuestring)
@@ -441,7 +455,7 @@ static esp_err_t settings_handler(httpd_req_t *req)
                 esp_wifi_connect();
             }
         }
-    } else if (j_wifi_en) {
+    } else if (j_wifi_en && !skip_wifi) {
         nvs_set_i32(NVS_KEY_WIFI_EN, j_wifi_en->valueint);
         if (j_wifi_en->valueint == 0) {
             /* WiFi OFF: disconnect and stop WiFi hardware immediately */
