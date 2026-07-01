@@ -1,11 +1,12 @@
 /*
- * Web Config Server — HTTP-based settings UI.
+ * Web Config Server — HTTP-based settings UI with mDNS discovery.
  *
  * Provides a web page to configure WiFi credentials, speaker volume,
  * and other settings normally set through the LCD UI on LCD-4B boards.
  * All settings are persisted to NVS namespace "settings".
  *
  * Serves on port 8080 on both boards (coexists with CameraStream port 80/81).
+ * Advertised via mDNS as esp-web.local (shared hostname with CameraStream).
  *
  * Assumption: NVS already contains WiFi SSID/password.
  * The device must already be connected to a network before the web UI
@@ -30,6 +31,8 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
+#include "mdns.h"
+#include "lwip/apps/netbiosns.h"
 #include "cJSON.h"
 #include "camera_stream.hpp"
 
@@ -59,6 +62,7 @@ extern bool g_has_lcd;
 static httpd_handle_t s_httpd = NULL;
 static TaskHandle_t   s_task_handle = NULL;
 static bool           s_running = false;
+static bool           s_mdns_running = false;
 
 /*============================================================================
  * NVS Helpers
@@ -585,6 +589,26 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_cam);
     httpd_register_uri_handler(s_httpd, &uri_reset);
 
+    /* mDNS: advertise web config on the local network */
+    if (mdns_init() == ESP_OK) {
+        mdns_hostname_set("esp-web");
+        mdns_instance_name_set("esp-web-config");
+
+        netbiosns_init();
+        netbiosns_set_name("esp-web");
+
+        mdns_txt_item_t txt[] = {
+            {(char *)"board", (char *)CONFIG_IDF_TARGET},
+            {(char *)"path",  (char *)"/"},
+        };
+        mdns_service_add("ESP32-WebConfig", "_http", "_tcp", WEB_CONFIG_PORT,
+                         txt, sizeof(txt) / sizeof(txt[0]));
+        s_mdns_running = true;
+        ESP_LOGI(TAG, "mDNS: esp-web.local:%d (NetBIOS: esp-web)", WEB_CONFIG_PORT);
+    } else {
+        ESP_LOGW(TAG, "mDNS init failed");
+    }
+
     ESP_LOGI(TAG, "Web config server started on port %d", WEB_CONFIG_PORT);
     s_running = true;
 
@@ -619,6 +643,10 @@ void web_config_server_start(void)
 
 void web_config_server_stop(void)
 {
+    if (s_mdns_running) {
+        mdns_free();
+        s_mdns_running = false;
+    }
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
