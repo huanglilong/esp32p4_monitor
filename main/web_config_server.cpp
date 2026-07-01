@@ -29,6 +29,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "esp_system.h"
 #include "cJSON.h"
 #include "camera_stream.hpp"
 
@@ -179,6 +180,9 @@ static const char *WEB_UI_HTML =
 "</div>"
 "<button onclick=\"saveSettings()\">Save Settings</button>"
 "<div id=\"status\"></div>"
+"<div style=\"margin-top:24px;padding-top:16px;border-top:1px solid #0f3460\">"
+"<button onclick=\"factoryReset()\" style=\"background:linear-gradient(135deg,#ff4444,#cc0000)\">"
+"Factory Reset (Erase NVS)</button></div>"
 "</div>"
 "<script>"
 "function updateVol(){"
@@ -225,6 +229,12 @@ static const char *WEB_UI_HTML =
 "if(j.ok)showStatus('Saved! WiFi will reconnect.','success');"
 "else showStatus('Save failed: '+j.error,'error')}"
 "catch(e){showStatus('Connection error','error')}}"
+"async function factoryReset(){"
+"if(!confirm('Are you sure? This will erase ALL NVS settings and reboot.'))return;"
+"showStatus('Factory resetting...','error');"
+"try{let r=await fetch('/api/factory_reset',{method:'POST'});"
+"let j=await r.json();showStatus(j.message||'Rebooting...','success')}"
+"catch(e){showStatus('Device is rebooting...','success')}}"
 "loadStatus();"
 "</script></body></html>";
 
@@ -481,6 +491,39 @@ static esp_err_t camera_stream_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t factory_reset_handler(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "Factory reset requested! Erasing NVS settings...");
+
+    /* Erase all keys in the "settings" namespace */
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_erase_all(h);
+        if (err == ESP_OK) {
+            nvs_commit(h);
+            ESP_LOGI(TAG, "All keys in namespace '%s' erased", NVS_NAMESPACE);
+        } else {
+            ESP_LOGE(TAG, "nvs_erase_all failed: %s", esp_err_to_name(err));
+        }
+        nvs_close(h);
+    } else {
+        ESP_LOGW(TAG, "Namespace '%s' not found — nothing to erase", NVS_NAMESPACE);
+    }
+
+    /* Respond to the client before reboot so they see confirmation */
+    const char *resp = "{\"ok\":1,\"message\":\"Settings erased, rebooting...\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+
+    /* Give the HTTP response time to flush */
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    esp_restart();
+
+    return ESP_OK;
+}
+
 /*============================================================================
  * Task
  *============================================================================*/
@@ -531,11 +574,16 @@ static void web_config_task(void *arg)
         .uri = "/api/camera_stream", .method = HTTP_POST,
         .handler = camera_stream_handler, .user_ctx = NULL
     };
+    httpd_uri_t uri_reset = {
+        .uri = "/api/factory_reset", .method = HTTP_POST,
+        .handler = factory_reset_handler, .user_ctx = NULL
+    };
 
     httpd_register_uri_handler(s_httpd, &uri_index);
     httpd_register_uri_handler(s_httpd, &uri_status);
     httpd_register_uri_handler(s_httpd, &uri_settings);
     httpd_register_uri_handler(s_httpd, &uri_cam);
+    httpd_register_uri_handler(s_httpd, &uri_reset);
 
     ESP_LOGI(TAG, "Web config server started on port %d", WEB_CONFIG_PORT);
     s_running = true;
