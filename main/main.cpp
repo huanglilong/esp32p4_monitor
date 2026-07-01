@@ -194,6 +194,18 @@ bool monitor_init_sdcard(void)
     esp_err_t ret;
     ESP_LOGI(TAG, "Initializing SD card via SPI...");
 
+    /* Power-cycle SD via LDO VO4 to reset card into clean state */
+    {
+        esp_ldo_channel_config_t ldo_cfg = { .chan_id = 4, .voltage_mv = 3300 };
+        esp_ldo_channel_handle_t ldo_chan = NULL;
+        esp_ldo_acquire_channel(&ldo_cfg, &ldo_chan);
+        /* Release → re-acquire toggles power, resetting SD card */
+        esp_ldo_release_channel(ldo_chan);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_ldo_acquire_channel(&ldo_cfg, &ldo_chan);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
@@ -467,19 +479,35 @@ static void boot_sdcard_wifi_config(void)
 
     ESP_LOGI(TAG, "No WiFi SSID in NVS, trying SD card wifi.txt...");
 
-    /* Init SD card power (on-chip LDO, may already be on from BSP) */
-    sd_pwr_ctrl_handle_t pwr_ctrl = NULL;
-    sd_pwr_ctrl_ldo_config_t ldo_config = { .ldo_chan_id = 4 };
-    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "SD LDO init: %s (may already be on)", esp_err_to_name(ret));
+    /* Configure GPIO45 for SD card power reset (used after BSP unmount on LCD-4B) */
+    if (g_has_lcd) {
+        gpio_config_t sd_pwr_io = { .pin_bit_mask = (1ULL << 45), .mode = GPIO_MODE_OUTPUT };
+        gpio_config(&sd_pwr_io);
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
 
-    /* Mount SD via SDSPI (SDMMC controller claimed by C6 WiFi SDIO on Slot 1) */
-    ESP_LOGI(TAG, "Mounting SD card (SDSPI)...");
     sdmmc_card_t *sd_card = NULL;
-    {
+    bool is_sdspi = false;
+
+    if (g_has_lcd) {
+        /* LCD-4B: use BSP native SDMMC (LDO powered by BSP display init) */
+        ESP_LOGI(TAG, "Mounting SD card (BSP SDMMC)...");
+        esp_err_t ret = bsp_sdcard_mount();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "BSP SD mount failed (%s)", esp_err_to_name(ret));
+            return;
+        }
+        sd_card = bsp_sdcard;
+    } else {
+        /* WIFI6: self-powered SDSPI (SDMMC ctrl claimed by C6) */
+        sd_pwr_ctrl_handle_t pwr_ctrl = NULL;
+        sd_pwr_ctrl_ldo_config_t ldo_config = { .ldo_chan_id = 4 };
+        esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SD LDO init: %s", esp_err_to_name(ret));
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        ESP_LOGI(TAG, "Mounting SD card (SDSPI)...");
         esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
             .format_if_mount_failed = false,
             .max_files = 2,
@@ -487,11 +515,9 @@ static void boot_sdcard_wifi_config(void)
         };
         sdmmc_host_t host = SDSPI_HOST_DEFAULT();
         host.slot = SPI2_HOST;
-
         sdspi_device_config_t slot_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
         slot_cfg.gpio_cs = GPIO_NUM_42;
         slot_cfg.host_id = SPI2_HOST;
-
         spi_bus_config_t bus_cfg = {
             .mosi_io_num = GPIO_NUM_44,
             .miso_io_num = GPIO_NUM_39,
@@ -502,7 +528,6 @@ static void boot_sdcard_wifi_config(void)
         ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
-            if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
             return;
         }
         ret = esp_vfs_fat_sdspi_mount(SDMMC_MOUNT_POINT, &host, &slot_cfg,
@@ -510,17 +535,24 @@ static void boot_sdcard_wifi_config(void)
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "SD mount failed (%s)", esp_err_to_name(ret));
             spi_bus_free(SPI2_HOST);
-            if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
             return;
         }
+        is_sdspi = true;
     }
 
     FILE *f = fopen(SDMMC_MOUNT_POINT "/wifi.txt", "r");
     if (!f) {
         ESP_LOGW(TAG, "wifi.txt not found on SD card");
-        if (sd_card) esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
-        spi_bus_free(SPI2_HOST);
-        if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
+        if (is_sdspi) {
+            esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
+            spi_bus_free(SPI2_HOST);
+        } else {
+            bsp_sdcard_unmount();
+            /* Power-cycle SD to reset mode (SDMMC → clean state for SDSPI later) */
+            gpio_set_level(GPIO_NUM_45, 0);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            gpio_set_level(GPIO_NUM_45, 1);
+        }
         return;
     }
 
@@ -545,9 +577,16 @@ static void boot_sdcard_wifi_config(void)
         }
     }
     fclose(f);
-    esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
-    spi_bus_free(SPI2_HOST);
-    if (pwr_ctrl) sd_pwr_ctrl_del_on_chip_ldo(pwr_ctrl);
+    if (is_sdspi) {
+        esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, sd_card);
+        spi_bus_free(SPI2_HOST);
+    } else {
+        bsp_sdcard_unmount();
+        /* Power-cycle SD to reset mode for later SDSPI use */
+        gpio_set_level(GPIO_NUM_45, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(GPIO_NUM_45, 1);
+    }
 
     if (strlen(file_ssid) == 0) {
         ESP_LOGW(TAG, "wifi.txt missing ssid field");
@@ -613,16 +652,16 @@ extern "C" void app_main(void)
     g_has_lcd = detect_lcd_via_i2c();
     ESP_LOGI(TAG, "LCD detected: %s", g_has_lcd ? "YES (LCD-4B)" : "NO (WIFI6)");
 
-    /* 0c. Try SD card wifi.txt (works for both boards, needs I2C init from detection) */
-    boot_sdcard_wifi_config();
-
-    /* 0d. Boot WiFi auto-connect */
+    /* Boot WiFi auto-connect */
     PhoneAppSettings::bootWifiAutoConnect();
 
     if (g_has_lcd) {
-        /* === LCD-4B: full display + UI === */
+        /* === LCD-4B: BSP display init (powers SDMMC), then SD wifi.txt === */
         lv_display_t *disp = NULL;
         monitor_init_display(&disp);
+
+        /* Try SD wifi.txt AFTER BSP powers SD slot */
+        boot_sdcard_wifi_config();
 
         /* Apply saved brightness */
         {
@@ -641,7 +680,8 @@ extern "C" void app_main(void)
         monitor_init_brookesia(disp);
         ESP_LOGI(TAG, "=== LCD-4B mode initialized ===");
     } else {
-        /* === WIFI6: no display, web config only === */
+        /* === WIFI6: SD wifi.txt (SDSPI), then WiFi === */
+        boot_sdcard_wifi_config();
         ESP_LOGI(TAG, "=== WIFI6 mode (no display) ===");
     }
     web_config_server_start();
