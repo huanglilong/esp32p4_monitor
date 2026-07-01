@@ -81,6 +81,8 @@ public:
     uint32_t                      _detect_in_size;
     std::list<dl::detect::result_t> _detect_results;
     mutable bool                 _detect_available;   /* Non-volatile: same task */
+    bool                         _model_ready;         /* Model loaded and ready for inference */
+    TaskHandle_t                 _model_load_task;     /* Background task that loads the model */
     static constexpr float       PERSON_SCORE_THRESHOLD = 0.35f;
     static constexpr int         DETECT_INTERVAL_FRAMES = 3;
     static constexpr int         BOX_LINE_WIDTH = 2;
@@ -109,6 +111,7 @@ private:
     /* Detection: init/deinit */
     bool _init_detection(void);
     void _deinit_detection(void);
+    static void _model_load_task_fn(void *arg);  /* Background model loader */
 
     /* HTTP server */
     httpd_handle_t         _httpd_80;          // Port 80: API + info

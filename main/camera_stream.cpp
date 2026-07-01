@@ -122,6 +122,8 @@ CameraStream::CameraStream() :
     _detect_in_buf(nullptr), _detect_in_size(0),
     _detect_results(),
     _detect_available(false),
+    _model_ready(false),
+    _model_load_task(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _mdns_running(false)
@@ -364,9 +366,44 @@ void CameraStream::_deinit_video(void)
  * Detection Subsystem — inline (no separate task, no extra buffer overhead)
  *============================================================================*/
 
+/*============================================================================
+ * Detection: Background Model Loader
+ *============================================================================*/
+void CameraStream::_model_load_task_fn(void *arg)
+{
+    CameraStream *cs = static_cast<CameraStream *>(arg);
+
+    ESP_LOGI(TAG, "Model load task starting...");
+
+    /* Create COCODetect instance (YOLO11n 320x320 for P4, lazy load) */
+    cs->_detector = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);
+    if (!cs->_detector) {
+        ESP_LOGE(TAG, "Failed to create COCODetect instance");
+        vTaskDelete(NULL);
+        return;
+    }
+    cs->_detector->set_score_thr(cs->PERSON_SCORE_THRESHOLD);
+
+    /* Warm-up inference: trigger model loading now so the stream loop
+     * isn't blocked later. Uses a dummy small image. */
+    ESP_LOGI(TAG, "Loading model (warmup inference)...");
+    dl::image::img_t img = {
+        .data = cs->_detect_in_buf,
+        .width = (uint16_t)cs->_cam_width,
+        .height = (uint16_t)cs->_cam_height,
+        .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
+    };
+    cs->_detector->run(img);  /* First call loads model (~11s) */
+    cs->_model_ready = true;
+    cs->_detect_available = false;
+
+    ESP_LOGI(TAG, "Model loaded and ready for inference");
+    vTaskDelete(NULL);
+}
+
 bool CameraStream::_init_detection(void)
 {
-    /* Allocate small frame buffer for inference copy (same size as V4L2 buffer).
+    /* Allocate frame buffer for inference copy (same size as V4L2 buffer).
      * Since Camera App and Camera Stream are mutually exclusive, this PSRAM
      * allocation is naturally reused when switching between apps. */
     _detect_in_size = _cam_width * _cam_height * 2;  // RGB565
@@ -377,23 +414,32 @@ bool CameraStream::_init_detection(void)
         return false;
     }
 
-    /* Create COCODetect instance (YOLO11n 320x320 for P4, lazy load) */
-    _detector = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);
-    if (!_detector) {
-        ESP_LOGE(TAG, "Failed to create COCODetect instance");
+    _model_ready = false;
+
+    /* Start background task to load model asynchronously.
+     * This keeps CameraStream::start() fast and the stream loop unblocked. */
+    BaseType_t ret = xTaskCreate(
+        _model_load_task_fn, "model_load", 8 * 1024, this, 1, &_model_load_task);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create model load task");
         heap_caps_free(_detect_in_buf);
         _detect_in_buf = nullptr;
         return false;
     }
-    _detector->set_score_thr(PERSON_SCORE_THRESHOLD);
 
-    _detect_available = false;
-    ESP_LOGI(TAG, "Detection initialized (YOLO11n 320x320)");
+    ESP_LOGI(TAG, "Detection init done — model loading in background");
     return true;
 }
 
 void CameraStream::_deinit_detection(void)
 {
+    /* Stop background model-loading task if still running */
+    if (_model_load_task) {
+        TaskHandle_t t = _model_load_task;
+        _model_load_task = nullptr;
+        vTaskDelete(t);
+    }
+
     if (_detector) {
         delete _detector;
         _detector = nullptr;
@@ -404,13 +450,14 @@ void CameraStream::_deinit_detection(void)
     }
     _detect_in_size = 0;
     _detect_available = false;
+    _model_ready = false;
     _detect_results.clear();
     ESP_LOGI(TAG, "Detection deinitialized");
 }
 
 void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
 {
-    if (!_detector || !_detect_in_buf) return;
+    if (!_detector || !_model_ready || !_detect_in_buf) return;
 
     /* Copy frame to detection buffer (we'll Q the V4L2 buf back quickly).
      * COCODetect will preprocess (resize + format convert) from this buffer. */
@@ -513,10 +560,12 @@ static esp_err_t stream_handler(httpd_req_t *req)
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
         /* Every N frames: copy frame, Q buffer quickly, run inference inline.
+         * Only when model is fully loaded (background task completed).
          * This holds the V4L2 buffer only for the memcpy (~ms), not for the
          * entire 560ms inference — no frame drops. */
         bool detection_run_this_frame = false;
-        if (cs->_detector && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
+        if (cs->_detector && cs->_model_ready
+            && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
             uint32_t copy_sz = buf.bytesused;
             if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
             memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
@@ -695,6 +744,7 @@ static esp_err_t detection_info_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "detection_enabled", cs->_detector != nullptr);
+    cJSON_AddBoolToObject(root, "model_ready", cs->_model_ready);
 
     float max_conf = 0.0f;
     for (auto &r : cs->_detect_results) {
