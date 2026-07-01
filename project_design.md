@@ -786,3 +786,17 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 | 6 | 🟡 | `phone_app_music.cpp:454-461` | `_asp_output_cb` 无 mutex → 与音量调节并发竞争 codec | 加 `s_codec_mutex` 保护 |
 | 7 | 🟢 | `phone_app_camera.cpp:407-426` | `_cam_buffer` 跨核并发 (timer core1 / detect core0) 画面撕裂 | 标记为非关键 (影响单帧) |
 | 8 | 🟢 | `phone_app_camera.cpp:329-336` | PPA client 注册但从未使用 (307KB PSRAM 浪费) | 标记为已知 TODO |
+
+### 第五轮分析 — 安全与健壮性修复 (2026-07-01)
+
+对全项目代码重新审计，发现并修复以下新问题:
+
+| # | 严重度 | 文件 | 问题 | 修复 |
+|---|--------|------|------|------|
+| 1 | 🔴 | `web_config_server.cpp:300-301` | `/api/status` 手动 snprintf 构造 JSON — SSID 含 `"` 或 `\` 时产生非法 JSON | 改用 cJSON 安全构造 |
+| 2 | 🔴 | `web_config_server.cpp:301` | `/api/status` 明文返回 WiFi 密码 — 任何浏览器可读取 | 改为 `has_pass` 布尔值，前端显示 "(saved)" |
+| 3 | 🟡 | `camera_stream.hpp:84` | `_model_ready` 非 volatile — 后台加载 task 写入，HTTP handler task 读取，编译器可能缓存旧值 | 加 `volatile` 修饰 |
+| 4 | 🟢 | `components/shine_encoder/bitstream.c:14` | `<malloc.h>` 非 POSIX 标准头，平台兼容性问题 | 改为 `<stdlib.h>` |
+| 5 | 🟢 | `main/CMakeLists.txt:28` | `-Wno-attributes PUBLIC` 抑制所有下游代码的属性警告 | 改为 `PRIVATE`，仅对 LVGL 自身编译生效 |
+| 6 | 🟢 | `phone_app_music.cpp:237` | 音量 NVS 同步定时器每 1s 轮询一次 | 降频到 5s |
+| 7 | 🟢 | `sdkconfig.defaults` | 4 个未知 kconfig 符号产生 CMake 警告 | 移除 `ESP_AUDIO_CODEC_DECODER_AAC/AMR/OPUS` 和 `ESP_HOSTED_MEMPOOL_PREFER_SPIRAM` |
