@@ -398,6 +398,7 @@ void CameraStream::_model_load_task_fn(void *arg)
     cs->_detect_available = false;
 
     ESP_LOGI(TAG, "Model loaded and ready for inference");
+    cs->_model_load_task = nullptr;  /* Clear handle before self-deleting */
     vTaskDelete(NULL);
 }
 
@@ -433,11 +434,15 @@ bool CameraStream::_init_detection(void)
 
 void CameraStream::_deinit_detection(void)
 {
-    /* Stop background model-loading task if still running */
+    /* Stop background model-loading task if still running.
+     * The task self-deletes and clears _model_load_task on completion,
+     * so check both the handle and that the task hasn't already exited. */
     if (_model_load_task) {
         TaskHandle_t t = _model_load_task;
         _model_load_task = nullptr;
-        vTaskDelete(t);
+        if (eTaskGetState(t) != eDeleted) {
+            vTaskDelete(t);
+        }
     }
 
     if (_detector) {
@@ -841,13 +846,18 @@ static esp_err_t index_handler(httpd_req_t *req)
         "<title>ESP32-P4 Camera</title>"
         "<style>"
         "body{margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:sans-serif}"
-        "img#stream{max-width:100vw;max-height:80vh}"
+        "#settings-banner{position:fixed;top:0;left:0;right:0;background:#1a1a2e;color:#00d4ff;padding:8px 16px;text-align:center;font-size:13px;z-index:10}"
+        "#settings-banner a{color:#00d4ff;font-weight:bold}"
+        "img#stream{max-width:100vw;max-height:80vh;margin-top:40px}"
         ".panel{position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.8);padding:8px 16px;display:flex;gap:20px;justify-content:center;align-items:center;flex-wrap:wrap}"
         ".stat{color:#ccc;font-size:12px} .stat b{color:#4CAF50}"
         "label{color:#fff;font-size:12px} label b{color:#4CAF50}"
         "input[type=range]{width:80px;accent-color:#4CAF50}"
         "a{color:#4CAF50;text-decoration:none;font-size:11px}"
         "</style></head><body>"
+        "<div id='settings-banner'>"
+        "⚙ <a id='settings-link'>Settings (WiFi / Volume / Factory Reset)</a>"
+        "</div>"
         "<img id='stream'>"
         "<div class='panel'>"
         "<span class='stat'>Res: <b id='res'>--</b></span>"
@@ -860,6 +870,7 @@ static esp_err_t index_handler(httpd_req_t *req)
         "<a href='http://' + window.location.hostname + ':81/stream'>Direct</a>"
         "<a href='/api/capture_image'>Shot</a>"
         "</div><script>"
+        "document.getElementById('settings-link').href='http://'+window.location.hostname+':8080/';"
         "var stream_url='http://'+window.location.hostname+':81/stream';"
         "document.getElementById('stream').src=stream_url;"
         "function setQ(v){document.getElementById('ql').textContent=v;fetch('/api/set_quality?value='+v)}"
