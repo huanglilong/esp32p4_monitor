@@ -1,16 +1,5 @@
 menu "Monitor Example Configuration"
 
-    config BOARD_WIFI6_WITH_TOUCH_LCD_4B
-        bool "ESP32-P4-WIFI6 with Touch LCD 4B"
-        default y
-        help
-            Waveshare ESP32-P4-WIFI6-Touch-LCD-4B board with:
-            - Onboard 4-inch 720x720 IPS LCD (ST7703) + GT911 touch
-            - ES8311 DAC (0x30) + ES7210 ADC (0x80, dual-mic echo cancellation)
-            - Optional Ethernet (IP101), RS485, Relay (ETH-2RO version)
-
-            Disable this for ESP32-P4-WIFI6 base board (no display).
-
     choice EXAMPLE_MIPI_CSI_DISP_HRES
         bool "Set MIPI CSI horizontal resolution"
         default EXAMPLE_MIPI_CSI_HRES_800

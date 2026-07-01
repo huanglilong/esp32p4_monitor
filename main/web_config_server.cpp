@@ -30,11 +30,12 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "cJSON.h"
-#if !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 #include "camera_stream.hpp"
-#endif
 
 static const char *TAG = "WebConfig";
+
+/* Extern: set by main.cpp after GT911 I2C probe */
+extern bool g_has_lcd;
 
 #define WEB_CONFIG_PORT         8080
 
@@ -43,9 +44,7 @@ static const char *TAG = "WebConfig";
 #define NVS_KEY_WIFI_SSID       "ssid"
 #define NVS_KEY_WIFI_PASS       "pass"
 #define NVS_KEY_VOLUME          "volume"
-#if !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 #define NVS_KEY_CAM_STREAM      "cam_stream"
-#endif
 
 #define VOLUME_MIN              0
 #define VOLUME_MAX              100
@@ -281,14 +280,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     nvs_get_str(NVS_KEY_WIFI_PASS, pass, sizeof(pass));
     int32_t wifi_en = nvs_get_i32_def(NVS_KEY_WIFI_EN, 0);
     int32_t volume  = nvs_get_i32_def(NVS_KEY_VOLUME, VOLUME_DEFAULT);
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    /* LCD-4B: Camera Stream managed by Phone App, not web */
-    int32_t cam_en = 0;
-    bool cam_running = false;
-#else
-    int32_t cam_en  = nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0);
-    bool cam_running = CameraStream::instance().isRunning();
-#endif
+    int32_t cam_en = g_has_lcd ? 0 : nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0);
+    bool cam_running = g_has_lcd ? false : CameraStream::instance().isRunning();
 
     snprintf(json, sizeof(json),
         "{\"wifi_en\":%ld,\"ssid\":\"%s\",\"pass\":\"%s\",\"volume\":%ld,"
@@ -429,13 +422,13 @@ static esp_err_t settings_handler(httpd_req_t *req)
 
 static esp_err_t camera_stream_handler(httpd_req_t *req)
 {
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    /* LCD-4B: Camera Stream managed by Phone App, not available via web */
-    const char *resp = "{\"ok\":0,\"error\":\"Use Camera Stream App on the display\"}";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
-#else
+    if (g_has_lcd) {
+        /* LCD-4B: Camera Stream managed by Phone App, not available via web */
+        const char *resp = "{\"ok\":0,\"error\":\"Use Camera Stream App on the display\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
     char buf[128];
     int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (received <= 0) {
@@ -486,7 +479,6 @@ static esp_err_t camera_stream_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
-#endif /* !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B */
 }
 
 /*============================================================================
@@ -548,13 +540,11 @@ static void web_config_task(void *arg)
     ESP_LOGI(TAG, "Web config server started on port %d", WEB_CONFIG_PORT);
     s_running = true;
 
-#if !CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    /* Auto-start camera stream if NVS says it was enabled */
-    if (nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
+    /* Auto-start camera stream if NVS says it was enabled (WIFI6 only) */
+    if (!g_has_lcd && nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
         ESP_LOGI(TAG, "NVS cam_stream=1, auto-starting camera stream...");
         CameraStream::instance().start();
     }
-#endif
 
     /* Idle — HTTP server runs in its own internal threads */
     while (1) {

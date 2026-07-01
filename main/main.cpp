@@ -21,9 +21,7 @@
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 #include "es7210_adc.h"
-#endif
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "bsp/esp-bsp.h"
@@ -40,18 +38,18 @@
 
 static const char *TAG = "monitor";
 
+/* Auto-detected: true if GT911 touch (I2C 0x5D) responds → LCD-4B board */
+bool g_has_lcd = false;
+
 /* Forward declarations */
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 static void monitor_init_display(lv_display_t **disp);
 static void monitor_init_brookesia(lv_display_t *disp);
 static void on_clock_update_timer_cb(struct _lv_timer_t *t);
-#endif
 bool monitor_init_sdcard(void);
 void monitor_deinit_sdcard(void);
 void monitor_init_audio(void);
 void monitor_deinit_audio(void);
 
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 /* LVGL port config — pin to core 1 (core 0 reserved for detection/NPU inference) */
 #define LVGL_PORT_INIT_CONFIG() \
     {                               \
@@ -61,15 +59,10 @@ void monitor_deinit_audio(void);
         .task_max_sleep_ms = 500, \
         .timer_period_ms = 5,     \
     }
-#endif
 
 /* Audio handles - exposed for audio app */
 esp_codec_dev_handle_t s_codec_handle = NULL;     // Speaker (ES8311)
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-esp_codec_dev_handle_t s_codec_mic_handle = NULL; // Microphone (ES7210)
-#else
-esp_codec_dev_handle_t s_codec_mic_handle = NULL; // Not used (ES8311 BOTH mode)
-#endif
+esp_codec_dev_handle_t s_codec_mic_handle = NULL; // Microphone (ES7210 if LCD, ES8311 ADC if WIFI6)
 i2s_chan_handle_t s_rx_handle = NULL;             // I2S RX (for direct mic read)
 i2s_chan_handle_t s_tx_handle = NULL;             // I2S TX (for music playback)
 SemaphoreHandle_t s_codec_mutex = NULL;           // Protect concurrent codec access
@@ -82,9 +75,8 @@ static int s_sdcard_refcount = 0;
 static int s_audio_refcount = 0;
 
 /*============================================================================
- * MIPI DSI Display + ESP-Brookesia (LCD-4B only)
+ * MIPI DSI Display + ESP-Brookesia
  *============================================================================*/
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 static void monitor_init_display(lv_display_t **disp)
 {
     bsp_display_cfg_t cfg = {
@@ -184,7 +176,6 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t)
         "Refresh status bar failed"
     );
 }
-#endif // CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
 
 /*============================================================================
  * SD Card (SPI mode — SDMMC slot 0 blocked by esp_hosted C6 WiFi on slot 1)
@@ -280,11 +271,7 @@ void monitor_init_audio(void)
         return;
     }
 
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    ESP_LOGI(TAG, "Initializing audio (ES8311 + ES7210)...");
-#else
-    ESP_LOGI(TAG, "Initializing audio (ES8311 single-chip)...");
-#endif
+    ESP_LOGI(TAG, "Initializing audio (%s)...", g_has_lcd ? "ES8311 + ES7210" : "ES8311 single-chip");
 
     /* Enable PA GPIO 53 (critical for speaker output) */
     gpio_config_t pa_conf = {
@@ -333,81 +320,75 @@ void monitor_init_audio(void)
     const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
     assert(gpio_if);
 
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    audio_codec_i2s_cfg_t i2s_in_cfg = {
-        .port = 0,
-        .rx_handle = s_rx_handle,
-        .tx_handle = NULL,
-    };
-    const audio_codec_data_if_t *data_in = audio_codec_new_i2s_data(&i2s_in_cfg);
-    assert(data_in);
+    if (g_has_lcd) {
+        /* ===== LCD-4B: ES8311 DAC (Speaker, 0x30) + ES7210 ADC (Mic, 0x80) ===== */
+        audio_codec_i2s_cfg_t i2s_in_cfg = {
+            .port = 0,
+            .rx_handle = s_rx_handle,
+            .tx_handle = NULL,
+        };
+        const audio_codec_data_if_t *data_in = audio_codec_new_i2s_data(&i2s_in_cfg);
+        assert(data_in);
 
-    /* ===== LCD-4B: ES8311 DAC (Speaker, 0x30) + ES7210 ADC (Mic, 0x80) ===== */
-    audio_codec_i2c_cfg_t i2c_dac = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
-    const audio_codec_ctrl_if_t *ctrl_dac = audio_codec_new_i2c_ctrl(&i2c_dac);
-    es8311_codec_cfg_t es8311_cfg = {
-        .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
-        .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-        .pa_pin = 53, .master_mode = false, .use_mclk = true,
-        .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
-        .mclk_div = I2S_MCLK_MULTIPLE_256,
-    };
-    esp_codec_dev_cfg_t dev_dac = {
-        .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
-    };
-    s_codec_handle = esp_codec_dev_new(&dev_dac);
-    assert(s_codec_handle);
+        audio_codec_i2c_cfg_t i2c_dac = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
+        const audio_codec_ctrl_if_t *ctrl_dac = audio_codec_new_i2c_ctrl(&i2c_dac);
+        es8311_codec_cfg_t es8311_cfg = {
+            .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
+            .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
+            .pa_pin = 53, .master_mode = false, .use_mclk = true,
+            .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
+            .mclk_div = I2S_MCLK_MULTIPLE_256,
+        };
+        esp_codec_dev_cfg_t dev_dac = {
+            .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
+        };
+        s_codec_handle = esp_codec_dev_new(&dev_dac);
+        assert(s_codec_handle);
 
-    /* ===== ES7210 ADC (Mic) ===== */
-    audio_codec_i2c_cfg_t i2c_adc = { .port = 0, .addr = ES7210_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
-    const audio_codec_ctrl_if_t *ctrl_adc = audio_codec_new_i2c_ctrl(&i2c_adc);
-    es7210_codec_cfg_t es7210_cfg = {
-        .ctrl_if = ctrl_adc, .master_mode = false,
-        .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2,
-        .mclk_src = ES7210_MCLK_FROM_PAD, .mclk_div = I2S_MCLK_MULTIPLE_256,
-    };
-    esp_codec_dev_cfg_t dev_adc = {
-        .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es7210_codec_new(&es7210_cfg), .data_if = data_in
-    };
-    s_codec_mic_handle = esp_codec_dev_new(&dev_adc);
-    assert(s_codec_mic_handle);
-#else
-    /* ===== WIFI6: ES8311 single-chip (0x18, ADC + DAC) + NS4150B amp ===== */
-    audio_codec_i2c_cfg_t i2c_es8311 = { .port = 0, .addr = 0x18, .bus_handle = i2c_handle };
-    const audio_codec_ctrl_if_t *ctrl_es8311 = audio_codec_new_i2c_ctrl(&i2c_es8311);
-    es8311_codec_cfg_t es8311_cfg = {
-        .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
-        .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,  /* ADC + DAC */
-        .pa_pin = 53, .master_mode = false, .use_mclk = true,
-        .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
-        .mclk_div = I2S_MCLK_MULTIPLE_256,
-    };
-    esp_codec_dev_cfg_t dev_dac = {
-        .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
-    };
-    s_codec_handle = esp_codec_dev_new(&dev_dac);
-    assert(s_codec_handle);
-    /* Mic audio routes through I2S RX automatically (ES8311 BOTH mode enables ADC).
-     * No separate mic codec device needed — set s_codec_mic_handle stays NULL. */
-#endif
+        audio_codec_i2c_cfg_t i2c_adc = { .port = 0, .addr = ES7210_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
+        const audio_codec_ctrl_if_t *ctrl_adc = audio_codec_new_i2c_ctrl(&i2c_adc);
+        es7210_codec_cfg_t es7210_cfg = {
+            .ctrl_if = ctrl_adc, .master_mode = false,
+            .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2,
+            .mclk_src = ES7210_MCLK_FROM_PAD, .mclk_div = I2S_MCLK_MULTIPLE_256,
+        };
+        esp_codec_dev_cfg_t dev_adc = {
+            .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es7210_codec_new(&es7210_cfg), .data_if = data_in
+        };
+        s_codec_mic_handle = esp_codec_dev_new(&dev_adc);
+        assert(s_codec_mic_handle);
+    } else {
+        /* ===== WIFI6: ES8311 single-chip (0x18, ADC + DAC) + NS4150B amp ===== */
+        audio_codec_i2c_cfg_t i2c_es8311 = { .port = 0, .addr = 0x18, .bus_handle = i2c_handle };
+        const audio_codec_ctrl_if_t *ctrl_es8311 = audio_codec_new_i2c_ctrl(&i2c_es8311);
+        es8311_codec_cfg_t es8311_cfg = {
+            .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
+            .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,  /* ADC + DAC */
+            .pa_pin = 53, .master_mode = false, .use_mclk = true,
+            .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
+            .mclk_div = I2S_MCLK_MULTIPLE_256,
+        };
+        esp_codec_dev_cfg_t dev_dac = {
+            .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
+        };
+        s_codec_handle = esp_codec_dev_new(&dev_dac);
+        assert(s_codec_handle);
+        /* Mic audio routes through I2S RX automatically (ES8311 BOTH mode) */
+    }
 
-    /* Create mutex BEFORE opening codecs — protect concurrent access from Audio/Music apps */
+    /* Create mutex BEFORE opening codecs */
     s_codec_mutex = xSemaphoreCreateMutex();
 
-    /* Open both codecs */
+    /* Open codecs */
     esp_codec_dev_sample_info_t fs = { .bits_per_sample = 16, .channel = 2, .channel_mask = 0x03, .sample_rate = EXAMPLE_AUDIO_SAMPLE_RATE };
     ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
     esp_codec_dev_set_out_vol(s_codec_handle, EXAMPLE_VOICE_VOLUME);
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_mic_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
-    esp_codec_dev_set_in_gain(s_codec_mic_handle, 42);  // Max gain for ES7210 dual-mic
-#endif
+    if (g_has_lcd) {
+        ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_mic_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
+        esp_codec_dev_set_in_gain(s_codec_mic_handle, 42);
+    }
 
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    ESP_LOGI(TAG, "Audio initialized: ES8311 + ES7210, vol=%d", EXAMPLE_VOICE_VOLUME);
-#else
-    ESP_LOGI(TAG, "Audio initialized: ES8311 (single-chip BOTH mode), vol=%d", EXAMPLE_VOICE_VOLUME);
-#endif
+    ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", g_has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", EXAMPLE_VOICE_VOLUME);
     s_audio_refcount = 1;
 }
 
@@ -587,18 +568,39 @@ static void boot_sdcard_wifi_config(void)
 }
 
 /*============================================================================
+ * Auto-detect LCD via GT911 I2C probe
+ *============================================================================*/
+static bool detect_lcd_via_i2c(void)
+{
+    /* BSP I2C must be initialized first */
+    bsp_i2c_init();
+    i2c_master_bus_handle_t i2c = bsp_i2c_get_handle();
+    if (!i2c) return false;
+
+    i2c_master_dev_handle_t dev = NULL;
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = 0x5D,  /* GT911 default */
+        .scl_speed_hz = 100000,
+    };
+    esp_err_t ret = i2c_master_bus_add_device(i2c, &dev_cfg, &dev);
+    if (ret != ESP_OK) return false;
+
+    /* Probe: write 1 byte, check for ACK (null buffer not allowed) */
+    uint8_t dummy = 0;
+    ret = i2c_master_transmit(dev, &dummy, 1, pdMS_TO_TICKS(50));
+    i2c_master_bus_rm_device(dev);
+    return (ret == ESP_OK);
+}
+
+/*============================================================================
  * Main
  *============================================================================*/
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== ESP32-P4 Monitor Starting ===");
-#ifdef CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    ESP_LOGI(TAG, "CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B=%d", CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B);
-#else
-    ESP_LOGI(TAG, "CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B=n");
-#endif
 
-    /* 0. NVS init (for persistent settings) */
+    /* 0. NVS init */
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -607,56 +609,42 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(nvs_err);
     ESP_LOGI(TAG, "NVS initialized");
 
-#if CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B
-    /* 1. MIPI DSI Display (BSP enables LDO VO4 for SD power) */
-    lv_display_t *disp = NULL;
-    monitor_init_display(&disp);
+    /* 0b. Auto-detect LCD via GT911 I2C probe */
+    g_has_lcd = detect_lcd_via_i2c();
+    ESP_LOGI(TAG, "LCD detected: %s", g_has_lcd ? "YES (LCD-4B)" : "NO (WIFI6)");
 
-    /* 1b. If NVS has no WiFi SSID, try reading wifi.txt from SD card.
-     * Must be AFTER display init (BSP powers SD slot). */
+    /* 0c. Try SD card wifi.txt (works for both boards, needs I2C init from detection) */
     boot_sdcard_wifi_config();
 
-    /* 1c. Boot WiFi auto-connect: connect if SSID/password stored in NVS */
+    /* 0d. Boot WiFi auto-connect */
     PhoneAppSettings::bootWifiAutoConnect();
 
-    /* Apply saved brightness from NVS (if available) */
-    {
-        nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
-            int32_t brightness = 80; /* default */
-            nvs_get_i32(nvs_h, "brightness", &brightness);
-            if (brightness < 20) brightness = 20;
-            if (brightness > 100) brightness = 100;
-            bsp_display_brightness_set((int)brightness);
-            ESP_LOGI(TAG, "Brightness loaded from NVS: %ld", brightness);
-            nvs_close(nvs_h);
+    if (g_has_lcd) {
+        /* === LCD-4B: full display + UI === */
+        lv_display_t *disp = NULL;
+        monitor_init_display(&disp);
+
+        /* Apply saved brightness */
+        {
+            nvs_handle_t nvs_h;
+            if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+                int32_t brightness = 80;
+                nvs_get_i32(nvs_h, "brightness", &brightness);
+                if (brightness < 20) brightness = 20;
+                if (brightness > 100) brightness = 100;
+                bsp_display_brightness_set((int)brightness);
+                ESP_LOGI(TAG, "Brightness loaded from NVS: %ld", brightness);
+                nvs_close(nvs_h);
+            }
         }
+
+        monitor_init_brookesia(disp);
+        ESP_LOGI(TAG, "=== LCD-4B mode initialized ===");
+    } else {
+        /* === WIFI6: no display, web config only === */
+        ESP_LOGI(TAG, "=== WIFI6 mode (no display) ===");
     }
-
-    /* 2. ESP-Brookesia Phone UI */
-    monitor_init_brookesia(disp);
-
-    /* 3. MIPI CSI Camera - available via Camera app on launcher */
-    /* (Camera init is handled by PhoneAppCamera, not here) */
-
-    /* 4. SDMMC SD Card & Audio — deferred to Music/Audio apps */
-    ESP_LOGI(TAG, "=== Core peripherals initialized (SD/Audio deferred to apps) ===");
     web_config_server_start();
-#else
-    ESP_LOGI(TAG, "=== WIFI6 board (no display) — WiFi + Web Config ===");
-
-    /* Init BSP I2C (GPIO7/8) — needed by OV5647 camera and codec */
-    bsp_i2c_init();
-
-    /* Try SD card wifi.txt if NVS has no SSID */
-    boot_sdcard_wifi_config();
-
-    /* Boot WiFi auto-connect */
-    PhoneAppSettings::bootWifiAutoConnect();
-
-    ESP_LOGI(TAG, "=== WIFI6 board (no display) — WiFi + Web Config ===");
-    web_config_server_start();
-#endif
 
     /* Idle loop */
     while (1) {

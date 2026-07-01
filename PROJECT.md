@@ -9,7 +9,7 @@
 - **SDMMC** SD 卡 (SDSPI 1-bit 模式, SPI 20MHz, FAT 文件系统)
 - **音频输入/输出** (ES8311 DAC + ES7210 ADC, I2S)
 - **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
-- **多板支持** `CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B` 切换 LCD-4B / WIFI6 基板
+- **多板支持** 通过 GT911 I2C 自动检测 LCD-4B / WIFI6，单一固件适配
 - **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS
 
 ### ESP-Brookesia App 列表
@@ -40,7 +40,7 @@ esp32p4_monitor/
 ├── main/
 │   ├── CMakeLists.txt          # 主组件编译配置 (C++)
 │   ├── idf_component.yml       # 组件依赖声明
-│   ├── Kconfig.projbuild           # 项目 Kconfig 菜单 (含 BOARD_WIFI6_WITH_TOUCH_LCD_4B)
+│   ├── Kconfig.projbuild           # 项目 Kconfig 菜单
 │   ├── example_config.h        # 引脚和参数宏定义
 │   ├── main.cpp                    # 主程序 (C++): 多板支持, 按需初始化
 │   ├── web_config_server.hpp       # Web 配置服务器头文件
@@ -446,16 +446,17 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 
 > **已知风险**: 高带宽入站 TCP (>200KB/s) 在 v2.12.7 仍可能触发死锁 (#197)。Camera Stream 为出站 (MJPEG ~98KB/s @ 7fps), 验证稳定。
 
-### 16. 多板支持 (CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B)
+### 16. 多板支持 (GT911 I2C 自动检测)
 
-通过 Kconfig bool 配置选择目标开发板:
+启动时通过 I2C 探测 GT911 触摸芯片 (0x5D) 自动识别开发板类型:
 
-| 配置 | 板子 | 显示/LVGL | 音频 Codec | Web 配置 |
+| 检测结果 | 板子 | 显示/LVGL | 音频 Codec | Web 配置 |
 |------|------|:---:|------|:---:|
-| `=y` (默认) | LCD-4B | ✅ Phone UI | ES8311(0x30)+ES7210(0x80) | ✅ 8080 |
-| `=n` | WIFI6 基板 | ❌ 无屏幕 | ES8311(0x18) 单芯片 | ✅ 8080 |
+| GT911 响应 | LCD-4B | ✅ Phone UI | ES8311(0x30)+ES7210(0x80) | ✅ 8080 |
+| 无响应 | WIFI6 基板 | ❌ 无屏幕 | ES8311(0x18) 单芯片 | ✅ 8080 |
 
-差异点详见 `doc/waveshare_esp32p4_wifi_vs_lcd_4b.md`。
+全局变量 `g_has_lcd` 在 `main.cpp` 中设置，`web_config_server.cpp` 通过 `extern` 引用。
+无需任何编译期配置，单一固件自动适配。
 
 ### 17. Web 配置服务器 (web_config_server)
 
@@ -477,10 +478,6 @@ source ~/.espressif/v6.0.1/esp-idf/export.sh
 cd esp32p4_monitor
 idf.py set-target esp32p4
 idf.py build
-
-# 切换板子 (WIFI6 无屏)
-# idf.py menuconfig → Monitor Example Configuration → disable "ESP32-P4-WIFI6 with Touch LCD 4B"
-# 或修改 sdkconfig.defaults: CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B=n
 
 # 烧录
 idf.py -p /dev/ttyUSB0 flash monitor
@@ -504,7 +501,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **CPU/PSRAM 实时监控日志 (1s 间隔, FreeRTOS 运行时统计)**
 - [x] **SD/音频延迟初始化 + 引用计数**
 - [x] **esp_cam_sensor 升级 1.7.0 → 2.2.0**
-- [x] **多板支持: CONFIG_BOARD_WIFI6_WITH_TOUCH_LCD_4B + WIFI6 无屏模式**
+- [x] **多板支持: GT911 I2C 自动检测 LCD-4B / WIFI6，单一固件**
 - [x] **Web 配置服务器 (端口 8080, WiFi/音量网页设置, connect-before-save)**
 - [x] **WiFi 门控启动: web_config_task 等待 STA_GOT_IP 才启 HTTP**
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
