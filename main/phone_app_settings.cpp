@@ -820,7 +820,7 @@ void PhoneAppSettings::wifiScanTaskHandler(void *arg)
         if (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT) {
             esp_wifi_sta_get_rssi(&app->_wifi_rssi);
         }
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
