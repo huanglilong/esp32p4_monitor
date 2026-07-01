@@ -214,7 +214,8 @@ bool PhoneAppMusic::run(void)
         }
     }, 500, this);
 
-    /* Volume sync timer: pull volume from NVS every 1s (Settings may change it) */
+    /* Volume sync timer: pull volume from NVS every 5s (Settings may change it).
+     * 5s interval reduces unnecessary NVS reads compared to previous 1s. */
     _vol_sync_timer = lv_timer_create([](lv_timer_t *t) {
         PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
         if (!app || !app->_label_vol || !app->_slider_vol) return;
@@ -233,7 +234,7 @@ bool PhoneAppMusic::run(void)
             }
             nvs_close(nvs_h);
         }
-    }, 1000, this);
+    }, 5000, this);
 
     /* Load volume from NVS if available, otherwise use default */
     {
