@@ -25,4 +25,4 @@ function(get_component_library component_name output_var)
 endfunction()
 
 get_component_library("lvgl" LVGL_LIB)
-target_compile_options(${LVGL_LIB} PUBLIC "-Wno-attributes")
+target_compile_options(${LVGL_LIB} PRIVATE "-Wno-attributes")
