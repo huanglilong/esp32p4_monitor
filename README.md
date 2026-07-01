@@ -81,4 +81,4 @@
 - ESP32P4:
   - [ESP32-P4 Datasheet](https://documentation.espressif.com/esp32-p4_datasheet_en.pdf)
   - [ESP32-P4 Technical Reference Manual](https://documentation.espressif.com/esp32-p4_technical_reference_manual_en.pdf)
-- ESP-IDF Version: V6.0.1
+- ESP-IDF Version: v6.x

@@ -25,7 +25,7 @@
 
 ## 开发环境
 - **芯片**: ESP32-P4NRW32
-- **ESP-IDF 版本**: v6.0.1
+- **ESP-IDF 版本**: v6.x
 - **Flash**: 32MB (QIO)
 - **PSRAM**: 32MB (200MHz, XIP)
 - **CPU 频率**: 360 MHz
@@ -472,7 +472,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 
 ```bash
 # 设置环境
-source ~/.espressif/v6.0.1/esp-idf/export.sh
+source ~/.espressif/v6.x/esp-idf/export.sh
 
 # 构建
 cd esp32p4_monitor

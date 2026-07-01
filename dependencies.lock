@@ -621,7 +621,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 6.0.1
+    version: 6.0.2
   lvgl/lvgl:
     component_hash: 096c69af22eaf8a2b721e3913da91918c5e6bf1a762a113ec01f401aa61337a0
     dependencies: []
@@ -636,7 +636,7 @@ dependencies:
       - if: target != linux
       version: ~1.2.0
     source:
-      path: ../../../.espressif/v6.0.1/esp-idf/examples/common_components/protocol_examples_common
+      path: ../../../.espressif/v6.x/esp-idf/examples/common_components/protocol_examples_common
       type: local
     version: '*'
   waveshare/esp32_p4_wifi6_touch_lcd_4b:

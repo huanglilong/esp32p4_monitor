@@ -19,7 +19,7 @@
 3. git push must be approved by user!
 
 ## ESP-DIF Build, Flash, and Monitor
-1. source ~/.espressif/v6.0.1/esp-idf/export.sh
+1. source ~/.espressif/v6.x/esp-idf/export.sh
 2. idf.py build # Build the project
 3. ~~if build successful, run idf.py -p /dev/cu.usbmodem* flash monitor # Flash monitor~~
 4. if changes are made to the code, repeat steps 2-3 to rebuild and flash the updated code

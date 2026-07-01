@@ -1,6 +1,6 @@
 # ESP32-P4 Monitor — 项目架构、FreeRTOS 调度与潜在问题分析
 
-> 生成日期: 2026-06-30 | ESP-IDF v6.0.1 | ESP32-P4NRW32
+> 生成日期: 2026-06-30 | ESP-IDF v6.x | ESP32-P4NRW32
 
 ---
 
