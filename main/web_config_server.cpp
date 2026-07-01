@@ -39,7 +39,11 @@
 static const char *TAG = "WebConfig";
 
 /* Extern: set by main.cpp after GT911 I2C probe */
+#include "esp_codec_dev.h"
+
 extern bool g_has_lcd;
+extern esp_codec_dev_handle_t s_codec_handle;
+extern SemaphoreHandle_t s_codec_mutex;
 
 #define WEB_CONFIG_PORT         8080
 
@@ -364,12 +368,18 @@ static esp_err_t settings_handler(httpd_req_t *req)
                  old_volume, new_volume);
     }
 
-    /* Volume: always save to NVS immediately (no connection needed) */
+    /* Volume: save to NVS AND apply to hardware immediately */
     if (j_volume) {
         int32_t vol = j_volume->valueint;
         if (vol < VOLUME_MIN) vol = VOLUME_MIN;
         if (vol > VOLUME_MAX) vol = VOLUME_MAX;
         nvs_set_i32(NVS_KEY_VOLUME, vol);
+        /* Apply to codec immediately (thread-safe via mutex) */
+        if (s_codec_handle && s_codec_mutex &&
+            xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            esp_codec_dev_set_out_vol(s_codec_handle, vol);
+            xSemaphoreGive(s_codec_mutex);
+        }
     }
 
     /* WiFi: try connecting first, save to NVS only on success */
