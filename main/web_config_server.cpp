@@ -539,6 +539,18 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* CORS preflight handler — responds to OPTIONS requests for POST endpoints.
+ * Browsers require this before cross-origin POST with Content-Type: application/json. */
+static esp_err_t cors_preflight_handler(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+    httpd_resp_set_hdr(req, "Access-Control-Max-Age", "86400");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 /*============================================================================
  * Task
  *============================================================================*/
@@ -564,7 +576,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 11;
     config.lru_purge_enable = true;
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
@@ -599,6 +611,23 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_settings);
     httpd_register_uri_handler(s_httpd, &uri_cam);
     httpd_register_uri_handler(s_httpd, &uri_reset);
+
+    /* CORS preflight (OPTIONS) handlers for POST endpoints */
+    httpd_uri_t uri_cors_settings = {
+        .uri = "/api/settings", .method = HTTP_OPTIONS,
+        .handler = cors_preflight_handler, .user_ctx = NULL
+    };
+    httpd_uri_t uri_cors_cam = {
+        .uri = "/api/camera_stream", .method = HTTP_OPTIONS,
+        .handler = cors_preflight_handler, .user_ctx = NULL
+    };
+    httpd_uri_t uri_cors_reset = {
+        .uri = "/api/factory_reset", .method = HTTP_OPTIONS,
+        .handler = cors_preflight_handler, .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &uri_cors_settings);
+    httpd_register_uri_handler(s_httpd, &uri_cors_cam);
+    httpd_register_uri_handler(s_httpd, &uri_cors_reset);
 
     /* mDNS: advertise web config on the local network */
     if (mdns_init() == ESP_OK) {
