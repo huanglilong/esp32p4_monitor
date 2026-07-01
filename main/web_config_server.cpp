@@ -443,6 +443,29 @@ static esp_err_t settings_handler(httpd_req_t *req)
         }
     } else if (j_wifi_en) {
         nvs_set_i32(NVS_KEY_WIFI_EN, j_wifi_en->valueint);
+        if (j_wifi_en->valueint == 0) {
+            /* WiFi OFF: disconnect and stop WiFi hardware immediately */
+            ESP_LOGI(TAG, "WiFi OFF requested — stopping WiFi");
+            esp_wifi_disconnect();
+            esp_wifi_stop();
+        } else {
+            /* WiFi ON (no new SSID): start WiFi and connect with saved credentials */
+            ESP_LOGI(TAG, "WiFi ON requested — connecting with saved credentials");
+            char saved_ssid[33] = {};
+            char saved_pass[65] = {};
+            nvs_get_str(NVS_KEY_WIFI_SSID, saved_ssid, sizeof(saved_ssid));
+            nvs_get_str(NVS_KEY_WIFI_PASS, saved_pass, sizeof(saved_pass));
+            if (strlen(saved_ssid) > 0) {
+                esp_wifi_start();
+                vTaskDelay(pdMS_TO_TICKS(500));
+                wifi_config_t wifi_cfg = {};
+                strlcpy((char *)wifi_cfg.sta.ssid, saved_ssid, sizeof(wifi_cfg.sta.ssid));
+                if (strlen(saved_pass) > 0)
+                    strlcpy((char *)wifi_cfg.sta.password, saved_pass, sizeof(wifi_cfg.sta.password));
+                esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+                esp_wifi_connect();
+            }
+        }
     }
 
     cJSON_Delete(root);
