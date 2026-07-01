@@ -645,6 +645,9 @@ extern "C" void app_main(void)
 #else
     ESP_LOGI(TAG, "=== WIFI6 board (no display) — WiFi + Web Config ===");
 
+    /* Init BSP I2C (GPIO7/8) — needed by OV5647 camera and codec */
+    bsp_i2c_init();
+
     /* Try SD card wifi.txt if NVS has no SSID */
     boot_sdcard_wifi_config();
 
