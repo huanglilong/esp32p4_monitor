@@ -2,14 +2,16 @@
  ALWAYS at the start of every session:
  1. Read README.md —— Understand hardware information
  2. Read PROJECT.md —— Understand software information
- 3. Ensure both files have been read before processing user requests
- 4. Schedule a plan before starting any work
- 5. when finished all tasks
+ 3. Read PROJECT_REQUIREMENTS.md —— Understand project requirements and goals
+ 4. Ensure these files have been read before processing user requests
+ 5. Schedule a plan before starting any work
+ 6. when finished all tasks
     - update README.md if necessary
-    - update PROJECT.md if necessary
+    - update PROJECT.md if necessary, keep it updated with the latest software information and issues
+    - update PROJECT_REQUIREMENTS.md if necessary, keep it updated with the latest user requirements and ideas
     - update copilot-instructions.md if necessary
     - give a summary of why and how at end, especially for issues and any other important information
-6. if the project has issues or crashes
+7. if the project has issues or crashes
     - check the logs and error messages, try to find the root cause
     - if cannot confirm the root cause, add logs in the code to help debug.
 
