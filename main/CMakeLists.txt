@@ -4,7 +4,7 @@ idf_component_register(
     REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c fatfs shine_encoder nvs_flash esp_wifi coco_detect esp_video esp_new_jpeg mdns cjson esp_http_server example_video_common esp_audio_simple_player
     PRIV_REQUIRES esp_driver_i2s esp_driver_sdmmc)
 
-target_compile_options(${COMPONENT_LIB} PUBLIC -Wno-missing-field-initializers)
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
 
 # Get LVGL component library to suppress warnings
 function(get_component_library component_name output_var)
