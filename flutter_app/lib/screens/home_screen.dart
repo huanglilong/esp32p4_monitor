@@ -4,6 +4,7 @@ import '../main.dart';
 import '../models/esp32_device.dart';
 import '../providers/app_state.dart';
 import '../widgets/device_card.dart';
+import 'settings_screen.dart';
 import 'camera_screen.dart';
 
 /// Home screen: shows discovered devices and allows connection.
@@ -102,6 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     isConnected: _state.connectedDevice?.id == device.id,
                     isConnecting: _state.isConnecting,
                     onConnect: () => _connectToDevice(device),
+                    onConnectWeb: () => _connectToDeviceWeb(device),
                   ),
                 ),
               ],
@@ -116,13 +118,34 @@ class _HomeScreenState extends State<HomeScreen> {
     await _state.connectToDevice(device);
 
     if (_state.isConnected && mounted) {
-      Navigator.of(
-        context,
-      ).push(MaterialPageRoute(builder: (_) => const CameraScreen()));
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => const CameraScreen(),
+        ),
+      );
     } else if (_state.connectionError != null && mounted) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(_state.connectionError!)));
+    }
+  }
+
+  Future<void> _connectToDeviceWeb(Esp32Device device) async {
+    print('[HomeScreen] 🔗 Web connecting to ${device.host}:8080...');
+    await _state.connectToDeviceWeb(device);
+    print('[HomeScreen] connectToDeviceWeb done, isConnected=${_state.isConnected}, mounted=$mounted');
+    if (_state.isConnected && mounted) {
+      print('[HomeScreen] 🎤 Navigating to SettingsScreen');
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+      );
+    } else if (_state.connectionError != null && mounted) {
+      print('[HomeScreen] ⚠️ Error: ${_state.connectionError}');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_state.connectionError!)));
+    } else {
+      print('[HomeScreen] ⚠️ Not navigating: isConnected=${_state.isConnected}, mounted=$mounted, error=${_state.connectionError}');
     }
   }
 

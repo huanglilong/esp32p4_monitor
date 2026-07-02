@@ -501,136 +501,72 @@ class _CameraScreenState extends State<CameraScreen> {
         body: ListenableBuilder(
           listenable: state,
           builder: (context, _) {
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+            return Column(
               children: [
-                _buildConfigPanel(state),
-                const VerticalDivider(width: 1, color: Colors.white12),
                 Expanded(
-                  child: Column(
+                  child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      Expanded(
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            if (state.latestFrame != null)
-                              ImageViewer(imageBytes: state.latestFrame!)
-                            else
-                              const Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.camera,
-                                        size: 64, color: Colors.white24),
-                                    SizedBox(height: 16),
-                                    Text(
-                                      'Waiting for camera feed...',
-                                      style: TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 16,
-                                      ),
-                                    ),
-                                    SizedBox(height: 16),
-                                    CircularProgressIndicator(
-                                        color: Colors.white38),
-                                  ],
-                                ),
-                              ),
-                            if (state.latestText.isNotEmpty ||
-                                state.detectionEnabled)
-                              Positioned(
-                                left: 0,
-                                right: 0,
-                                bottom: 0,
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: const BoxDecoration(
-                                    gradient: LinearGradient(
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
-                                      colors: [
-                                        Colors.transparent,
-                                        Colors.black54
-                                      ],
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      const Icon(Icons.info_outline,
-                                          color: Colors.white70, size: 18),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            if (state.latestText.isNotEmpty)
-                                              Text(
-                                                state.latestText,
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 14,
-                                                ),
-                                              ),
-                                            Text(
-                                              'FPS: ${state.fps.toStringAsFixed(1)}',
-                                              style: const TextStyle(
-                                                color: Colors.greenAccent,
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                            if (state.detectionEnabled)
-                                              Text(
-                                                'People: ${state.personCount}  '
-                                                'Conf: ${state.maxConfidence.toStringAsFixed(3)}',
-                                                style: TextStyle(
-                                                  color: state.personCount > 0
-                                                      ? Colors.greenAccent
-                                                      : Colors.white70,
-                                                  fontSize: 13,
-                                                  fontWeight:
-                                                      state.personCount > 0
-                                                          ? FontWeight.bold
-                                                          : FontWeight.normal,
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            if (state.deviceStatus.isNotEmpty)
-                              Positioned(
-                                top: 8,
-                                right: 8,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black54,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    state.deviceStatus,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
+                      if (state.latestFrame != null)
+                        ImageViewer(imageBytes: state.latestFrame!)
+                      else
+                        const Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.camera, size: 64, color: Colors.white24),
+                              SizedBox(height: 16),
+                              Text('Waiting for camera feed...',
+                                style: TextStyle(color: Colors.white54, fontSize: 16)),
+                              SizedBox(height: 16),
+                              CircularProgressIndicator(color: Colors.white38),
+                            ],
+                          ),
                         ),
-                      ),
-                      if (_logsVisible) _buildLogPanel(state),
+                      if (state.latestText.isNotEmpty || state.detectionEnabled)
+                        Positioned(
+                          left: 0, right: 0, bottom: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                                colors: [Colors.transparent, Colors.black54],
+                              ),
+                            ),
+                            child: Row(children: [
+                              const Icon(Icons.info_outline, color: Colors.white70, size: 18),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                                  if (state.latestText.isNotEmpty)
+                                    Text(state.latestText, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                                  Text('FPS: ${state.fps.toStringAsFixed(1)}', style: const TextStyle(color: Colors.greenAccent, fontSize: 12)),
+                                  if (state.detectionEnabled)
+                                    Text('People: ${state.personCount}  Conf: ${state.maxConfidence.toStringAsFixed(3)}',
+                                      style: TextStyle(
+                                        color: state.personCount > 0 ? Colors.greenAccent : Colors.white70, fontSize: 13,
+                                        fontWeight: state.personCount > 0 ? FontWeight.bold : FontWeight.normal,
+                                      ),
+                                    ),
+                                ]),
+                              ),
+                            ]),
+                          ),
+                        ),
+                      if (state.deviceStatus.isNotEmpty)
+                        Positioned(
+                          top: 8, right: 8,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
+                            child: Text(state.deviceStatus, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                          ),
+                        ),
                     ],
                   ),
                 ),
+                if (_logsVisible) _buildLogPanel(state),
               ],
             );
           },

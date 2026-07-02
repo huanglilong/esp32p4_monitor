@@ -14,9 +14,6 @@ class Esp32HttpService {
   HttpClient? _client;
   StreamSubscription? _responseSub;
   Timer? _reconnectTimer;
-  int _reconnectAttempts = 0;
-  static const int _maxReconnectAttempts = 5;
-  static const Duration _reconnectDelay = Duration(seconds: 3);
   static const String TAG = '[Esp32HttpService]';
 
   final StreamController<Esp32Message> _messageController =
@@ -31,18 +28,21 @@ class Esp32HttpService {
   Stream<Esp32Message> get messageStream => _messageController.stream;
   Stream<Esp32Device> get connectionStream => _connectionController.stream;
   Esp32Device? get connectedDevice => _connectedDevice;
-  bool get isConnected => _client != null;
+  bool get isConnected => _connectedDevice != null;
 
   Future<void> connect(Esp32Device device) async {
     print('$TAG 🔌 Connecting to ${device.host}:81/stream...');
     disconnect();
 
     _connectedDevice = device;
-    _reconnectAttempts = 0;
 
     try {
-      // Verify device
-      await _fetchCameraInfo();
+      // Verify device — don't fail if camera info unavailable (headless/WIFI6)
+      try {
+        await _fetchCameraInfo();
+      } catch (_) {
+        print('$TAG ⚠️ Camera info unavailable — continuing (headless mode)');
+      }
 
       // HttpClient handles HTTP/1.1 + chunked encoding automatically
       _client = HttpClient()
@@ -69,16 +69,41 @@ class Esp32HttpService {
         },
       );
     } catch (e) {
-      print('$TAG ❌ Failed: $e');
-      _connectedDevice = null;
+      print('$TAG ⚠️ Camera stream unavailable: $e');
+      // Keep device reference for web API access (settings/audio on :8080)
       _client?.close();
       _client = null;
-      _scheduleReconnect(device);
-      rethrow;
     }
 
     _connectionController.add(device);
-    print('$TAG ✅ Stream connected');
+    print('$TAG ✅ Connected to ${device.host}');
+  }
+
+  /// Connect to device for web API only (port 8080) — no camera stream needed.
+  /// Use this for settings, audio recording, and playback on headless boards.
+  Future<void> connectWeb(Esp32Device device) async {
+    print('$TAG 🌐 Web connect to ${device.host}:8080...');
+    disconnect();
+
+    // Verify connectivity with a lightweight API call
+    final c = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5)
+      ..findProxy = (url) => 'DIRECT';
+    try {
+      final r = await c.getUrl(
+        Uri.parse('http://${device.host}:8080/api/status'),
+      );
+      await r.close();
+    } catch (e) {
+      c.close();
+      print('$TAG ❌ Web connect failed: $e');
+      rethrow;
+    }
+    c.close();
+
+    _connectedDevice = device;
+    _connectionController.add(device);
+    print('$TAG ✅ Web connected to ${device.host}');
   }
 
   /// Parse MJPEG from clean (already dechunked by HttpClient) data.
@@ -399,17 +424,42 @@ class Esp32HttpService {
     }
   }
 
-  void _scheduleReconnect(Esp32Device device) {
-    if (_reconnectAttempts >= _maxReconnectAttempts) {
-      print('$TAG ❌ Max reconnect attempts');
-      return;
+  // ==================== Audio API (port 8080) ====================
+
+  Future<Map<String, dynamic>> _audioGet(String path) async {
+    final c = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5)
+      ..findProxy = (url) => 'DIRECT';
+    try {
+      final r = await c.getUrl(
+        Uri.parse('http://${_connectedDevice!.host}:8080$path'),
+      );
+      final resp = await r.close();
+      return jsonDecode(await resp.transform(utf8.decoder).join())
+          as Map<String, dynamic>;
+    } finally {
+      c.close();
     }
-    _reconnectAttempts++;
-    _reconnectTimer = Timer(
-      _reconnectDelay,
-      () => connect(device).catchError((_) {}),
-    );
   }
+
+  /// GET /api/audio/record_start — Start audio recording to SD card.
+  Future<Map<String, dynamic>> audioRecordStart() => _audioGet('/api/audio/record_start');
+
+  /// GET /api/audio/record_stop — Stop recording, returns filename and size.
+  Future<Map<String, dynamic>> audioRecordStop() => _audioGet('/api/audio/record_stop');
+
+  /// GET /api/audio/record_status — Get recording status (seconds, bytes).
+  Future<Map<String, dynamic>> audioRecordStatus() => _audioGet('/api/audio/record_status');
+
+  /// GET /api/audio/list — List MP3 files on SD card.
+  Future<Map<String, dynamic>> audioList() => _audioGet('/api/audio/list');
+
+  /// GET /api/audio/play?file=xxx.mp3 — Play a recording.
+  Future<Map<String, dynamic>> audioPlay(String filename) =>
+      _audioGet('/api/audio/play?file=${Uri.encodeComponent(filename)}');
+
+  /// GET /api/audio/stop — Stop playback.
+  Future<Map<String, dynamic>> audioStop() => _audioGet('/api/audio/stop');
 
   void dispose() {
     disconnect();

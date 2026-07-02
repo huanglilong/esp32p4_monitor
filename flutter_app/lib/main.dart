@@ -48,7 +48,7 @@ class Esp32P4App extends StatelessWidget {
           brightness: Brightness.dark,
         ),
         themeMode: ThemeMode.system,
-        home: const HomeScreen(),
+        home: const SelectionArea(child: HomeScreen()),
       ),
     );
   }

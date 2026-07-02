@@ -72,6 +72,7 @@ class AppState extends ChangeNotifier {
   bool get isDiscovering => _isDiscovering;
   bool get isConnecting => _isConnecting;
   bool get isConnected => _httpService.isConnected;
+  Esp32HttpService get httpService => _httpService;  // Expose for audio API access
   String? get connectionError => _connectionError;
   Uint8List? get latestFrame => _latestFrame;
   String get latestText => _latestText;
@@ -207,7 +208,7 @@ class AppState extends ChangeNotifier {
       _savedConnectedDeviceIds.add(device.id);
       _upsertDevice(device, prioritize: true);
       _addLog('Connected to ${device.name}');
-      // Fetch camera info on connect
+      // Fetch camera info on connect (may fail on headless boards — non-fatal)
       try {
         final info = await _httpService.fetchCameraInfo();
         _deviceStatus = 'Camera connected';
@@ -229,6 +230,7 @@ class AppState extends ChangeNotifier {
       }
       fetchSettings();
       _startDetectionPolling();
+      _isConnecting = false;
       notifyListeners();
     } catch (e) {
       _connectionError = 'Connection failed: $e';
@@ -241,6 +243,7 @@ class AppState extends ChangeNotifier {
   void disconnect() {
     _stopDetectionPolling();
     _httpService.disconnect();
+    _isConnecting = false;  // Reset in case of stale state
     _latestFrame = null;
     _latestText = '';
     _deviceStatus = '';
@@ -257,6 +260,31 @@ class AppState extends ChangeNotifier {
     _settingsLoading = false;
     _addLog('Disconnected');
     _notifySafe();
+  }
+
+  /// Web-only connect (port 8080) for settings + audio without camera stream.
+  Future<void> connectToDeviceWeb(Esp32Device device) async {
+    if (_isConnecting) return;
+    _isConnecting = true;
+    _connectionError = null;
+    notifyListeners();
+
+    _addLog('Web connect to ${device.host}:8080...');
+    try {
+      await _httpService.connectWeb(device);
+      await _deviceStore.saveConnectedDevice(device);
+      _savedConnectedDeviceIds.add(device.id);
+      _upsertDevice(device, prioritize: true);
+      _addLog('Web connected to ${device.name}');
+    } catch (e) {
+      _connectionError = e.toString();
+      _addLog('Web connect failed: $e');
+      _isConnecting = false;
+      notifyListeners();
+      return;
+    }
+    _isConnecting = false;
+    notifyListeners();
   }
 
   /// Schedule a safe deferred notifyListeners.

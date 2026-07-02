@@ -8,6 +8,7 @@ class DeviceCard extends StatelessWidget {
   final bool isConnected;
   final bool isConnecting;
   final VoidCallback onConnect;
+  final VoidCallback? onConnectWeb;  // Settings/Audio (port 8080 only)
 
   const DeviceCard({
     super.key,
@@ -15,6 +16,7 @@ class DeviceCard extends StatelessWidget {
     required this.isConnected,
     required this.isConnecting,
     required this.onConnect,
+    this.onConnectWeb,
   });
 
   @override
@@ -59,15 +61,26 @@ class DeviceCard extends StatelessWidget {
                 ],
               ),
             ),
-            FilledButton(
-              onPressed: isConnecting ? null : (isConnected ? null : onConnect),
-              child: isConnecting
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Text(isConnected ? 'Connected' : 'Connect'),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (onConnectWeb != null)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: FilledButton.icon(
+                      onPressed: isConnecting ? null : onConnectWeb,
+                      icon: const Icon(Icons.settings, size: 18),
+                      label: const Text('Settings', style: TextStyle(fontSize: 14)),
+                    ),
+                  ),
+                FilledButton.icon(
+                  onPressed: isConnecting ? null : onConnect,
+                  icon: isConnecting
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.videocam, size: 18),
+                  label: Text(isConnecting ? '' : 'Camera', style: const TextStyle(fontSize: 14)),
+                ),
+              ],
             ),
           ],
         ),
