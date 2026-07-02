@@ -110,6 +110,24 @@ static char           s_rec_path[128];
 static esp_asp_handle_t s_asp = NULL;
 static volatile bool    s_playing = false;
 
+static void _stop_audio_task_if_running(void)
+{
+    if (!s_audio_task && !s_audio_running) {
+        return;
+    }
+
+    s_audio_running = false;
+    for (int i = 0; i < 10 && s_audio_task; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    if (s_audio_task) {
+        ESP_LOGW(TAG, "Audio task did not exit in time, force deleting");
+        vTaskDelete(s_audio_task);
+        s_audio_task = NULL;
+    }
+}
+
 /* Audio recording task: I2S RX → shine MP3 → SD card */
 static void audio_task(void *arg)
 {
@@ -746,12 +764,22 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
             { s_audio_running = false; httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     }
     s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if (!s_pcm_buf) { httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+    if (!s_pcm_buf) {
+        _stop_audio_task_if_running();
+        httpd_resp_sendstr(req, "{\"ok\":0}");
+        return ESP_OK;
+    }
     s_pcm_count = 0;
     shine_config_t c; shine_set_config_mpeg_defaults(&c.mpeg);
     c.wave.channels = PCM_STEREO; c.wave.samplerate = 48000; c.mpeg.mode = STEREO; c.mpeg.bitr = 128;
     s_shine = shine_initialise(&c);
-    if (!s_shine) { free(s_pcm_buf); s_pcm_buf = NULL; httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+    if (!s_shine) {
+        free(s_pcm_buf);
+        s_pcm_buf = NULL;
+        _stop_audio_task_if_running();
+        httpd_resp_sendstr(req, "{\"ok\":0}");
+        return ESP_OK;
+    }
     struct timeval tv; gettimeofday(&tv, NULL);
     time_t t = tv.tv_sec; struct tm tm_buf;
     localtime_r(&t, &tm_buf);
@@ -759,6 +787,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
              tm_buf.tm_year+1900, tm_buf.tm_mon+1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
     s_rec_file = fopen(s_rec_path, "wb");
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
+        _stop_audio_task_if_running();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms = tv.tv_sec*1000 + tv.tv_usec/1000;
     s_is_recording = true;
@@ -770,9 +799,17 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
 /* GET /api/audio/record_stop */
 static esp_err_t h_rec_stop(httpd_req_t *req) {
     if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
-    if (!s_is_recording) { httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
-    s_is_recording = false; s_audio_running = false; /* Stop audio task to release I2S RX */
-    vTaskDelay(pdMS_TO_TICKS(300));
+    if (!s_is_recording) {
+        /* Recover from stale state if a previous record_start failed mid-way. */
+        _stop_audio_task_if_running();
+        if (s_shine) { shine_close(s_shine); s_shine = NULL; }
+        if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf = NULL; }
+        if (s_rec_file) { fclose(s_rec_file); s_rec_file = NULL; }
+        httpd_resp_sendstr(req, "{\"ok\":1}");
+        return ESP_OK;
+    }
+    s_is_recording = false;
+    _stop_audio_task_if_running(); /* Stop audio task to release I2S RX */
     FILE *f = s_rec_file; s_rec_file = NULL;
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine, &wr); if(d&&wr>0&&f) fwrite(d,1,wr,f); shine_close(s_shine); s_shine=NULL; }
     if (f) fclose(f);
