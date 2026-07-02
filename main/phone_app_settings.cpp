@@ -25,6 +25,8 @@ EventGroupHandle_t PhoneAppSettings::_wifi_event_group = nullptr;
 bool PhoneAppSettings::_wifi_initialized = false;
 TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
 uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
+esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
+esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
 
 #define NVS_NAMESPACE            "settings"
 #define NVS_KEY_WIFI_EN          "wifi_en"
@@ -110,17 +112,14 @@ void PhoneAppSettings::bootWifiAutoConnect(void)
             return;
         }
 
-        /* Register event handler for WiFi/IP events */
-        esp_event_handler_instance_t inst;
+        /* Register event handler for WiFi/IP events.
+         * Save instance handles to allow proper unregister if needed. */
         ESP_ERROR_CHECK(esp_event_handler_instance_register(
-            WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
-            wifiEventHandler, nullptr, &inst));
-        ESP_ERROR_CHECK(esp_event_handler_instance_register(
-            WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
-            wifiEventHandler, nullptr, &inst));
+            WIFI_EVENT, ESP_EVENT_ANY_ID,
+            wifiEventHandler, nullptr, &_wifi_handler_inst));
         ESP_ERROR_CHECK(esp_event_handler_instance_register(
             IP_EVENT, IP_EVENT_STA_GOT_IP,
-            wifiEventHandler, nullptr, &inst));
+            wifiEventHandler, nullptr, &_ip_handler_inst));
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         _wifi_initialized = true;
     }
@@ -784,9 +783,8 @@ esp_err_t PhoneAppSettings::wifiInit(void)
             return ret;
         }
 
-        esp_event_handler_instance_t inst;
-        ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, this, &inst));
-        ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifiEventHandler, this, &inst));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, this, &_wifi_handler_inst));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifiEventHandler, this, &_ip_handler_inst));
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         _wifi_initialized = true;
     }
@@ -1041,6 +1039,16 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             vEventGroupDelete(app->_wifi_event_group);
             app->_wifi_event_group = nullptr;
         }
+        /* Unregister event handler instances to allow clean re-init */
+        if (_wifi_handler_inst) {
+            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, _wifi_handler_inst);
+            _wifi_handler_inst = nullptr;
+        }
+        if (_ip_handler_inst) {
+            esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, _ip_handler_inst);
+            _ip_handler_inst = nullptr;
+        }
+        _wifi_initialized = false;
     }
 }
 

@@ -125,6 +125,8 @@ private:
     static bool              _wifi_initialized;  // one-time netif/wifi init done
     static TimerHandle_t     _wifi_reconnect_timer;  // 10s periodic reconnect timer
     static uint32_t          _wifi_reconnect_count;  // consecutive reconnect attempts
+    static esp_event_handler_instance_t _wifi_handler_inst;  // WIFI_EVENT handler instance
+    static esp_event_handler_instance_t _ip_handler_inst;    // IP_EVENT handler instance
     volatile bool            _wifi_scanning;
     volatile bool            _wifi_connecting;     // Guard against multiple connect tasks
 
