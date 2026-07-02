@@ -422,6 +422,9 @@ void PhoneAppMusic::_stop(void)
 {
     if (_asp_handle) {
         esp_audio_simple_player_stop(_asp_handle);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_audio_simple_player_destroy(_asp_handle);
+        _asp_handle = nullptr;
         _is_playing = false;
         _current_track = -1;
         lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
