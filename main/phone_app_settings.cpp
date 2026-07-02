@@ -179,8 +179,15 @@ bool PhoneAppSettings::run(void)
     if (_nvs_param_map[NVS_KEY_WIFI_EN] && _wifi_scan_task == NULL) {
         _wifi_event_group = xEventGroupCreate();
         if (_wifi_event_group) {
-            xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
-                        this, TASK_PRIO_WIFI_SCAN, &_wifi_scan_task);
+            BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
+                                         this, TASK_PRIO_WIFI_SCAN, &_wifi_scan_task);
+            if (ret != pdPASS) {
+                ESP_LOGE(TAG, "Failed to create WiFi scan task on app run");
+                vEventGroupDelete(_wifi_event_group);
+                _wifi_event_group = nullptr;
+            }
+        } else {
+            ESP_LOGE(TAG, "Failed to create WiFi event group on app run");
         }
     } else if (_wifi_scan_task) {
         ESP_LOGI(TAG, "Reusing existing WiFi background task");
@@ -993,6 +1000,13 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             if (app->_wifi_event_group == NULL) {
                 app->_wifi_event_group = xEventGroupCreate();
             }
+            if (app->_wifi_event_group == NULL) {
+                ESP_LOGE(TAG, "Failed to create WiFi event group");
+                lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
+                app->_nvs_param_map[NVS_KEY_WIFI_EN] = 0;
+                app->setNvsParam(NVS_KEY_WIFI_EN, 0);
+                return;
+            }
             BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
                                          app, TASK_PRIO_WIFI_SCAN, &app->_wifi_scan_task);
             if (ret != pdPASS) {
@@ -1000,6 +1014,8 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
                 lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
                 app->_nvs_param_map[NVS_KEY_WIFI_EN] = 0;
                 app->setNvsParam(NVS_KEY_WIFI_EN, 0);
+                vEventGroupDelete(app->_wifi_event_group);
+                app->_wifi_event_group = nullptr;
             }
         }
     } else {
@@ -1054,7 +1070,12 @@ void PhoneAppSettings::onKeyboardEnterClicked(lv_event_t *e)
     PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
     if (!app || app->_wifi_connecting) return;  // Guard against multiple connect tasks
     app->_wifi_connecting = true;
-    xTaskCreate(wifiConnectTaskHandler, "wifi_conn", TASK_STACK_WIFI_CONNECT, app, TASK_PRIO_WIFI_CONNECT, NULL);
+    BaseType_t ret = xTaskCreate(wifiConnectTaskHandler, "wifi_conn", TASK_STACK_WIFI_CONNECT,
+                                 app, TASK_PRIO_WIFI_CONNECT, NULL);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create WiFi connect task");
+        app->_wifi_connecting = false;
+    }
 }
 
 void PhoneAppSettings::onWifiListScreenLoaded(lv_event_t *e)
