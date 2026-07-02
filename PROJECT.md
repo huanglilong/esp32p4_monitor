@@ -43,6 +43,8 @@ esp32p4_monitor/
 │   ├── Kconfig.projbuild           # 项目 Kconfig 菜单
 │   ├── example_config.h        # 引脚和参数宏定义
 │   ├── main.cpp                    # 主程序 (C++): 多板支持, 按需初始化
+│   ├── peripherals.hpp             # PeripheralManager facade — 统一外设管理
+│   ├── peripherals.cpp             # PeripheralManager 实现 (init/deinit/refcount/mutex)
 │   ├── web_config_server.hpp       # Web 配置服务器头文件
 │   ├── web_config_server.cpp       # Web 配置服务器 (HTTP :8080, WiFi/音量设置)
 │   ├── phone_app_camera.hpp        # Camera App 头文件
