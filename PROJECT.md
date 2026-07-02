@@ -498,6 +498,46 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - **WIFI6**: ES8311 单芯片 (0x30, ADC+DAC) + NS4150B 功放
 GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 
+### 19. Flutter 跨平台 App (flutter_app/)
+
+跨平台桌面/移动端应用，与 `web_config_server` 的 8080 API 通信:
+
+| 功能 | 说明 |
+|------|------|
+| **设备发现** | mDNS + HTTP 子网扫描 |
+| **Camera 实时预览** | MJPEG 流解码 (端口 81) |
+| **Settings 配置** | WiFi/音量/Camera Stream 开关 + 恢复出厂设置 |
+| **音频录制** | 调用 8080 API 远程录制 MP3 到 SD 卡 |
+| **音频播放** | 远程播放 SD 卡上已录制的 MP3 文件 |
+| **平台支持** | macOS, iOS, Linux, Android |
+
+**核心文件** (`flutter_app/lib/`):
+```
+screens/
+├── home_screen.dart         # 设备发现 + 连接入口
+├── camera_screen.dart       # 摄像头实时画面 (全窗口)
+└── settings_screen.dart     # 配置 + 录音/播放 (手机比例)
+services/
+├── http_service.dart        # 8080/81 API 封装
+├── device_discovery.dart    # mDNS + HTTP 发现
+└── connected_device_store.dart
+providers/
+└── app_state.dart           # 全局状态管理
+widgets/
+├── device_card.dart         # 设备卡片 (Camera + Settings 按钮)
+└── image_viewer.dart        # MJPEG 帧显示
+```
+
+**API 端点调用** (端口 8080):
+- `GET /api/status` — 获取设备状态 (连接验证)
+- `POST /api/settings` — 保存 WiFi/音量
+- `POST /api/factory_reset` — 恢复出厂设置
+- `POST /api/camera_stream` — 开/关 Camera Stream
+- `GET /api/audio/*` — 6 个音频端点 (record/stop/status/list/play/stop)
+
+> **注意**: 音频功能在 ESP32 Camera Stream 运行时被阻断 (`__cam_running()` 检查)。
+> 连接流程: Camera 按钮 → 端口 81 推流; Settings 按钮 → 端口 8080 配置。
+
 ## 构建和烧录
 
 ```bash
