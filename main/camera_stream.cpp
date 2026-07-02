@@ -170,6 +170,23 @@ bool CameraStream::start(void)
     clock_gettime(CLOCK_MONOTONIC, &_fps_window_start);
 
     _running = true;
+
+    /* Publish camera_state.running = true via uORB for cross-module mutual exclusion.
+     * Allows PeripheralManager::camera_available() and other modules to detect
+     * that the camera hardware is in use. */
+    {
+        static orb_advert_t cam_pub = ORB_ADVERT_INVALID;
+        if (cam_pub < 0) {
+            cam_pub = orb_advertise(ORB_ID(camera_state));
+        }
+        if (cam_pub >= 0) {
+            struct camera_state_s cs = {};
+            cs.timestamp = esp_timer_get_time();
+            cs.running   = true;
+            orb_publish(ORB_ID(camera_state), cam_pub, &cs);
+        }
+    }
+
     ESP_LOGI(TAG, "Stream started → http://esp-web.local/stream (port 81)");
     return true;
 }
@@ -179,6 +196,21 @@ void CameraStream::stop(void)
     if (!_running) return;
 
     _running = false;
+
+    /* Publish camera_state.running = false via uORB */
+    {
+        static orb_advert_t cam_pub = ORB_ADVERT_INVALID;
+        if (cam_pub < 0) {
+            cam_pub = orb_advertise(ORB_ID(camera_state));
+        }
+        if (cam_pub >= 0) {
+            struct camera_state_s cs = {};
+            cs.timestamp = esp_timer_get_time();
+            cs.running   = false;
+            orb_publish(ORB_ID(camera_state), cam_pub, &cs);
+        }
+    }
+
     _stop_http_server();
     _deinit_mdns();
     _deinit_detection();

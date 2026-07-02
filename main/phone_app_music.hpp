@@ -3,6 +3,7 @@
 #include "esp_brookesia.hpp"
 #include "esp_audio_simple_player.h"
 #include "esp_gmf_err.h"
+#include "uorb.h"
 
 #define MAX_TRACKS 50
 
@@ -49,7 +50,10 @@ private:
     volatile int         _volume;           // Current volume (0-100), cross-core access
     bool                 _nvs_dirty;         // NVS debounce flag
     lv_timer_t          *_nvs_save_timer;    // NVS debounce timer (500ms)
-    lv_timer_t          *_vol_sync_timer;    // NVS volume sync timer (1s)
+    lv_timer_t          *_vol_sync_timer;    // Volume sync timer (subscribes to uORB volume_state)
+
+    /* uORB volume_state subscriber — replaces NVS polling */
+    orb_sub_t            _vol_sub;
 
     /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
     volatile bool       _auto_next;

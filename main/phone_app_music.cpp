@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "bsp/display.h"
+#include "example_config.h"
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
@@ -30,6 +31,7 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     _volume(60),
     _nvs_dirty(false), _nvs_save_timer(nullptr),
     _vol_sync_timer(nullptr),
+    _vol_sub(ORB_ADVERT_INVALID),
     _auto_next(false), _auto_next_timer(nullptr)
 {
     memset(_file_names, 0, sizeof(_file_names));
@@ -191,28 +193,29 @@ bool PhoneAppMusic::run(void)
         }
     }, 500, this);
 
-    /* Volume sync timer: pull volume from NVS every 5s (Settings may change it). */
+    /* Volume sync timer: subscribe to volume_state uORB topic.
+     * Replaces NVS polling (5s latency) with event-driven updates (~0ms latency). */
+    if (_vol_sub < 0) {
+        _vol_sub = orb_subscribe(ORB_ID(volume_state));
+    }
     _vol_sync_timer = lv_timer_create([](lv_timer_t *t) {
         PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
         if (!app || !app->_label_vol || !app->_slider_vol) return;
-        nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
-            int32_t saved_vol = (int32_t)app->_volume;
-            if (nvs_get_i32(nvs_h, "volume", &saved_vol) == ESP_OK) {
-                if (saved_vol >= 0 && saved_vol <= 100 && saved_vol != (int32_t)app->_volume) {
-                    app->_volume = (int)saved_vol;
-                    lv_slider_set_value(app->_slider_vol, saved_vol, LV_ANIM_OFF);
-                    char txt[16];
-                    snprintf(txt, sizeof(txt), "Vol: %ld", saved_vol);
-                    lv_label_set_text(app->_label_vol, txt);
-                    if (PeripheralManager::instance().codec_handle()) {
-                        PeripheralManager::instance().set_volume((int)saved_vol);
-                    }
-                }
+        if (app->_vol_sub < 0) return;
+        bool updated = false;
+        if (orb_check(app->_vol_sub, &updated) == 0 && updated) {
+            struct volume_state_s vs = {};
+            orb_copy(ORB_ID(volume_state), app->_vol_sub, &vs);
+            if (vs.volume >= 0 && vs.volume <= 100 && vs.volume != (int32_t)app->_volume) {
+                app->_volume = vs.volume;
+                lv_slider_set_value(app->_slider_vol, vs.volume, LV_ANIM_OFF);
+                char txt[16];
+                snprintf(txt, sizeof(txt), "Vol: %d", (int)vs.volume);
+                lv_label_set_text(app->_label_vol, txt);
+                PeripheralManager::instance().set_volume((int)vs.volume);
             }
-            nvs_close(nvs_h);
         }
-    }, 5000, this);
+    }, 200, this);
 
     /* Scan SD card */
     _scan_files();
@@ -249,6 +252,11 @@ bool PhoneAppMusic::close(void)
     if (_vol_sync_timer) {
         lv_timer_delete(_vol_sync_timer);
         _vol_sync_timer = nullptr;
+    }
+    /* Unsubscribe from volume_state uORB */
+    if (_vol_sub >= 0) {
+        orb_unsubscribe(_vol_sub);
+        _vol_sub = ORB_ADVERT_INVALID;
     }
     /* Flush pending NVS write */
     if (_nvs_save_timer) {

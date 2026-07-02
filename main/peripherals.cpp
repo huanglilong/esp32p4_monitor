@@ -8,6 +8,7 @@
 #include "peripherals.hpp"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "esp_ldo_regulator.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
@@ -404,6 +405,20 @@ void PeripheralManager::set_volume(int volume)
         xSemaphoreTake(_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         esp_codec_dev_set_out_vol(_codec_handle, volume);
         xSemaphoreGive(_codec_mutex);
+    }
+
+    /* Publish volume_state via uORB for cross-module notification */
+    {
+        static orb_advert_t vol_pub = ORB_ADVERT_INVALID;
+        if (vol_pub < 0) {
+            vol_pub = orb_advertise(ORB_ID(volume_state));
+        }
+        if (vol_pub >= 0) {
+            struct volume_state_s vs = {};
+            vs.timestamp = esp_timer_get_time();
+            vs.volume = volume;
+            orb_publish(ORB_ID(volume_state), vol_pub, &vs);
+        }
     }
 }
 
