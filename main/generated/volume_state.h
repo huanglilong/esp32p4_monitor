@@ -1,0 +1,25 @@
+/*
+ * Automatically generated — DO NOT EDIT.
+ * Generated from .msg files by tools/msg_gen.py
+ */
+#ifndef UORB_TOPIC_VOLUME_STATE_H_
+#define UORB_TOPIC_VOLUME_STATE_H_
+
+#include <cstdint>
+#include <cstddef>
+
+#define ORB_QUEUE_LENGTH_VOLUME_STATE 1
+
+// NOLINTNEXTLINE(modernize-use-using)
+typedef struct volume_state_s
+{
+    uint64_t                 timestamp;  ///< @brief
+    int32_t                  volume;  ///< @brief
+} volume_state_s;
+
+#define VOLUME_STATE_SIZE sizeof(volume_state_s)
+
+// NOLINTNEXTLINE
+static constexpr size_t volume_state_SIZE_CONST { VOLUME_STATE_SIZE };
+
+#endif /* UORB_TOPIC_VOLUME_STATE_H_ */

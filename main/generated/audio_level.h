@@ -1,0 +1,26 @@
+/*
+ * Automatically generated — DO NOT EDIT.
+ * Generated from .msg files by tools/msg_gen.py
+ */
+#ifndef UORB_TOPIC_AUDIO_LEVEL_H_
+#define UORB_TOPIC_AUDIO_LEVEL_H_
+
+#include <cstdint>
+#include <cstddef>
+
+#define ORB_QUEUE_LENGTH_AUDIO_LEVEL 1
+
+// NOLINTNEXTLINE(modernize-use-using)
+typedef struct audio_level_s
+{
+    uint64_t                 timestamp;  ///< @brief
+    float                    level_left;  ///< @brief
+    float                    level_right;  ///< @brief
+} audio_level_s;
+
+#define AUDIO_LEVEL_SIZE sizeof(audio_level_s)
+
+// NOLINTNEXTLINE
+static constexpr size_t audio_level_SIZE_CONST { AUDIO_LEVEL_SIZE };
+
+#endif /* UORB_TOPIC_AUDIO_LEVEL_H_ */

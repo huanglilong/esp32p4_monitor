@@ -57,13 +57,27 @@ esp32p4_monitor/
 │   ├── phone_app_camera_stream.cpp # Camera Stream App (WiFi状态 + MJPEG切换 + 系统监控)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件
 │   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → HTTP MJPEG + mDNS)
+├── proto/                                    # uORB .msg 消息定义
+│   ├── fps_stats.msg
+│   ├── detection_result.msg
+│   ├── wifi_state.msg
+│   ├── audio_level.msg
+│   ├── camera_state.msg
+│   ├── recording_state.msg
+│   └── volume_state.msg
+├── tools/
+│   └── msg_gen.py                    # uORB .msg → C 代码生成器
 ├── doc/
 │   ├── waveshare_esp32p4_wifi_vs_lcd_4b.md  # 两板外设接线对比
 │   ├── ESP32-P4-WIFI6-datasheet.pdf          # WIFI6 基板原理图
 │   └── ESP32-P4-WIFI6-Touch-LCD-4B.pdf       # LCD-4B 原理图
 ├── components/
-│   ├── espressif__esp_lvgl_port/   # 本地补丁版 esp_lvgl_port
-│   └── example_video_common/       # V4L2 视频初始化 + JPEG 编码 (NEW)
+│   ├── espressif__esp_lvgl_port/     # 本地补丁版 esp_lvgl_port
+│   ├── example_video_common/         # V4L2 视频初始化 + JPEG 编码
+│   └── uorb/                         # uORB for FreeRTOS (pub/sub 消息总线)
+│       ├── include/uorb.h
+│       ├── uorb.c
+│       └── CMakeLists.txt
 └── project_setup.md            # 本文档
 ```
 
@@ -88,18 +102,40 @@ esp32p4_monitor/
 | `espressif/gmf_core` | ^1.0 | (间接依赖, 自动拉入) |
 | `espressif/gmf_audio` | ^1.0 | (间接依赖, 自动拉入) |
 | `espressif/gmf_io` | ^1.0 | (间接依赖, 自动拉入) |
+| `uorb` (自定义) | 1.0.0 | 本地组件 `components/uorb/` — uORB for FreeRTOS |
+
+## uORB 消息总线
+
+项目引入 **uORB for FreeRTOS**（仿 PX4 uORB API），实现统一的 task 间 pub/sub 通信。
+
+### 工作流
+
+```
+proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
+                                                    │
+                    idf.py build 自动触发            ▼
+                                             编译到固件
+```
+
+### 定义 topic 步骤
+
+1. 在 `proto/` 下创建 `.msg` 文件（PX4 兼容格式）
+2. 运行 `idf.py uorb_topics`（或直接 `idf.py build` 自动触发）
+3. 各 task 通过 `orb_advertise()` / `orb_subscribe()` / `orb_publish()` / `orb_copy()` 通信
+
+### 当前 topic 列表
+
+| Topic | 结构体 | 队列深度 | 发布者 | 订阅者 |
+|-------|--------|:-------:|--------|--------|
+| `fps_stats` | `fps_stats_s` | 3 | CameraStream | CameraStream App UI |
+| `detection_result` | `detection_result_s` | 1 | NPU 检测 task | UI 绘图 timer |
+| `wifi_state` | `wifi_state_s` | 1 | Settings (wifi_scan) | Web Config, UI |
+| `audio_level` | `audio_level_s` | 1 | Audio task | UI 电平表 |
+| `camera_state` | `camera_state_s` | 1 | Camera App | Detection task |
+| `recording_state` | `recording_state_s` | 1 | Audio/Web task | UI 录制状态 |
+| `volume_state` | `volume_state_s` | 1 | Settings slider | Music Playback |
 
 ## FreeRTOS 任务列表
-
-| # | 任务名 | 优先级 | 栈(KB) | 创建者 | 职责 |
-|---|--------|--------|--------|--------|------|
-| 1 | main | 默认(1) | 10 | ESP-IDF | 外设初始化 + 空闲循环 |
-| 2 | taskLVGL | 4 | 10 | `esp_lvgl_port` | LVGL 渲染 + 触摸输入 |
-| 3 | audio_echo | 5 | 4 | `PhoneAppAudio::run()` | Mic 读取 + 电平计算 (运行时创建, 退出时销毁) |
-| 4 | httpd | 默认 | 6 | `CameraStream` | HTTP 服务器 (端口 80: Web UI, 端口 81: MJPEG) |
-| 5 | wifi_scan | 1 | 6 | `PhoneAppSettings::run()` | WiFi 扫描 + 后台连接维护 (Settings 退出后保持运行) |
-
-## 引脚配置
 
 ### MIPI DSI (2-lane) — 专用接口引脚
 

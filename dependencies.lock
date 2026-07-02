@@ -373,7 +373,7 @@ dependencies:
       type: service
     version: 1.6.1
   espressif/ethernet_init:
-    component_hash: b7303f1482091766b9b653ec8332775a9485f4df3c69141577de82847c4d2adf
+    component_hash: 9f7d29acf5fe32315579ddb6247388291cda555aa529409108c0ada0aa7cd99d
     dependencies:
     - matches:
       - if: $CONFIG{ETHERNET_SPI_USE_CH390} == 1
@@ -483,7 +483,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.2.0
+    version: 1.3.0
   espressif/gmf_audio:
     component_hash: b04b6559d2a1c1cbd66f5297c27a7aa75cecd44d2c5552b4030fd99f02442833
     dependencies:
@@ -634,7 +634,7 @@ dependencies:
     - name: espressif/ethernet_init
       rules:
       - if: target != linux
-      version: ~1.2.0
+      version: ^1.3.0
     source:
       path: ../../../.espressif/v6.x/esp-idf/examples/common_components/protocol_examples_common
       type: local
@@ -711,6 +711,6 @@ direct_dependencies:
 - lvgl/lvgl
 - protocol_examples_common
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: d07b9151d364a19c2df6bbdc9393200b8ee41a493b68e735f4207889f30818d6
+manifest_hash: 14a92dcfad9eaca271e2150bcf91f5ec29ed344cfdbb7b65e6f4cb8a2afa7fa1
 target: esp32p4
 version: 3.0.0
