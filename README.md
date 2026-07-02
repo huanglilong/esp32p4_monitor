@@ -3,6 +3,7 @@
   - ESP32-P4NRW32 + 32MB Nor Flash
     - chip version v1.x and CPU frequency 360 MHz
   - ESP32-C6-MINI-1U-H8 with SDIO connected to ESP32-P4 for Wi-Fi 6 and Bluetooth 5 (LE) Zigbee and Thread
+  - Software: waveshare/esp32_p4_wifi6_touch_lcd_4b
     |   Signal    |     P4      |    C6   |
     |:----:|:----:|:----:|
     |   SDIO_CLK	|   SDMMC1_CLK	    |   (GPIO18)    |	CLK     |
@@ -11,7 +12,7 @@
     |   SDIO_D1	    |   SDMMC1_CDATA1	|   (GPIO15)    |	DAT1    |
     |   SDIO_D2	    |   SDMMC1_CDATA2   |   (GPIO16)    |	DAT2    |
     |   SDIO_D3	    |   SDMMC1_CDATA3	|   (GPIO17)    |	DAT3    |
-  - MIPI DSI 2lane, LCD resolution 720 * 720, 4 inch, driver: waveshare/esp32_p4_wifi6_touch_lcd_4b
+  - MIPI DSI 2lane, LCD resolution 720 * 720, 4 inch
 
     > **注意**: MIPI DSI 使用 ESP32-P4 专用接口引脚 (Dedicated Interface Pins, 电源域 VDD_MIPI_DPHY), 不是 GPIO。以下编号为芯片物理引脚号。
 
@@ -78,6 +79,7 @@
   - ESP32-P4NRW32 + 32MB Nor Flash
   - chip version v1.x and CPU frequency 360 MHz
   - ESP32-C6-MINI-1U-H8 with SDIO connected to ESP32-P4 for Wi-Fi 6 and Bluetooth 5 (LE) Zigbee and Thread
+  - Software: https://gitee.com/waveshare/esp32-p4-platform
 - ESP32P4:
   - [ESP32-P4 Datasheet](https://documentation.espressif.com/esp32-p4_datasheet_en.pdf)
   - [ESP32-P4 Technical Reference Manual](https://documentation.espressif.com/esp32-p4_technical_reference_manual_en.pdf)
