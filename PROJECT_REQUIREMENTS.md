@@ -74,6 +74,7 @@
 | S32 | **Web Record 音频任务停止** | `h_rec_stop` 同时设 `s_audio_running=false`，释放 I2S RX 给 playback | ✅ |
 | S33 | **Web 音频 API 全端点 guard** | 6 个端点均加 `__cam_running()` 检查 (list/status/stop 新增) | ✅ |
 | S34 | **`max_uri_handlers`** | 11→16，容纳 14 个 handler (5 core + 6 audio + 3 CORS) | ✅ |
+| S35 | **WIFI6 音频输入输出修复** | 双 handle 模式: speaker (DAC+IN_OUT) + mic (BOTH+IN), 共享 I2S 数据接口, Mic增益 24dB | ✅ |
 
 ---
 
@@ -195,4 +196,5 @@
 | 2026-07-02 | 初始创建，汇总 PROJECT.md + project_design.md 中所有需求和问题 |
 | 2026-07-02 | +R15 R16 R17 Web 音频录制/播放 + Camera Stream 互斥需求 |
 | 2026-07-02 | +S28~S34 Web 音频稳定性修复 (懒加载、URL解码、JS修复、ASP生命周期等) |
+| 2026-07-02 | +S35 WIFI6 音频修复: 共享 I2S 数据接口 (TX+RX), `dev_type = IN_OUT`, mic gain 初始化 |
 | 2026-07-02 | +K4 Web 音频 Camera Stream 互斥未生效 (诊断中，已加 noinline + debug log) |

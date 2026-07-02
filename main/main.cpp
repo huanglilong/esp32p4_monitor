@@ -327,21 +327,20 @@ void monitor_init_audio(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_handle));
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx_handle));
 
-    /* Shared I2S data interface - SEPARATE out/in to avoid direction conflict */
-    audio_codec_i2s_cfg_t i2s_out_cfg = {
-        .port = 0,
-        .rx_handle = NULL,
-        .tx_handle = s_tx_handle,
-    };
-    const audio_codec_data_if_t *data_out = audio_codec_new_i2s_data(&i2s_out_cfg);
-    assert(data_out);
-
     i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
     const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
     assert(gpio_if);
 
     if (g_has_lcd) {
         /* ===== LCD-4B: ES8311 DAC (Speaker, 0x30) + ES7210 ADC (Mic, 0x80) ===== */
+        audio_codec_i2s_cfg_t i2s_out_cfg = {
+            .port = 0,
+            .rx_handle = NULL,
+            .tx_handle = s_tx_handle,
+        };
+        const audio_codec_data_if_t *data_out = audio_codec_new_i2s_data(&i2s_out_cfg);
+        assert(data_out);
+
         audio_codec_i2s_cfg_t i2s_in_cfg = {
             .port = 0,
             .rx_handle = s_rx_handle,
@@ -378,22 +377,54 @@ void monitor_init_audio(void)
         s_codec_mic_handle = esp_codec_dev_new(&dev_adc);
         assert(s_codec_mic_handle);
     } else {
-        /* ===== WIFI6: ES8311 single-chip (0x18, ADC + DAC) + NS4150B amp ===== */
-        audio_codec_i2c_cfg_t i2c_es8311 = { .port = 0, .addr = 0x18, .bus_handle = i2c_handle };
-        const audio_codec_ctrl_if_t *ctrl_es8311 = audio_codec_new_i2c_ctrl(&i2c_es8311);
-        es8311_codec_cfg_t es8311_cfg = {
-            .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
-            .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,  /* ADC + DAC */
+        /* ===== WIFI6: ES8311 single-chip (0x18, ADC + DAC) + NS4150B amp =====
+         * Two-handle pattern matching Waveshare BSP:
+         *   Speaker: codec_mode=DAC, dev_type=IN_OUT  (playback)
+         *   Mic:     codec_mode=BOTH, dev_type=IN      (recording + chip config)
+         * Both share ONE I2S data interface with TX+RX handles. */
+        audio_codec_i2s_cfg_t i2s_data_cfg = {
+            .port = 0,
+            .rx_handle = s_rx_handle,
+            .tx_handle = s_tx_handle,
+        };
+        const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_data_cfg);
+        assert(data_if);
+
+        /* Speaker handle (DAC mode) */
+        audio_codec_i2c_cfg_t i2c_spk = { .port = 0, .addr = 0x18, .bus_handle = i2c_handle };
+        const audio_codec_ctrl_if_t *ctrl_spk = audio_codec_new_i2c_ctrl(&i2c_spk);
+        es8311_codec_cfg_t es8311_spk_cfg = {
+            .ctrl_if = ctrl_spk, .gpio_if = gpio_if,
+            .codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC,
             .pa_pin = 53, .master_mode = false, .use_mclk = true,
             .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
             .mclk_div = I2S_MCLK_MULTIPLE_256,
         };
-        esp_codec_dev_cfg_t dev_dac = {
-            .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
+        esp_codec_dev_cfg_t dev_spk = {
+            .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
+            .codec_if = es8311_codec_new(&es8311_spk_cfg),
+            .data_if = data_if,
         };
-        s_codec_handle = esp_codec_dev_new(&dev_dac);
+        s_codec_handle = esp_codec_dev_new(&dev_spk);
         assert(s_codec_handle);
-        /* Mic audio routes through I2S RX automatically (ES8311 BOTH mode) */
+
+        /* Mic handle (BOTH mode — configures ES8311 ADC+DAC chip, paired with speaker handle) */
+        audio_codec_i2c_cfg_t i2c_mic = { .port = 0, .addr = 0x18, .bus_handle = i2c_handle };
+        const audio_codec_ctrl_if_t *ctrl_mic = audio_codec_new_i2c_ctrl(&i2c_mic);
+        es8311_codec_cfg_t es8311_mic_cfg = {
+            .ctrl_if = ctrl_mic, .gpio_if = gpio_if,
+            .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
+            .pa_pin = 53, .master_mode = false, .use_mclk = true,
+            .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
+            .mclk_div = I2S_MCLK_MULTIPLE_256,
+        };
+        esp_codec_dev_cfg_t dev_mic = {
+            .dev_type = ESP_CODEC_DEV_TYPE_IN,
+            .codec_if = es8311_codec_new(&es8311_mic_cfg),
+            .data_if = data_if,
+        };
+        s_codec_mic_handle = esp_codec_dev_new(&dev_mic);
+        assert(s_codec_mic_handle);
     }
 
     /* Create mutex BEFORE opening codecs */
@@ -406,6 +437,10 @@ void monitor_init_audio(void)
     if (g_has_lcd) {
         ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_mic_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
         esp_codec_dev_set_in_gain(s_codec_mic_handle, 42);
+    } else {
+        /* WIFI6: open mic handle (BOTH mode, IN type) to configure ES8311 ADC */
+        ESP_ERROR_CHECK(esp_codec_dev_open(s_codec_mic_handle, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL);
+        esp_codec_dev_set_in_gain(s_codec_mic_handle, 24);
     }
 
     ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", g_has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", EXAMPLE_VOICE_VOLUME);
