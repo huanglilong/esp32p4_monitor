@@ -202,7 +202,12 @@ bool monitor_init_sdcard(void)
         /* Release → re-acquire toggles power, resetting SD card */
         esp_ldo_release_channel(s_sdcard_ldo_chan);
         vTaskDelay(pdMS_TO_TICKS(50));
-        esp_ldo_acquire_channel(&ldo_cfg, &s_sdcard_ldo_chan);
+        ret = esp_ldo_acquire_channel(&ldo_cfg, &s_sdcard_ldo_chan);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SD LDO re-acquire failed (%s)", esp_err_to_name(ret));
+            s_sdcard_ldo_chan = NULL;
+            return false;
+        }
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
