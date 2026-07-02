@@ -85,21 +85,29 @@ class Esp32HttpService {
     print('$TAG 🌐 Web connect to ${device.host}:8080...');
     disconnect();
 
-    // Verify connectivity with a lightweight API call
-    final c = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5)
-      ..findProxy = (url) => 'DIRECT';
+    // Use raw Socket.connect() for reliability — HttpClient can fail with
+    // EHOSTDOWN on macOS sandboxed apps even when the host is reachable.
     try {
-      final r = await c.getUrl(
-        Uri.parse('http://${device.host}:8080/api/status'),
+      final socket = await Socket.connect(
+        device.host,
+        8080,
+        timeout: const Duration(seconds: 5),
       );
-      await r.close();
+      socket.write(
+        'GET /api/status HTTP/1.0\r\n'
+        'Host: ${device.host}:8080\r\n'
+        '\r\n',
+      );
+      await socket.flush();
+      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      socket.close();
+      if (!resp.contains('200 OK')) {
+        throw Exception('Server returned non-200');
+      }
     } catch (e) {
-      c.close();
       print('$TAG ❌ Web connect failed: $e');
       rethrow;
     }
-    c.close();
 
     _connectedDevice = device;
     _connectionController.add(device);
@@ -302,18 +310,27 @@ class Esp32HttpService {
   /// Fetch device settings (WiFi, volume, etc.) from /api/status.
   Future<Map<String, dynamic>> fetchSettings() async {
     final device = _connectedOrThrow;
-    final c = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5)
-      ..findProxy = (url) => 'DIRECT';
     try {
-      final r = await c.getUrl(
-        Uri.parse('http://${device.host}:8080/api/status'),
+      final socket = await Socket.connect(
+        device.host,
+        8080,
+        timeout: const Duration(seconds: 5),
       );
-      final resp = await r.close();
-      return jsonDecode(await resp.transform(utf8.decoder).join())
-          as Map<String, dynamic>;
-    } finally {
-      c.close();
+      socket.write(
+        'GET /api/status HTTP/1.0\r\n'
+        'Host: ${device.host}:8080\r\n'
+        '\r\n',
+      );
+      await socket.flush();
+      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      socket.close();
+      // Find JSON body after headers (double \r\n)
+      final bodyStart = resp.indexOf('\r\n\r\n');
+      if (bodyStart < 0) throw Exception('No response body');
+      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+    } catch (e) {
+      print('$TAG ❌ fetchSettings failed: $e');
+      rethrow;
     }
   }
 
@@ -427,18 +444,27 @@ class Esp32HttpService {
   // ==================== Audio API (port 8080) ====================
 
   Future<Map<String, dynamic>> _audioGet(String path) async {
-    final c = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5)
-      ..findProxy = (url) => 'DIRECT';
+    final device = _connectedOrThrow;
     try {
-      final r = await c.getUrl(
-        Uri.parse('http://${_connectedDevice!.host}:8080$path'),
+      final socket = await Socket.connect(
+        device.host,
+        8080,
+        timeout: const Duration(seconds: 5),
       );
-      final resp = await r.close();
-      return jsonDecode(await resp.transform(utf8.decoder).join())
-          as Map<String, dynamic>;
-    } finally {
-      c.close();
+      socket.write(
+        'GET $path HTTP/1.0\r\n'
+        'Host: ${device.host}:8080\r\n'
+        '\r\n',
+      );
+      await socket.flush();
+      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      socket.close();
+      final bodyStart = resp.indexOf('\r\n\r\n');
+      if (bodyStart < 0) throw Exception('No response body');
+      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+    } catch (e) {
+      print('$TAG ❌ Audio GET $path failed: $e');
+      rethrow;
     }
   }
 

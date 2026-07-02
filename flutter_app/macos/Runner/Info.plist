@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>This app needs local network access to discover and communicate with ESP32-P4 devices on your WiFi.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_esp32p4._tcp</string>
+		<string>_http._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
