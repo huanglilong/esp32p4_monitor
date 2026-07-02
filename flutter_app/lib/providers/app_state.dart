@@ -110,11 +110,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     _discovery
-        .startDiscovery(
-          prioritizedDevices: _devices
-              .where((device) => _savedConnectedDeviceIds.contains(device.id))
-              .toList(),
-        )
+        .startDiscovery()
         .listen(
           (device) {
             final prioritize = _savedConnectedDeviceIds.contains(device.id);
