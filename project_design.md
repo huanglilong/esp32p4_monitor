@@ -813,3 +813,16 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 | 4 | 🟢 | `phone_app_settings.cpp:823` | WiFi 扫描任务空闲轮询 200ms (5Hz)，RSSI 和扫描标志不需要这么高频率 | 降为 500ms (2Hz)，节省 CPU |
 | 5 | 🟢 | `phone_app_camera.cpp:89` | **Camera Canvas 800→720** (已知 TODO): Canvas 800×800 但显示仅 720×720，多处理 21% 像素 | **跳过**: 需同步修改 buffer stride/memcpy/检测框坐标，高风险 |
 | 6 | 🟢 | `main/main.cpp:698-699` | **5s 内存日志** (project_design.md #5.8) | **已修复**: 空闲循环改为 `vTaskDelay(60s)`，无内存日志输出 |
+
+### 第七轮分析 — Web 音频互斥 + 跨核安全修复 (2026-07-02)
+
+对所有 `main/*.cpp` + `main/*.hpp` 重新审计后发现以下问题:
+
+| # | 严重度 | 文件 | 问题 | 修复 |
+|---|--------|------|------|------|
+| 1 | 🔴 | `web_config_server.cpp:770,785,796,859` | **K4/R17 互斥不全**: S33 声称"6 个端点均加 `__cam_running()`"，实际仅 2/6。`h_rec_stop`、`h_rec_status`、`h_list`、`h_stop` 无保护 | 4 个端点均加 `__cam_running()` guard |
+| 2 | 🔴 | `camera_stream.hpp:79` | `_detector` 指针无 volatile: `_model_load_task_fn` (core 0) 写入，`stream_handler` (HTTP handler) 读取，编译器可缓存旧 null 值 | 改为 `COCODetect * volatile`，替换 `_frame_count++` 为显式赋值 |
+| 3 | 🟡 | `main/main.cpp:205` | **SD LDO re-acquire 未检查**: 第二次 `esp_ldo_acquire_channel` 返回值未检查，失败时 `s_sdcard_ldo_chan` 为脏句柄 | 加返回值检查，失败时 clear handle + return false |
+| 4 | 🟡 | `web_config_server.cpp:1039` | **vTaskDelete 自删除风险**: `web_config_server_stop()` 若从 `web_config_task` 内部调用会自删除 | 加 `xTaskGetCurrentTaskHandle()` 检查，自删除时设 handle=NULL 再 `vTaskDelete(NULL)` |
+| 5 | 🟡 | `web_config_server.cpp:756` | **localtime() 非线程安全**: 返回 static buffer，多 HTTP handler 并发访问 | 改用 `localtime_r(&t, &tm_buf)` |
+| 6 | 🟡 | `camera_stream.hpp:72-75` | `_frame_count`/`_fps_total_bytes` 无 volatile: HTTP handler 写入，LVGL timer (core 1) 读取 FPS | 加 `volatile` 修饰 |

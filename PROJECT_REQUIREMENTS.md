@@ -35,7 +35,7 @@
 | R14 | **多板自动检测** | GT911 I2C (0x5D) 探测，自动适配 LCD-4B / WIFI6，单一固件 | ✅ |
 | R15 | **Web 音频录制** | WIFI6 无屏板通过 Web :8080 录制，Shine MP3 → SD 卡，Start/End 按钮 | ✅ |
 | R16 | **Web 音频播放** | WIFI6 无屏板通过 Web :8080 播放 SD 卡 MP3，esp_audio_simple_player | ✅ |
-| R17 | **Camera Stream 互斥保护** | Web 音频功能仅在 Camera Stream 未运行时可用，UI 隐藏 + API 阻断 | 🔧 |
+| R17 | **Camera Stream 互斥保护** | Web 音频功能仅在 Camera Stream 未运行时可用，UI 隐藏 + API 阻断 | ✅ |
 
 ### 2.2 稳定性与性能
 
@@ -78,6 +78,10 @@
 | S35 | **WIFI6 音频修复** | 修正 I2C 地址 0x18→0x30 (ES8311_CODEC_DEFAULT_ADDR)，单 handle (BOTH+IN_OUT) 匹配参考固件 | ✅ |
 | S36 | **Music App ASP 生命周期同步** | `_play()` 改为 stop→destroy→new→run，匹配 web S31，防止 GMF 缓存状态崩溃 | ✅ |
 | S37 | **Flutter Settings 页面** | 集成 WiFi/音量/Camera Stream 配置 + 录音/播放 + 恢复出厂设置 | ✅ |
+| S38 | **CameraStream cross-core volatile** | `_detector` + `_frame_count` + `_fps_total_bytes` 加 volatile 防止跨核编译器缓存 | ✅ |
+| S39 | **SD LDO re-acquire 检查** | `esp_ldo_acquire_channel` 返回值检查，防止脏句柄 | ✅ |
+| S40 | **web_config_server 线程安全** | `localtime()`→`localtime_r()` + `vTaskDelete` 自删除保护 | ✅ |
+| S41 | **Flutter macOS 端口 8080 连接修复** | HttpClient→Socket 切换 + Info.plist 补全 NSLocalNetworkUsageDescription | ✅ |
 
 ---
 
@@ -139,7 +143,7 @@
 | K1 | 🟢 低 | Camera 帧缓冲跨核并发 (timer core1 / detect core0) 画面撕裂 | 非关键，影响单帧 |
 | K2 | 🟢 低 | Audio 无用的 PSRAM 分配 (1920B) | 开销极小 |
 | K3 | 🟢 低 | Music 部分低优先级边界情况 | 见 project_design.md §4.10 |
-| K4 | 🔴 高 | **Web 音频 Camera Stream 互斥未生效** | `__cam_running()` 日志未触发，`h_play` 在相机运行时仍可播放。已加 `noinline` + debug log 诊断中 |
+| K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已生效** | 所有 6 个端点均已加 `__cam_running()` 检查 (2026-07-02) |
 
 ---
 
@@ -203,3 +207,4 @@
 | 2026-07-02 | +S36 Music App ASP 生命周期同步, 匹配 web S31 |
 | 2026-07-02 | +S37 Flutter Settings 页面: WiFi/音量/Camera Stream + 录音/播放 |
 | 2026-07-02 | +K4 Web 音频 Camera Stream 互斥未生效 (诊断中，已加 noinline + debug log) |
+| 2026-07-02 | **修复**: K4/R17 全部 6 个 Web 音频端点均加 `__cam_running()` 检查；CameraStream `_detector`/`_frame_count`/`_fps_total_bytes` 加 volatile；SD LDO re-acquire 返回值检查；`localtime()`→`localtime_r()`；`vTaskDelete` 自删除防护 |
