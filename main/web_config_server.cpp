@@ -768,6 +768,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
 
 /* GET /api/audio/record_stop */
 static esp_err_t h_rec_stop(httpd_req_t *req) {
+    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     if (!s_is_recording) { httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
     s_is_recording = false; s_audio_running = false; /* Stop audio task to release I2S RX */
     vTaskDelay(pdMS_TO_TICKS(300));
@@ -783,6 +784,7 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
 
 /* GET /api/audio/record_status */
 static esp_err_t h_rec_status(httpd_req_t *req) {
+    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     char r[128];
     if (s_is_recording) { struct timeval tv; gettimeofday(&tv,NULL);
         uint32_t e=(tv.tv_sec*1000+tv.tv_usec/1000-s_rec_start_ms)/1000;
@@ -794,6 +796,7 @@ static esp_err_t h_rec_status(httpd_req_t *req) {
 
 /* GET /api/audio/list */
 static esp_err_t h_list(httpd_req_t *req) {
+    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     (void)__audio_init(); /* Lazy-mount SD card so file list works even before first record */
     DIR *d=opendir(REC_DIR); cJSON *root=cJSON_CreateObject(),*arr=cJSON_CreateArray();
     cJSON_AddItemToObject(root,"files",arr);
@@ -857,6 +860,7 @@ static esp_err_t h_play(httpd_req_t *req) {
 
 /* GET /api/audio/stop */
 static esp_err_t h_stop(httpd_req_t *req) {
+    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     if(s_asp){ esp_audio_simple_player_stop(s_asp); s_playing=false; }
     httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
 }
