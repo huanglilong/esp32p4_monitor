@@ -311,9 +311,11 @@ void PhoneAppAudio::_start_recording(void)
 
     ESP_LOGI(TAG, "Starting MP3 recording...");
 
-    /* Allocate PCM accumulation buffer (1152 samples * 2 channels interleaved) */
+    /* Allocate PCM accumulation buffer (1152 samples * 2 channels interleaved).
+     * Use internal SRAM: buffer is small (4608 bytes) and accessed every 10ms.
+     * PSRAM access latency (~40-80ns) is unnecessary for this size/frequency. */
     _pcm_buffer = (int16_t *)heap_caps_calloc(1, PCM_BUF_SAMPLES * sizeof(int16_t),
-                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!_pcm_buffer) {
         ESP_LOGE(TAG, "Failed to allocate PCM buffer");
         return;
