@@ -21,6 +21,7 @@
 #include <sys/param.h>
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_timer.h"
 #include "esp_http_server.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -803,7 +804,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
         _stop_audio_task_if_running();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
-    s_rec_bytes = 0; s_rec_start_ms = tv.tv_sec*1000 + tv.tv_usec/1000;
+    s_rec_bytes = 0; s_rec_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_is_recording = true;
     ESP_LOGI(TAG, "Recording: %s", s_rec_path);
     httpd_resp_sendstr(req, "{\"ok\":1}");
@@ -838,8 +839,8 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
 static esp_err_t h_rec_status(httpd_req_t *req) {
     if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     char r[128];
-    if (s_is_recording) { struct timeval tv; gettimeofday(&tv,NULL);
-        uint32_t e=(tv.tv_sec*1000+tv.tv_usec/1000-s_rec_start_ms)/1000;
+    if (s_is_recording) {
+        uint32_t e = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms) / 1000);
         snprintf(r,sizeof(r),"{\"recording\":1,\"seconds\":%lu,\"bytes\":%lu}",(unsigned long)e,(unsigned long)s_rec_bytes); }
     else snprintf(r,sizeof(r),"{\"recording\":0}");
     httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);

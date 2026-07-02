@@ -1,6 +1,7 @@
 #include "phone_app_audio.hpp"
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/i2s_std.h"
 #include "bsp/display.h"
 #include "example_config.h"
@@ -289,10 +290,8 @@ void PhoneAppAudio::_level_update_timer_cb(lv_timer_t *timer)
 
     /* Update recording status */
     if (app->_label_rec_status && app->_is_recording) {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        uint32_t now_ms = (uint32_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
-        uint32_t elapsed_s = (now_ms - app->_record_start_ms) / 1000;
+        int64_t now_us = esp_timer_get_time();
+        uint32_t elapsed_s = (uint32_t)((now_us / 1000 - app->_record_start_ms) / 1000);
         uint32_t kb = app->_record_bytes_written / 1024;
         char txt[48];
         snprintf(txt, sizeof(txt), "REC %lu:%02lu  %luKB",
@@ -368,7 +367,8 @@ void PhoneAppAudio::_start_recording(void)
     }
 
     _record_bytes_written = 0;
-    _record_start_ms = (uint32_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+    /* Use monotonic esp_timer for elapsed time (avoids gettimeofday overflow on 32-bit) */
+    _record_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     _is_recording = true;
 
     /* Update button appearance */
