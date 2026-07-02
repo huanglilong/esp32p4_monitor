@@ -763,7 +763,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         if (xTaskCreatePinnedToCore(audio_task, "w_audio", 12*1024, NULL, 1, &s_audio_task, 0) != pdPASS)
             { s_audio_running = false; httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     }
-    s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
     if (!s_pcm_buf) {
         _stop_audio_task_if_running();
         httpd_resp_sendstr(req, "{\"ok\":0}");
