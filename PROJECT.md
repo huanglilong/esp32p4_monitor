@@ -453,7 +453,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | 检测结果 | 板子 | 显示/LVGL | 音频 Codec | Web 配置 |
 |------|------|:---:|------|:---:|
 | GT911 响应 | LCD-4B | ✅ Phone UI | ES8311(0x30)+ES7210(0x80) | ✅ 8080 |
-| 无响应 | WIFI6 基板 | ❌ 无屏幕 | ES8311(0x18) 单芯片 | ✅ 8080 |
+| 无响应 | WIFI6 基板 | ❌ 无屏幕 | ES8311(0x30) 单芯片 | ✅ 8080 |
 
 全局变量 `g_has_lcd` 在 `main.cpp` 中设置，`web_config_server.cpp` 通过 `extern` 引用。
 无需任何编译期配置，单一固件自动适配。
@@ -495,7 +495,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 
 **板级兼容**: `monitor_init_audio()` 根据 `g_has_lcd` 自动选择:
 - **LCD-4B**: ES8311 DAC (0x30) + ES7210 ADC (0x80, 双麦)
-- **WIFI6**: ES8311 单芯片 (0x18, ADC+DAC) + NS4150B 功放
+- **WIFI6**: ES8311 单芯片 (0x30, ADC+DAC) + NS4150B 功放
 GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 
 ## 构建和烧录
