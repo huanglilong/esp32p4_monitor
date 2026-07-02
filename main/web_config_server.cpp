@@ -87,7 +87,7 @@ extern void monitor_deinit_sdcard(void);
 
 static httpd_handle_t s_httpd = NULL;
 static TaskHandle_t   s_task_handle = NULL;
-static bool           s_running = false;
+static volatile bool  s_running = false;
 static bool           s_mdns_running = false;
 
 /*============================================================================
@@ -1061,10 +1061,24 @@ static void web_config_task(void *arg)
         CameraStream::instance().start();
     }
 
-    /* Idle — HTTP server runs in its own internal threads */
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(10000));
+    /* Idle — HTTP server runs in its own internal threads.
+     * Check s_running flag for clean exit when web_config_server_stop() is called. */
+    while (s_running) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
+
+    /* Clean exit path: stop HTTP server and mDNS from within the task */
+    if (s_mdns_running) {
+        mdns_service_remove("_http", "_tcp");
+        mdns_free();
+        s_mdns_running = false;
+    }
+    if (s_httpd) {
+        httpd_stop(s_httpd);
+        s_httpd = NULL;
+    }
+    s_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 /*============================================================================
@@ -1086,6 +1100,8 @@ void web_config_server_start(void)
 
 void web_config_server_stop(void)
 {
+    if (!s_running) return;
+
     /* Stop audio */
     s_is_recording = false; s_audio_running = false; vTaskDelay(pdMS_TO_TICKS(300));
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine,&wr); if(d&&wr>0&&s_rec_file) fwrite(d,1,wr,s_rec_file); shine_close(s_shine); s_shine=NULL; }
@@ -1095,6 +1111,23 @@ void web_config_server_stop(void)
     if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
     if (s_audio_inited) { monitor_deinit_audio(); monitor_deinit_sdcard(); s_audio_inited=false; }
 
+    /* Signal task to exit its idle loop — it will clean up HTTP server
+     * and mDNS from within its own context, then self-delete. */
+    s_running = false;
+
+    /* Wait for task to self-delete (max 3s) */
+    int timeout = 0;
+    while (s_task_handle && timeout < 30) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        timeout++;
+    }
+    if (s_task_handle) {
+        ESP_LOGW(TAG, "Web config task did not exit, force-killing");
+        vTaskDelete(s_task_handle);
+        s_task_handle = NULL;
+    }
+
+    /* Fallback: if task already exited but HTTP/mDNS not cleaned up */
     if (s_mdns_running) {
         mdns_free();
         s_mdns_running = false;
@@ -1103,18 +1136,6 @@ void web_config_server_stop(void)
         httpd_stop(s_httpd);
         s_httpd = NULL;
     }
-    if (s_task_handle) {
-        if (s_task_handle == xTaskGetCurrentTaskHandle()) {
-            /* Called from within the web_config task itself — schedule
-             * self-deletion instead of calling vTaskDelete(NULL). */
-            ESP_LOGW(TAG, "web_config_server_stop called from its own task, self-deleting");
-            s_task_handle = NULL;
-            vTaskDelete(NULL);
-        } else {
-            vTaskDelete(s_task_handle);
-            s_task_handle = NULL;
-        }
-    }
-    s_running = false;
+
     ESP_LOGI(TAG, "Web config server stopped");
 }
