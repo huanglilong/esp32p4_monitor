@@ -753,9 +753,10 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     s_shine = shine_initialise(&c);
     if (!s_shine) { free(s_pcm_buf); s_pcm_buf = NULL; httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     struct timeval tv; gettimeofday(&tv, NULL);
-    time_t t = tv.tv_sec; struct tm *tm = localtime(&t);
+    time_t t = tv.tv_sec; struct tm tm_buf;
+    localtime_r(&t, &tm_buf);
     snprintf(s_rec_path, sizeof(s_rec_path), REC_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
-             tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+             tm_buf.tm_year+1900, tm_buf.tm_mon+1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
     s_rec_file = fopen(s_rec_path, "wb");
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
@@ -1041,8 +1042,16 @@ void web_config_server_stop(void)
         s_httpd = NULL;
     }
     if (s_task_handle) {
-        vTaskDelete(s_task_handle);
-        s_task_handle = NULL;
+        if (s_task_handle == xTaskGetCurrentTaskHandle()) {
+            /* Called from within the web_config task itself — schedule
+             * self-deletion instead of calling vTaskDelete(NULL). */
+            ESP_LOGW(TAG, "web_config_server_stop called from its own task, self-deleting");
+            s_task_handle = NULL;
+            vTaskDelete(NULL);
+        } else {
+            vTaskDelete(s_task_handle);
+            s_task_handle = NULL;
+        }
     }
     s_running = false;
     ESP_LOGI(TAG, "Web config server stopped");
