@@ -68,15 +68,15 @@ public:
     uint8_t                _jpeg_quality;
     SemaphoreHandle_t      _encoder_sem;
 
-    /* FPS tracking */
-    uint32_t               _frame_count;       /* Total frames sent */
+    /* FPS tracking — cross-core: HTTP handler (core 0) writes, LVGL timer (core 1) reads */
+    volatile uint32_t      _frame_count;       /* Total frames sent */
     uint32_t               _fps_frame_count;   /* Frames in current FPS window */
     struct timespec        _fps_window_start;  /* Start of current FPS window */
-    uint32_t               _fps_total_bytes;   /* JPEG bytes in current FPS window */
+    volatile uint32_t      _fps_total_bytes;   /* JPEG bytes in current FPS window */
     static constexpr int   FPS_LOG_INTERVAL_S = 2;  /* Log FPS every 2s */
 
     /* Detection — inline, no separate task/buffer needed */
-    COCODetect                    *_detector;
+    COCODetect             * volatile _detector;          /* Cross-task: loader writes, handler reads */
     uint8_t                      *_detect_in_buf;   /* Copy buffer for inference */
     uint32_t                      _detect_in_size;
     std::list<dl::detect::result_t> _detect_results;

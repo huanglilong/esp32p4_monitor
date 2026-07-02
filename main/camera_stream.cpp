@@ -576,7 +576,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);  // Return buffer immediately
             cs->_run_inference(cs->_detect_in_buf, copy_sz);
-            cs->_frame_count++;
+            cs->_frame_count = cs->_frame_count + 1;
             vTaskDelay(pdMS_TO_TICKS(50));
             detection_run_this_frame = true;
         }
@@ -641,7 +641,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             /* Return buffer */
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
 
-            cs->_frame_count++;
+            cs->_frame_count = cs->_frame_count + 1;
 
             /* Yield CPU to prevent SDIO/WiFi starvation */
             vTaskDelay(pdMS_TO_TICKS(50));
