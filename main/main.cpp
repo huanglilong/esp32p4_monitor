@@ -198,9 +198,15 @@ bool monitor_init_sdcard(void)
     /* Power-cycle SD via LDO VO4 to reset card into clean state */
     {
         esp_ldo_channel_config_t ldo_cfg = { .chan_id = 4, .voltage_mv = 3300 };
-        esp_ldo_acquire_channel(&ldo_cfg, &s_sdcard_ldo_chan);
+        ret = esp_ldo_acquire_channel(&ldo_cfg, &s_sdcard_ldo_chan);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SD LDO acquire failed (%s)", esp_err_to_name(ret));
+            s_sdcard_ldo_chan = NULL;
+            return false;
+        }
         /* Release → re-acquire toggles power, resetting SD card */
         esp_ldo_release_channel(s_sdcard_ldo_chan);
+        s_sdcard_ldo_chan = NULL;
         vTaskDelay(pdMS_TO_TICKS(50));
         ret = esp_ldo_acquire_channel(&ldo_cfg, &s_sdcard_ldo_chan);
         if (ret != ESP_OK) {
