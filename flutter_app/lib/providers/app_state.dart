@@ -89,6 +89,7 @@ class AppState extends ChangeNotifier {
   int get volume => _volume;
   bool get camStreamEnabled => _camStreamEnabled;
   bool get settingsLoading => _settingsLoading;
+  Set<String> get savedConnectedDeviceIds => _savedConnectedDeviceIds;
 
   AppState() {
     _httpService.messageStream.listen(_onMessage);
@@ -260,6 +261,15 @@ class AppState extends ChangeNotifier {
     _settingsLoading = false;
     _addLog('Disconnected');
     _notifySafe();
+  }
+
+  /// Clear all saved connected devices and remove them from the UI.
+  Future<void> clearConnectedDevices() async {
+    await _deviceStore.clear();
+    _savedConnectedDeviceIds.clear();
+    _devices.clear();
+    _addLog('Cleared connection history');
+    notifyListeners();
   }
 
   /// Web-only connect (port 8080) for settings + audio without camera stream.

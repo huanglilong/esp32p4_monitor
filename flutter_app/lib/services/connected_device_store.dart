@@ -45,4 +45,12 @@ class ConnectedDeviceStore {
       const JsonEncoder.withIndent('  ').convert(payload),
     );
   }
+
+  /// Delete all saved connected devices.
+  Future<void> clear() async {
+    final file = await _file();
+    if (await file.exists()) {
+      await file.delete();
+    }
+  }
 }

@@ -53,6 +53,17 @@ class _HomeScreenState extends State<HomeScreen> {
             tooltip: 'Add device manually',
             onPressed: _showAddDeviceDialog,
           ),
+          ListenableBuilder(
+            listenable: _state,
+            builder: (context, _) => IconButton(
+              icon: const Icon(Icons.delete_sweep),
+              tooltip: 'Clear history',
+              onPressed:
+                  _state.savedConnectedDeviceIds.isNotEmpty
+                      ? _showClearHistoryDialog
+                      : null,
+            ),
+          ),
         ],
       ),
       body: ListenableBuilder(
@@ -193,6 +204,34 @@ class _HomeScreenState extends State<HomeScreen> {
               Navigator.pop(context);
             },
             child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showClearHistoryDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear Connection History'),
+        content: const Text(
+          'Remove all saved devices? You can re-discover them by scanning again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              _state.clearConnectedDevices();
+              Navigator.pop(ctx);
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('Clear All'),
           ),
         ],
       ),
