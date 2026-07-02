@@ -179,29 +179,26 @@ bool PhoneAppMusic::run(void)
     lv_obj_set_size(_list_tracks, BSP_LCD_H_RES - 20, BSP_LCD_V_RES - 180);
     lv_obj_align(_list_tracks, LV_ALIGN_TOP_MID, 0, 60);
 
-    /* Init audio simple player (ESP-GMF based) */
-    esp_asp_cfg_t asp_cfg = {
-        .out = { .cb = _asp_output_cb, .user_ctx = this },
-        .task_prio = 5,
-        .task_stack = 4096,
-        .task_core = 0,
-        .task_stack_in_ext = false,
-        .prev = NULL,
-        .prev_ctx = NULL,
-    };
-    esp_gmf_err_t ret = esp_audio_simple_player_new(&asp_cfg, &_asp_handle);
-    if (ret != ESP_GMF_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to create audio player: %d", ret);
-        return false;
+    /* Restore NVS volume */
+    {
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+            int32_t saved_vol = (int32_t)_volume;
+            if (nvs_get_i32(nvs_h, "volume", &saved_vol) == ESP_OK) {
+                if (saved_vol >= 0 && saved_vol <= 100) _volume = (int)saved_vol;
+            }
+            nvs_close(nvs_h);
+        }
     }
-    esp_audio_simple_player_set_event(_asp_handle, _asp_event_cb, this);
+
+    /* Set initial volume on codec */
+    safe_set_volume(_volume);
 
     /* Deferred auto-next timer: checks _auto_next flag to avoid GMF re-entrancy.
      * _asp_event_cb sets _auto_next=true instead of calling _next() directly. */
     _auto_next_timer = lv_timer_create(_auto_next_timer_cb, 200, this);
 
-    /* NVS debounce timer (500ms): avoid flash wear from rapid slider events.
-     * Actual NVS write happens here, not in the slider callback. */
+    /* NVS debounce timer (500ms): avoid flash wear from rapid slider events. */
     _nvs_save_timer = lv_timer_create([](lv_timer_t *t) {
         PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
         if (!app || !app->_nvs_dirty) return;
@@ -214,8 +211,7 @@ bool PhoneAppMusic::run(void)
         }
     }, 500, this);
 
-    /* Volume sync timer: pull volume from NVS every 5s (Settings may change it).
-     * 5s interval reduces unnecessary NVS reads compared to previous 1s. */
+    /* Volume sync timer: pull volume from NVS every 5s (Settings may change it). */
     _vol_sync_timer = lv_timer_create([](lv_timer_t *t) {
         PhoneAppMusic *app = (PhoneAppMusic *)t->user_data;
         if (!app || !app->_label_vol || !app->_slider_vol) return;
@@ -235,23 +231,6 @@ bool PhoneAppMusic::run(void)
             nvs_close(nvs_h);
         }
     }, 5000, this);
-
-    /* Load volume from NVS if available, otherwise use default */
-    {
-        nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
-            int32_t saved_vol = (int32_t)_volume;
-            if (nvs_get_i32(nvs_h, "volume", &saved_vol) == ESP_OK) {
-                if (saved_vol >= 0 && saved_vol <= 100) {
-                    _volume = (int)saved_vol;
-                }
-            }
-            nvs_close(nvs_h);
-        }
-    }
-
-    /* Set initial volume on codec */
-    safe_set_volume(_volume);
 
     /* Scan SD card */
     _scan_files();
@@ -372,39 +351,46 @@ void PhoneAppMusic::_play(int index)
 {
     if (index < 0 || index >= _track_count) return;
 
-    _stop();
-    _current_track = index;
+    /* Stop + destroy previous player for clean pipeline state (S31 fix).
+     * Recreate fresh ASP handle each play to prevent GMF state residue crashes. */
+    if (_asp_handle) {
+        esp_audio_simple_player_stop(_asp_handle);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_audio_simple_player_destroy(_asp_handle);
+        _asp_handle = nullptr;
+    }
+    _is_playing = false;
+    _current_track = -1;
 
     const char *name = _file_names[index];
     char uri[320];
-    /* GMF file IO uses the URI path directly with fopen() via get_mount_path().
-     * file://sdcard/xxx.mp3 → get_mount_path strips "file://" → "/sdcard/xxx.mp3"
-     * Spaces in filenames are fine for fopen() on FAT32. */
     snprintf(uri, sizeof(uri), "file://sdcard/%s", name);
 
     ESP_LOGI(TAG, "Playing: %s", uri);
     lv_label_set_text(_label_title, name);
 
-    /* Retry: if player is still finishing previous pipeline, stop and retry */
-    esp_gmf_err_t ret;
-    for (int retry = 0; retry < 3; retry++) {
-        ret = esp_audio_simple_player_run(_asp_handle, uri, NULL);
-        if (ret == ESP_GMF_ERR_OK) break;
-        if (ret == ESP_GMF_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "Player state conflict, stopping and retrying...");
-            esp_audio_simple_player_stop(_asp_handle);
-            vTaskDelay(pdMS_TO_TICKS(30));
-        } else {
-            break;
-        }
+    /* Create fresh ASP handle */
+    esp_asp_cfg_t asp_cfg = {
+        .out = { .cb = _asp_output_cb, .user_ctx = this },
+        .task_prio = 5,
+        .task_stack = 4096,
+        .task_core = 0,
+    };
+    if (esp_audio_simple_player_new(&asp_cfg, &_asp_handle) != ESP_GMF_ERR_OK || !_asp_handle) {
+        ESP_LOGE(TAG, "Failed to create player");
+        lv_label_set_text(_label_status, "Init failed");
+        return;
     }
+    esp_audio_simple_player_set_event(_asp_handle, _asp_event_cb, this);
+
+    esp_gmf_err_t ret = esp_audio_simple_player_run(_asp_handle, uri, NULL);
     if (ret != ESP_GMF_ERR_OK) {
         ESP_LOGE(TAG, "Failed to play %s: %d", uri, ret);
         lv_label_set_text(_label_status, "Play failed");
-        _current_track = -1;
         return;
     }
     _is_playing = true;
+    _current_track = index;
     lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
     lv_label_set_text(btn, LV_SYMBOL_PAUSE);
 
@@ -434,13 +420,14 @@ void PhoneAppMusic::_pause_resume(void)
 
 void PhoneAppMusic::_stop(void)
 {
-    if (_current_track >= 0 && _asp_handle) {
+    if (_asp_handle) {
         esp_audio_simple_player_stop(_asp_handle);
         _is_playing = false;
         _current_track = -1;
         lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
         lv_label_set_text(btn, LV_SYMBOL_PLAY);
         lv_label_set_text(_label_title, "Music Player");
+        lv_label_set_text(_label_status, "Stopped");
     }
 }
 
