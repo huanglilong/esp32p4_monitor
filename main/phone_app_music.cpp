@@ -268,7 +268,12 @@ bool PhoneAppMusic::close(void)
     for (int i = 0; i < _track_count; i++) {
         if (_file_names[i]) { free(_file_names[i]); _file_names[i] = nullptr; }
     }
+    /* Destroy ASP handle BEFORE deinit_audio — ASP's output callback
+     * references codec/I2S via PeripheralManager::codec_write().
+     * _stop() may have already destroyed it, so check for non-null. */
     if (_asp_handle) {
+        esp_audio_simple_player_stop(_asp_handle);
+        vTaskDelay(pdMS_TO_TICKS(100));
         esp_audio_simple_player_destroy(_asp_handle);
         _asp_handle = nullptr;
     }

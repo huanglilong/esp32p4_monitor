@@ -344,9 +344,18 @@ void PhoneAppAudio::_start_recording(void)
     time_t now = tv.tv_sec;
     struct tm tm_info;
     localtime_r(&now, &tm_info);
-    snprintf(path, sizeof(path), RECORD_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
-             tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
-             tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+    /* Check if wall-clock time is reasonable (year > 2020).
+     * Before NTP sync, gettimeofday returns epoch (1970), causing
+     * all recordings to get the same filename and overwrite each other. */
+    if (tm_info.tm_year + 1900 > 2020) {
+        snprintf(path, sizeof(path), RECORD_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
+                 tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+                 tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+    } else {
+        /* Fallback: use monotonic timer as unique identifier */
+        uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        snprintf(path, sizeof(path), RECORD_DIR "/rec_%lu.mp3", (unsigned long)mono_ms);
+    }
 
     _record_file = fopen(path, "wb");
     if (!_record_file) {

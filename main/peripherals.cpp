@@ -41,6 +41,7 @@ PeripheralManager& PeripheralManager::instance(void)
 }
 
 PeripheralManager::PeripheralManager() :
+    _lifecycle_mutex(nullptr),
     _has_lcd(false),
     _card(nullptr),
     _sdcard_refcount(0),
@@ -51,8 +52,22 @@ PeripheralManager::PeripheralManager() :
     _tx_handle(nullptr),
     _codec_mutex(nullptr),
     _audio_refcount(0),
-    _volume(EXAMPLE_VOICE_VOLUME)
+    _volume(EXAMPLE_VOICE_VOLUME),
+    _camera_state_sub(ORB_ADVERT_INVALID)
 {
+    _lifecycle_mutex = xSemaphoreCreateMutex();
+}
+
+PeripheralManager::~PeripheralManager()
+{
+    if (_camera_state_sub >= 0) {
+        orb_unsubscribe(_camera_state_sub);
+        _camera_state_sub = ORB_ADVERT_INVALID;
+    }
+    if (_lifecycle_mutex) {
+        vSemaphoreDelete(_lifecycle_mutex);
+        _lifecycle_mutex = nullptr;
+    }
 }
 
 /*============================================================================
@@ -60,9 +75,13 @@ PeripheralManager::PeripheralManager() :
  *============================================================================*/
 bool PeripheralManager::init_sdcard(void)
 {
+    if (!_lifecycle_mutex) return false;
+    xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
+
     if (_sdcard_refcount > 0) {
         _sdcard_refcount++;
         ESP_LOGI(TAG, "SD card already initialized (refcount=%d)", _sdcard_refcount);
+        xSemaphoreGive(_lifecycle_mutex);
         return true;
     }
 
@@ -76,6 +95,7 @@ bool PeripheralManager::init_sdcard(void)
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "SD LDO acquire failed (%s)", esp_err_to_name(ret));
             _sdcard_ldo_chan = nullptr;
+            xSemaphoreGive(_lifecycle_mutex);
             return false;
         }
         /* Release → re-acquire toggles power, resetting SD card */
@@ -86,6 +106,7 @@ bool PeripheralManager::init_sdcard(void)
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "SD LDO re-acquire failed (%s)", esp_err_to_name(ret));
             _sdcard_ldo_chan = nullptr;
+            xSemaphoreGive(_lifecycle_mutex);
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -118,6 +139,7 @@ bool PeripheralManager::init_sdcard(void)
         ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
         esp_ldo_release_channel(_sdcard_ldo_chan);
         _sdcard_ldo_chan = nullptr;
+        xSemaphoreGive(_lifecycle_mutex);
         return false;
     }
 
@@ -127,24 +149,31 @@ bool PeripheralManager::init_sdcard(void)
         spi_bus_free(SPI2_HOST);
         esp_ldo_release_channel(_sdcard_ldo_chan);
         _sdcard_ldo_chan = nullptr;
+        xSemaphoreGive(_lifecycle_mutex);
         return false;
     }
 
     ESP_LOGI(TAG, "SD card mounted at %s", mount_point);
     sdmmc_card_print_info(stdout, _card);
     _sdcard_refcount = 1;
+    xSemaphoreGive(_lifecycle_mutex);
     return true;
 }
 
 void PeripheralManager::deinit_sdcard(void)
 {
+    if (!_lifecycle_mutex) return;
+    xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
+
     if (_sdcard_refcount <= 0) {
         ESP_LOGW(TAG, "SD card refcount already 0, skipping deinit");
+        xSemaphoreGive(_lifecycle_mutex);
         return;
     }
     _sdcard_refcount--;
     if (_sdcard_refcount > 0) {
         ESP_LOGI(TAG, "SD card still in use (refcount=%d), skipping deinit", _sdcard_refcount);
+        xSemaphoreGive(_lifecycle_mutex);
         return;
     }
 
@@ -159,6 +188,7 @@ void PeripheralManager::deinit_sdcard(void)
         _sdcard_ldo_chan = nullptr;
     }
     ESP_LOGI(TAG, "SD card deinitialized");
+    xSemaphoreGive(_lifecycle_mutex);
 }
 
 /*============================================================================
@@ -166,9 +196,13 @@ void PeripheralManager::deinit_sdcard(void)
  *============================================================================*/
 void PeripheralManager::init_audio(void)
 {
+    if (!_lifecycle_mutex) return;
+    xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
+
     if (_audio_refcount > 0) {
         _audio_refcount++;
         ESP_LOGI(TAG, "Audio already initialized (refcount=%d)", _audio_refcount);
+        xSemaphoreGive(_lifecycle_mutex);
         return;
     }
 
@@ -304,17 +338,23 @@ void PeripheralManager::init_audio(void)
 
     ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", _has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume);
     _audio_refcount = 1;
+    xSemaphoreGive(_lifecycle_mutex);
 }
 
 void PeripheralManager::deinit_audio(void)
 {
+    if (!_lifecycle_mutex) return;
+    xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
+
     if (_audio_refcount <= 0) {
         ESP_LOGW(TAG, "Audio refcount already 0, skipping deinit");
+        xSemaphoreGive(_lifecycle_mutex);
         return;
     }
     _audio_refcount--;
     if (_audio_refcount > 0) {
         ESP_LOGI(TAG, "Audio still in use (refcount=%d), skipping deinit", _audio_refcount);
+        xSemaphoreGive(_lifecycle_mutex);
         return;
     }
 
@@ -348,6 +388,7 @@ void PeripheralManager::deinit_audio(void)
     }
 
     ESP_LOGI(TAG, "Audio deinitialized");
+    xSemaphoreGive(_lifecycle_mutex);
 }
 
 /*============================================================================
@@ -389,16 +430,18 @@ int PeripheralManager::codec_write(const uint8_t *data, int size)
  *============================================================================*/
 bool PeripheralManager::camera_available(void) const
 {
-    /* Check if any module has published camera_state.running = true */
-    static orb_sub_t sub = ORB_ADVERT_INVALID;
-    if (sub < 0) {
-        sub = orb_subscribe(ORB_ID(camera_state));
+    /* Lazy-subscribe on first call (class member, not static local — safe) */
+    if (_camera_state_sub < 0) {
+        /* const_cast is safe here: subscribing is logically const,
+         * only the subscriber handle cache is mutated. */
+        const_cast<PeripheralManager*>(this)->_camera_state_sub =
+            orb_subscribe(ORB_ID(camera_state));
     }
-    if (sub >= 0) {
+    if (_camera_state_sub >= 0) {
         bool updated = false;
-        if (orb_check(sub, &updated) == 0 && updated) {
+        if (orb_check(_camera_state_sub, &updated) == 0 && updated) {
             struct camera_state_s cs = {};
-            orb_copy(ORB_ID(camera_state), sub, &cs);
+            orb_copy(ORB_ID(camera_state), _camera_state_sub, &cs);
             if (cs.running) return false;
         }
     }

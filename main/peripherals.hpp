@@ -26,6 +26,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "sdmmc_cmd.h"
+#include "uorb.h"
+#include "topics.h"
 
 class PeripheralManager {
 public:
@@ -37,22 +39,26 @@ public:
     void set_has_lcd(bool v) { _has_lcd = v; }
 
     /* ---- SD Card ---- */
-    /** Initialize SD card (refcounted). Safe to call multiple times.
+    /** Initialize SD card (refcounted). Thread-safe via lifecycle mutex.
+     *  Safe to call from multiple tasks concurrently.
      *  @return true on success (or already initialized) */
     bool init_sdcard(void);
 
-    /** Deinitialize SD card (refcounted). Only unmounts at refcount=0. */
+    /** Deinitialize SD card (refcounted). Thread-safe via lifecycle mutex.
+     *  Only unmounts at refcount=0. */
     void deinit_sdcard(void);
 
     /** @return true if SD card is currently mounted */
     bool sdcard_available(void) const { return _sdcard_refcount > 0; }
 
     /* ---- Audio ---- */
-    /** Initialize audio I2S + codec (refcounted). Safe to call multiple times.
+    /** Initialize audio I2S + codec (refcounted). Thread-safe via lifecycle mutex.
+     *  Safe to call from multiple tasks concurrently.
      *  Configures ES8311+ES7210 (LCD-4B) or ES8311 single-chip (WIFI6). */
     void init_audio(void);
 
-    /** Deinitialize audio (refcounted). Only tears down at refcount=0. */
+    /** Deinitialize audio (refcounted). Thread-safe via lifecycle mutex.
+     *  Only tears down at refcount=0. */
     void deinit_audio(void);
 
     /** @return true if audio is currently initialized */
@@ -64,16 +70,16 @@ public:
     esp_codec_dev_handle_t codec_handle(void) const { return _codec_handle; }
 
     /* ---- Thread-safe codec operations ---- */
-    /** Set speaker output volume (0-100). Thread-safe via internal mutex. */
+    /** Set speaker output volume (0-100). Thread-safe via codec mutex. */
     void set_volume(int volume);
 
     /** Get current volume setting (cached, no I2C access). */
     int volume(void) const { return _volume; }
 
-    /** Set microphone input gain. Thread-safe via internal mutex. */
+    /** Set microphone input gain. Thread-safe via codec mutex. */
     void set_mic_gain(int gain_db);
 
-    /** Write PCM data to codec DAC. Thread-safe via internal mutex.
+    /** Write PCM data to codec DAC. Thread-safe via codec mutex.
      *  @return data_size on success, -1 on failure */
     int codec_write(const uint8_t *data, int size);
 
@@ -88,7 +94,11 @@ public:
 
 private:
     PeripheralManager();
-    ~PeripheralManager() = default;
+    ~PeripheralManager();
+
+    /* Lifecycle mutex — protects refcount check+modify and init/deinit sequences.
+     * Prevents concurrent init_audio/init_sdcard from double-initializing peripherals. */
+    SemaphoreHandle_t       _lifecycle_mutex;
 
     /* Board info */
     bool _has_lcd;
@@ -103,7 +113,10 @@ private:
     esp_codec_dev_handle_t _codec_mic_handle;   // Microphone ADC
     i2s_chan_handle_t       _rx_handle;          // I2S RX (mic)
     i2s_chan_handle_t       _tx_handle;          // I2S TX (speaker)
-    SemaphoreHandle_t       _codec_mutex;        // Protect concurrent codec access
+    SemaphoreHandle_t       _codec_mutex;        // Protect concurrent codec I/O
     int                     _audio_refcount;
     int                     _volume;
+
+    /* Camera mutual exclusion — uORB subscriber for camera_state */
+    orb_sub_t               _camera_state_sub;
 };

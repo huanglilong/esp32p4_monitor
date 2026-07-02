@@ -783,8 +783,14 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     struct timeval tv; gettimeofday(&tv, NULL);
     time_t t = tv.tv_sec; struct tm tm_buf;
     localtime_r(&t, &tm_buf);
-    snprintf(s_rec_path, sizeof(s_rec_path), REC_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
-             tm_buf.tm_year+1900, tm_buf.tm_mon+1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+    /* Guard against unsynced wall-clock (epoch year < 2020 → overwrite) */
+    if (tm_buf.tm_year + 1900 > 2020) {
+        snprintf(s_rec_path, sizeof(s_rec_path), REC_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
+                 tm_buf.tm_year+1900, tm_buf.tm_mon+1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+    } else {
+        uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        snprintf(s_rec_path, sizeof(s_rec_path), REC_DIR "/rec_%lu.mp3", (unsigned long)mono_ms);
+    }
     s_rec_file = fopen(s_rec_path, "wb");
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
         _stop_audio_task_if_running();
@@ -1104,9 +1110,12 @@ void web_config_server_stop(void)
         vTaskDelay(pdMS_TO_TICKS(100));
         timeout++;
     }
-    if (s_task_handle) {
+    if (s_task_handle && eTaskGetState(s_task_handle) != eDeleted) {
         ESP_LOGW(TAG, "Web config task did not exit, force-killing");
         vTaskDelete(s_task_handle);
+        s_task_handle = NULL;
+    } else if (s_task_handle) {
+        /* Task already deleted — just clear handle */
         s_task_handle = NULL;
     }
 
