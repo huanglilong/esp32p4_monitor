@@ -125,7 +125,43 @@ class DeviceDiscovery {
     return Uint8List.fromList(bytes);
   }
 
-  /// Parse mDNS response for SRV record containing port info.
+  /// Read a DNS-encoded name (supports compression pointers) from [data] at [offset].
+  /// Returns a tuple of (decodedName, newOffset).
+  (String, int) _readDnsName(Uint8List data, int offset) {
+    final labels = <String>[];
+    bool jumped = false;
+    int pos = offset;
+    int jumpedPos = offset;
+
+    while (pos < data.length) {
+      final len = data[pos];
+      if (len == 0) {
+        pos++;
+        break;
+      }
+      // Compression pointer (0xC0 | offset)
+      if ((len & 0xC0) == 0xC0) {
+        if (pos + 1 >= data.length) break;
+        final ptr = ((len & 0x3F) << 8) | data[pos + 1];
+        if (!jumped) {
+          jumpedPos = pos + 2;
+          jumped = true;
+        }
+        pos = ptr;
+        continue;
+      }
+      // Regular label
+      pos++;
+      if (pos + len > data.length) break;
+      labels.add(String.fromCharCodes(data.sublist(pos, pos + len)));
+      pos += len;
+    }
+
+    final name = labels.join('.');
+    return (name, jumped ? jumpedPos : pos);
+  }
+
+  /// Parse mDNS response for SRV record containing hostname + port info.
   Esp32Device? _parseMdnsResponse(Uint8List data, InternetAddress source) {
     try {
       int offset = 12; // Skip DNS header
@@ -141,7 +177,7 @@ class DeviceDiscovery {
 
       // Scan answer records for SRV record (type 33)
       while (offset + 10 < data.length) {
-        // Name pointer (2 bytes, compressed)
+        // Skip record name (compressed or labels)
         if ((data[offset] & 0xC0) == 0xC0) {
           offset += 2;
         } else {
@@ -158,13 +194,21 @@ class DeviceDiscovery {
         offset += 10;
 
         if (type == 33 && dataLen >= 6 && offset + dataLen <= data.length) {
-          // SRV record: priority(2) + weight(2) + port(2) + target
+          // SRV record: priority(2) + weight(2) + port(2) + target(name)
           final port = (data[offset + 4] << 8) | data[offset + 5];
+          // Parse target hostname (e.g. "esp-web.local")
+          String hostname = source.address;
+          try {
+            final (name, _) = _readDnsName(data, offset + 6);
+            if (name.isNotEmpty && name.contains('.')) {
+              hostname = name;
+            }
+          } catch (_) {}
           return Esp32Device(
-            name: 'ESP32-P4 (${source.address})',
-            host: source.address,
+            name: 'ESP32-P4 ($hostname)',
+            host: hostname,
             port: port,
-            id: '${source.address}:$port',
+            id: '$hostname:$port',
           );
         }
         offset += dataLen;
