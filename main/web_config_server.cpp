@@ -36,6 +36,15 @@
 #include "cJSON.h"
 #include "camera_stream.hpp"
 
+/* Audio recording / playback */
+#include <dirent.h>
+#include <sys/time.h>
+#include "driver/i2s_std.h"
+#include "esp_audio_simple_player.h"
+extern "C" {
+#include "layer3.h"
+}
+
 static const char *TAG = "WebConfig";
 
 /* Extern: set by main.cpp after GT911 I2C probe */
@@ -44,6 +53,14 @@ static const char *TAG = "WebConfig";
 extern bool g_has_lcd;
 extern esp_codec_dev_handle_t s_codec_handle;
 extern SemaphoreHandle_t s_codec_mutex;
+
+/* Audio peripheral externs */
+extern i2s_chan_handle_t s_rx_handle;
+extern i2s_chan_handle_t s_tx_handle;
+extern bool monitor_init_sdcard(void);
+extern void monitor_init_audio(void);
+extern void monitor_deinit_audio(void);
+extern void monitor_deinit_sdcard(void);
 
 #define WEB_CONFIG_PORT         8080
 
@@ -67,6 +84,59 @@ static httpd_handle_t s_httpd = NULL;
 static TaskHandle_t   s_task_handle = NULL;
 static bool           s_running = false;
 static bool           s_mdns_running = false;
+
+/*============================================================================
+ * Audio state — lazy-init when camera stream is OFF
+ *============================================================================*/
+#define REC_DIR              "/sdcard"
+#define REC_BUF_SAMPLES      480
+#define REC_BUF_BYTES        (REC_BUF_SAMPLES * 2 * sizeof(int16_t))
+#define ENC_SAMPLES_PER_CH   1152
+#define PCM_BUF_SAMPLES      (ENC_SAMPLES_PER_CH * 2)
+
+static bool           s_audio_inited = false;
+static TaskHandle_t   s_audio_task = NULL;
+static volatile bool  s_audio_running = false;
+static volatile bool  s_is_recording = false;
+static shine_t        s_shine = NULL;
+static int16_t       *s_pcm_buf = NULL;
+static int            s_pcm_count = 0;
+static FILE          *s_rec_file = NULL;
+static uint32_t       s_rec_bytes = 0;
+static uint32_t       s_rec_start_ms = 0;
+static char           s_rec_path[128];
+
+/* Playback */
+static esp_asp_handle_t s_asp = NULL;
+static volatile bool    s_playing = false;
+
+/* Audio recording task: I2S RX → shine MP3 → SD card */
+static void audio_task(void *arg)
+{
+    (void)arg;
+    int16_t *buf = (int16_t *)calloc(1, REC_BUF_BYTES);
+    if (!buf) { s_audio_running = false; s_audio_task = NULL; vTaskDelete(NULL); return; }
+    while (s_audio_running) {
+        size_t n = 0;
+        if (i2s_channel_read(s_rx_handle, buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(100)) != ESP_OK || n == 0) continue;
+        int32_t spc = n / (2 * sizeof(int16_t));
+        if (s_is_recording && s_pcm_buf && s_shine) {
+            for (int32_t i = 0; i < spc; i++) {
+                s_pcm_buf[s_pcm_count * 2]     = buf[i * 2];
+                s_pcm_buf[s_pcm_count * 2 + 1] = buf[i * 2 + 1];
+                if (++s_pcm_count >= ENC_SAMPLES_PER_CH) {
+                    int wr = 0;
+                    unsigned char *mp3 = shine_encode_buffer_interleaved(s_shine, s_pcm_buf, &wr);
+                    if (mp3 && wr > 0 && s_rec_file) s_rec_bytes += fwrite(mp3, 1, wr, s_rec_file);
+                    s_pcm_count = 0;
+                }
+            }
+        }
+    }
+    free(buf);
+    s_audio_task = NULL;
+    vTaskDelete(NULL);
+}
 
 /*============================================================================
  * NVS Helpers
@@ -180,6 +250,14 @@ static const char *WEB_UI_HTML =
 "<span class=\"slider\"></span></label></div>"
 "<div id=\"cam_status\" style=\"font-size:12px;color:#a0a0b0;margin-top:4px\"></div>"
 "</div>"
+"<div class=\"card\" id=\"audio_card\" style=\"display:none\">"
+"<h2>Audio Recorder</h2>"
+"<div style=\"display:flex;gap:8px;margin-bottom:8px\">"
+"<button id=\"btn_rec\" onclick=\"onRecord()\" style=\"flex:1\">Start Record</button>"
+"<button id=\"btn_stop\" onclick=\"onStopAll()\" style=\"flex:0 0 auto;width:auto;padding:12px 16px;background:#e65100;display:none\">Stop</button></div>"
+"<div id=\"rec_stat\" style=\"font-size:12px;color:#4caf50;margin-bottom:8px;min-height:16px\"></div>"
+"<div id=\"file_list\" style=\"font-size:13px;max-height:160px;overflow-y:auto\"></div>"
+"</div>"
 "<div class=\"card\">"
 "<h2>Volume</h2>"
 "<div class=\"slider-container\">"
@@ -210,6 +288,8 @@ static const char *WEB_UI_HTML =
 "let cs=document.getElementById('cam_status');"
 "cs.textContent=j.cam_running?'● Streaming active':'○ Stopped';"
 "cs.style.color=j.cam_running?'#4caf50':'#a0a0b0';"
+"document.getElementById('audio_card').style.display=j.cam_running?'none':'block';"
+"if(!j.cam_running)loadFiles();"
 "updateUI()}catch(e){showStatus('Failed to load settings','error')}}"
 "function showStatus(msg,cls){let s=document.getElementById('status');"
 "s.textContent=msg;s.className=cls}"
@@ -223,9 +303,61 @@ static const char *WEB_UI_HTML =
 "let cs=document.getElementById('cam_status');"
 "cs.textContent=j.running?'● Streaming active':'○ Stopped';"
 "cs.style.color=j.running?'#4caf50':'#a0a0b0';"
+"document.getElementById('audio_card').style.display=j.running?'none':'block';"
+"if(!j.running)loadFiles();"
 "showStatus(j.running?'Stream started':'Stream stopped','success')}"
 "else{showStatus(j.error||'Failed','error');loadStatus()}}"
 "catch(e){showStatus('Connection error','error');loadStatus()}}"
+"var recTimer=null;"
+"async function loadFiles(){"
+"try{var r=await fetch('/api/audio/list');var j=await r.json();"
+"var h='';"
+"if(j.files&&j.files.length)"
+"for(var i=0;i<j.files.length;i++)"
+"h+=`<div style=\"display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #0f3460\">"
+"<span style=\"flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">${j.files[i]}</span>"
+"<button onclick='playFile(${JSON.stringify(j.files[i])})' style=\"width:auto;padding:4px 12px;font-size:12px;margin-left:8px\">Play</button></div>`;"
+"else h='<span style=\"color:#666;font-size:12px\">No recordings</span>';"
+"document.getElementById('file_list').innerHTML=h}"
+"catch(e){}}"
+"async function onRecord(){"
+"var b=document.getElementById('btn_rec');"
+"if(b.textContent=='Start Record'){"
+"showStatus('Starting...','info');"
+"try{var r=await fetch('/api/audio/record_start');var j=await r.json();"
+"if(j.ok){b.textContent='End Record';b.style.background='#c00';"
+"document.getElementById('btn_stop').style.display='block';"
+"showStatus('Recording...','success');recTimer=setInterval(refreshRec,500)}"
+"else showStatus('Error: '+j.error,'error')}"
+"catch(e){showStatus('Error','error')}}else endRecord()}"
+"async function endRecord(){"
+"try{var r=await fetch('/api/audio/record_stop');var j=await r.json();"
+"var b=document.getElementById('btn_rec');"
+"b.textContent='Start Record';b.style.background='';"
+"clearInterval(recTimer);"
+"document.getElementById('btn_stop').style.display='none';"
+"document.getElementById('rec_stat').textContent='';"
+"showStatus('Saved: '+j.file,'success');loadFiles()}"
+"catch(e){showStatus('Error','error')}}"
+"async function refreshRec(){"
+"try{var r=await fetch('/api/audio/record_status');var j=await r.json();"
+"if(j.recording){var m=Math.floor(j.seconds/60);var s=j.seconds%60;"
+"document.getElementById('rec_stat').textContent='Recording '+('0'+m).slice(-2)+':'+('0'+s).slice(-2)+' | '+Math.round(j.bytes/1024)+'KB'}"
+"else document.getElementById('rec_stat').textContent=''}"
+"catch(e){}}"
+"async function playFile(name){"
+"showStatus('Playing: '+name,'info');"
+"try{var r=await fetch('/api/audio/play?file='+encodeURIComponent(name));"
+"var j=await r.json();"
+"if(j.ok){document.getElementById('btn_stop').style.display='block';showStatus('Playing: '+name,'success')}"
+"else showStatus('Error: '+j.error,'error')}"
+"catch(e){showStatus('Error','error')}}"
+"async function onStopAll(){"
+"try{await Promise.all([fetch('/api/audio/stop')]);"
+"if(document.getElementById('btn_rec').textContent!='Start Record')await endRecord();"
+"document.getElementById('btn_stop').style.display='none';"
+"loadFiles();showStatus('Stopped','success')}"
+"catch(e){showStatus('Error','error')}}"
 "async function saveSettings(){"
 "let data={wifi_en:document.getElementById('wifi_en').checked?1:0,"
 "ssid:document.getElementById('ssid').value,"
@@ -586,6 +718,149 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/*============================================================================
+ * Audio Handlers — record / play / list mp3 files on SD card
+ *============================================================================*/
+static bool __cam_running(void) {
+    extern bool g_has_lcd;
+    return (!g_has_lcd) && CameraStream::instance().isRunning();
+}
+
+/* Lazy-init SD card + audio codec on headless boards */
+static bool __audio_init(void) {
+    if (s_audio_inited) return true;
+    if (!monitor_init_sdcard()) { ESP_LOGE(TAG,"SD init fail"); return false; }
+    monitor_init_audio();
+    s_audio_inited = true;
+    return true;
+}
+
+/* GET /api/audio/record_start */
+static esp_err_t h_rec_start(httpd_req_t *req) {
+    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
+    if (s_is_recording)   { httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
+    if (!__audio_init())  { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
+    if (!s_audio_task) {
+        s_audio_running = true;
+        if (xTaskCreatePinnedToCore(audio_task, "w_audio", 4*1024, NULL, 1, &s_audio_task, 0) != pdPASS)
+            { s_audio_running = false; httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+    }
+    s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!s_pcm_buf) { httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+    s_pcm_count = 0;
+    shine_config_t c; shine_set_config_mpeg_defaults(&c.mpeg);
+    c.wave.channels = PCM_STEREO; c.wave.samplerate = 48000; c.mpeg.mode = STEREO; c.mpeg.bitr = 128;
+    s_shine = shine_initialise(&c);
+    if (!s_shine) { free(s_pcm_buf); s_pcm_buf = NULL; httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+    struct timeval tv; gettimeofday(&tv, NULL);
+    time_t t = tv.tv_sec; struct tm *tm = localtime(&t);
+    snprintf(s_rec_path, sizeof(s_rec_path), REC_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
+             tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+    s_rec_file = fopen(s_rec_path, "wb");
+    if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
+        httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+    s_rec_bytes = 0; s_rec_start_ms = tv.tv_sec*1000 + tv.tv_usec/1000;
+    s_is_recording = true;
+    ESP_LOGI(TAG, "Recording: %s", s_rec_path);
+    httpd_resp_sendstr(req, "{\"ok\":1}");
+    return ESP_OK;
+}
+
+/* GET /api/audio/record_stop */
+static esp_err_t h_rec_stop(httpd_req_t *req) {
+    if (!s_is_recording) { httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
+    s_is_recording = false; s_audio_running = false; /* Stop audio task to release I2S RX */
+    vTaskDelay(pdMS_TO_TICKS(300));
+    FILE *f = s_rec_file; s_rec_file = NULL;
+    if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine, &wr); if(d&&wr>0&&f) fwrite(d,1,wr,f); shine_close(s_shine); s_shine=NULL; }
+    if (f) fclose(f);
+    if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
+    char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", s_rec_path, (unsigned long)s_rec_bytes);
+    ESP_LOGI(TAG,"Saved: %s (%lu)", s_rec_path, (unsigned long)s_rec_bytes);
+    httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/* GET /api/audio/record_status */
+static esp_err_t h_rec_status(httpd_req_t *req) {
+    char r[128];
+    if (s_is_recording) { struct timeval tv; gettimeofday(&tv,NULL);
+        uint32_t e=(tv.tv_sec*1000+tv.tv_usec/1000-s_rec_start_ms)/1000;
+        snprintf(r,sizeof(r),"{\"recording\":1,\"seconds\":%lu,\"bytes\":%lu}",(unsigned long)e,(unsigned long)s_rec_bytes); }
+    else snprintf(r,sizeof(r),"{\"recording\":0}");
+    httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/* GET /api/audio/list */
+static esp_err_t h_list(httpd_req_t *req) {
+    (void)__audio_init(); /* Lazy-mount SD card so file list works even before first record */
+    DIR *d=opendir(REC_DIR); cJSON *root=cJSON_CreateObject(),*arr=cJSON_CreateArray();
+    cJSON_AddItemToObject(root,"files",arr);
+    if(d){ struct dirent *e; while((e=readdir(d))){ if(e->d_name[0]=='.') continue; char *x=strrchr(e->d_name,'.'); if(x&&strcasecmp(x,".mp3")==0) cJSON_AddItemToArray(arr,cJSON_CreateString(e->d_name)); } closedir(d); }
+    char *j=cJSON_PrintUnformatted(root); httpd_resp_set_type(req,"application/json"); httpd_resp_send(req,j,strlen(j)); free(j); cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* URL-decode %XX sequences in-place */
+static void _url_decode(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+        if (r[0] == '%' && r[1] && r[2]) {
+            int hi = r[1] >= 'A' ? (r[1] & 0xDF) - 'A' + 10 : r[1] - '0';
+            int lo = r[2] >= 'A' ? (r[2] & 0xDF) - 'A' + 10 : r[2] - '0';
+            *w++ = (char)((hi << 4) | lo);
+            r += 3;
+        } else *w++ = *r++;
+    }
+    *w = '\0';
+}
+
+/* Playback callbacks */
+static int _asp_out(uint8_t *d, int sz, void *_) { (void)_;
+    if(!s_codec_handle||!s_codec_mutex||sz<=0) return -1;
+    if(xSemaphoreTake(s_codec_mutex,pdMS_TO_TICKS(50))!=pdPASS) return -1;
+    int r=esp_codec_dev_write(s_codec_handle,d,sz); xSemaphoreGive(s_codec_mutex); return (r==ESP_CODEC_DEV_OK)?sz:-1; }
+static int _asp_evt(esp_asp_event_pkt_t *pkt, void *_) { (void)_;
+    if(pkt->type==ESP_ASP_EVENT_TYPE_STATE){ int s=*(esp_asp_state_t*)pkt->payload;
+        if(s==ESP_ASP_STATE_FINISHED||s==ESP_ASP_STATE_STOPPED||s==ESP_ASP_STATE_ERROR) s_playing=false; } return 0; }
+
+/* GET /api/audio/play?file=xxx.mp3 */
+static esp_err_t h_play(httpd_req_t *req) {
+    if(__cam_running()){ httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
+    if(!__audio_init()){ httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
+    char q[256]={},fn[128]={};
+    if(httpd_req_get_url_query_str(req,q,sizeof(q))!=ESP_OK||!strlen(q)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
+    httpd_query_key_value(q,"file",fn,sizeof(fn));
+    if(!strlen(fn)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
+    _url_decode(fn);
+    char uri[160]; snprintf(uri,sizeof(uri),"file://" REC_DIR "/%s",fn);
+    /* Stop + destroy previous player for clean state (matching Music App lifecycle) */
+    if (s_asp) {
+        esp_audio_simple_player_stop(s_asp);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_audio_simple_player_destroy(s_asp);
+        s_asp = NULL;
+    }
+    s_playing = false;
+    esp_asp_cfg_t c={.out={.cb=_asp_out},.task_prio=5,.task_stack=4096,.task_core=0};
+    if(esp_audio_simple_player_new(&c,&s_asp)!=ESP_GMF_ERR_OK||!s_asp){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
+    esp_audio_simple_player_set_event(s_asp,_asp_evt,NULL);
+    esp_gmf_err_t ret = esp_audio_simple_player_run(s_asp, uri, NULL);
+    if (ret != ESP_GMF_ERR_OK) {
+        ESP_LOGE(TAG, "Play failed: %d, uri=%s", ret, uri);
+        httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK;
+    }
+    s_playing=true; ESP_LOGI(TAG,"Play: %s",uri);
+    httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
+}
+
+/* GET /api/audio/stop */
+static esp_err_t h_stop(httpd_req_t *req) {
+    if(s_asp){ esp_audio_simple_player_stop(s_asp); s_playing=false; }
+    httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
+}
+
 /* CORS preflight handler — responds to OPTIONS requests for POST endpoints.
  * Browsers require this before cross-origin POST with Content-Type: application/json. */
 static esp_err_t cors_preflight_handler(httpd_req_t *req)
@@ -623,7 +898,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 11;
+    config.max_uri_handlers = 16;  /* 5 core + 6 audio + 3 CORS + 2 spare */
     config.lru_purge_enable = true;
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
@@ -658,6 +933,20 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_settings);
     httpd_register_uri_handler(s_httpd, &uri_cam);
     httpd_register_uri_handler(s_httpd, &uri_reset);
+
+    /* Audio recording / playback */
+    httpd_uri_t uri_r_start = { .uri = "/api/audio/record_start", .method = HTTP_GET, .handler = h_rec_start };
+    httpd_uri_t uri_r_stop  = { .uri = "/api/audio/record_stop",  .method = HTTP_GET, .handler = h_rec_stop };
+    httpd_uri_t uri_r_stat  = { .uri = "/api/audio/record_status",.method = HTTP_GET, .handler = h_rec_status };
+    httpd_uri_t uri_a_list  = { .uri = "/api/audio/list",         .method = HTTP_GET, .handler = h_list };
+    httpd_uri_t uri_a_play  = { .uri = "/api/audio/play",          .method = HTTP_GET, .handler = h_play };
+    httpd_uri_t uri_a_stop  = { .uri = "/api/audio/stop",          .method = HTTP_GET, .handler = h_stop };
+    httpd_register_uri_handler(s_httpd, &uri_r_start);
+    httpd_register_uri_handler(s_httpd, &uri_r_stop);
+    httpd_register_uri_handler(s_httpd, &uri_r_stat);
+    httpd_register_uri_handler(s_httpd, &uri_a_list);
+    httpd_register_uri_handler(s_httpd, &uri_a_play);
+    httpd_register_uri_handler(s_httpd, &uri_a_stop);
 
     /* CORS preflight (OPTIONS) handlers for POST endpoints */
     httpd_uri_t uri_cors_settings = {
@@ -730,6 +1019,15 @@ void web_config_server_start(void)
 
 void web_config_server_stop(void)
 {
+    /* Stop audio */
+    s_is_recording = false; s_audio_running = false; vTaskDelay(pdMS_TO_TICKS(300));
+    if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine,&wr); if(d&&wr>0&&s_rec_file) fwrite(d,1,wr,s_rec_file); shine_close(s_shine); s_shine=NULL; }
+    if (s_rec_file) { fclose(s_rec_file); s_rec_file=NULL; }
+    if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
+    s_playing = false;
+    if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
+    if (s_audio_inited) { monitor_deinit_audio(); monitor_deinit_sdcard(); s_audio_inited=false; }
+
     if (s_mdns_running) {
         mdns_free();
         s_mdns_running = false;

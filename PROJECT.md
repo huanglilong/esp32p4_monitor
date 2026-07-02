@@ -465,8 +465,38 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - **音量**: 滑条 0-100
 - **连接验证**: 点 Save 后先尝试连接，成功才写 NVS，失败回连旧 WiFi
 - **WiFi 门控**: 任务等待 `IP_EVENT_STA_GOT_IP` 后才启动 HTTP，WiFi 未连时不占用 socket
+- **音频录制**: Start/End 按钮, I2S RX → Shine MP3 编码 → SD 卡 (`/sdcard/rec_*.mp3`), 实时显示录制时长和文件大小
+- **音频播放**: 列出 SD 卡上 `.mp3` 文件, Play 按钮通过 `esp_audio_simple_player` 播放
+- **互斥保护**: 音频功能仅在 Camera Stream **未**运行时可操作, UI 自动隐藏/显示
 
 > **已知限制**: 首次启动 NVS 为空时无法配网 (AP 模式因 esp-hosted SDIO 限制不稳定)。需预先通过 UART 烧录或 Settings App (LCD-4B) 写入 WiFi 凭据。
+
+### 18. Web 音频录制/播放 (web_config_server 音频扩展)
+
+| 项目 | 配置 |
+|------|------|
+| 录音输入 | I2S RX, 48000Hz Stereo, 16-bit (`s_rx_handle`) |
+| 编码器 | Shine 定点 MP3, 128kbps CBR, 48kHz Stereo |
+| 帧大小 | 1152 samples/channel (SHINE_MAX_SAMPLES) |
+| PCM 缓冲 | PSRAM, 2304 int16_t interleaved |
+| 录音任务 | `w_audio` (core 0, prio 1, 4KB stack) |
+| 播放器 | `esp_audio_simple_player` → ES8311 DAC (`s_codec_handle`) |
+| 录音文件 | `/sdcard/rec_YYYYMMDD_HHMMSS.mp3` |
+| 懒加载 | SD 卡 + 音频首次访问时才初始化 (`__audio_init()`) |
+| 清理 | `web_config_server_stop()` 刷新编码器、关闭文件、释放 SD/音频 |
+
+**API 端点** (6 个):
+- `GET /api/audio/record_start` — 开始录音
+- `GET /api/audio/record_stop` — 停止录音
+- `GET /api/audio/record_status` — 录音状态 (秒数, 字节数)
+- `GET /api/audio/list` — 列出 `.mp3` 文件
+- `GET /api/audio/play?file=xxx.mp3` — 播放文件
+- `GET /api/audio/stop` — 停止播放
+
+**板级兼容**: `monitor_init_audio()` 根据 `g_has_lcd` 自动选择:
+- **LCD-4B**: ES8311 DAC (0x30) + ES7210 ADC (0x80, 双麦)
+- **WIFI6**: ES8311 单芯片 (0x18, ADC+DAC) + NS4150B 功放
+GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 
 ## 构建和烧录
 
@@ -515,3 +545,4 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **SD LDO 句柄泄漏**: monitor_init_sdcard() 中 LDO handle 改为静态变量, deinit 时释放
 - [x] **CORS 预检**: Web Config Server 添加 OPTIONS 处理器, 修复浏览器跨域 POST 请求
 - [x] **WiFi 扫描优化**: 扫描任务空闲轮询从 200ms 降到 500ms
+- [x] **Web 音频录制/播放**: web_config_server 增加录音 (Start/End, Shine MP3 → SD) 和播放 (esp_audio_simple_player) 功能, Camera Stream 未运行时可用

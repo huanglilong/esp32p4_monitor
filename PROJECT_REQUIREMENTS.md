@@ -32,6 +32,9 @@
 | R12 | **Settings WiFi 管理** | SSID 扫描 + 密码输入 + 连接，后台保持，条件编译 | ✅ |
 | R13 | **Web 配置服务器** | HTTP :8080，WiFi/音量远程设置，connect-before-save 验证 | ✅ |
 | R14 | **多板自动检测** | GT911 I2C (0x5D) 探测，自动适配 LCD-4B / WIFI6，单一固件 | ✅ |
+| R15 | **Web 音频录制** | WIFI6 无屏板通过 Web :8080 录制，Shine MP3 → SD 卡，Start/End 按钮 | ✅ |
+| R16 | **Web 音频播放** | WIFI6 无屏板通过 Web :8080 播放 SD 卡 MP3，esp_audio_simple_player | ✅ |
+| R17 | **Camera Stream 互斥保护** | Web 音频功能仅在 Camera Stream 未运行时可用，UI 隐藏 + API 阻断 | 🔧 |
 
 ### 2.2 稳定性与性能
 
@@ -64,6 +67,13 @@
 | S25 | **Music GMF 重入修复** | `_asp_event_cb` 不再直接调 `_play()`，改用 `_auto_next` flag | ✅ |
 | S26 | **Audio 录音停止竞态** | 等待时间 50ms→200ms，覆盖 I2S read 100ms 超时 | ✅ |
 | S27 | **PPA 硬件启用** | `CONFIG_LVGL_PORT_ENABLE_PPA=y`，加速旋转/缩放 | ✅ |
+| S28 | **Web Audio 懒加载** | SD 卡 + 音频首次 API 调用时初始化，减少空闲资源占用 | ✅ |
+| S29 | **Web Audio URL 解码** | `_url_decode()` 处理 `encodeURIComponent` 产生的 `%XX` 序列 | ✅ |
+| S30 | **Web Audio JS 语法修复** | `loadFiles` 改用 template literal 避免单引号冲突，修复整个 script 被丢弃 | ✅ |
+| S31 | **Web Playback ASP 生命周期** | 每次 play 重建 ASP handle (stop→destroy→new→run)，防止管道状态残留崩溃 | ✅ |
+| S32 | **Web Record 音频任务停止** | `h_rec_stop` 同时设 `s_audio_running=false`，释放 I2S RX 给 playback | ✅ |
+| S33 | **Web 音频 API 全端点 guard** | 6 个端点均加 `__cam_running()` 检查 (list/status/stop 新增) | ✅ |
+| S34 | **`max_uri_handlers`** | 11→16，容纳 14 个 handler (5 core + 6 audio + 3 CORS) | ✅ |
 
 ---
 
@@ -125,6 +135,7 @@
 | K1 | 🟢 低 | Camera 帧缓冲跨核并发 (timer core1 / detect core0) 画面撕裂 | 非关键，影响单帧 |
 | K2 | 🟢 低 | Audio 无用的 PSRAM 分配 (1920B) | 开销极小 |
 | K3 | 🟢 低 | Music 部分低优先级边界情况 | 见 project_design.md §4.10 |
+| K4 | 🔴 高 | **Web 音频 Camera Stream 互斥未生效** | `__cam_running()` 日志未触发，`h_play` 在相机运行时仍可播放。已加 `noinline` + debug log 诊断中 |
 
 ---
 
@@ -172,6 +183,8 @@
 | 功能 | 访问方式 | 适用板子 |
 |------|----------|----------|
 | Web 配置 (:8080) | 浏览器 | LCD-4B + WIFI6 |
+| Web 音频录制 (:8080) | 浏览器 Audio Recorder card | WIFI6 (Camera Stream OFF 时可用) |
+| Web 音频播放 (:8080) | 浏览器 Audio Recorder card | WIFI6 (Camera Stream OFF 时可用) |
 
 ---
 
@@ -180,3 +193,6 @@
 | 日期 | 变更 |
 |------|------|
 | 2026-07-02 | 初始创建，汇总 PROJECT.md + project_design.md 中所有需求和问题 |
+| 2026-07-02 | +R15 R16 R17 Web 音频录制/播放 + Camera Stream 互斥需求 |
+| 2026-07-02 | +S28~S34 Web 音频稳定性修复 (懒加载、URL解码、JS修复、ASP生命周期等) |
+| 2026-07-02 | +K4 Web 音频 Camera Stream 互斥未生效 (诊断中，已加 noinline + debug log) |
