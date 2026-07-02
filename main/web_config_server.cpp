@@ -36,6 +36,10 @@
 #include "cJSON.h"
 #include "camera_stream.hpp"
 
+/* uORB */
+#include "uorb.h"
+#include "topics.h"
+
 /* Audio recording / playback */
 #include <dirent.h>
 #include <sys/time.h>
@@ -400,26 +404,21 @@ static const char *WEB_UI_HTML =
 /*============================================================================
  * WiFi Event Handler (used by settings_handler for connection verification)
  *============================================================================*/
-static EventGroupHandle_t s_wifi_evt_group = NULL;
-
-static void _wifi_evt_handler(void *arg, esp_event_base_t base,
-                              int32_t id, void *data)
-{
-    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        if (s_wifi_evt_group) xEventGroupSetBits(s_wifi_evt_group, WIFI_CONNECTED_BIT);
-    }
-}
-
-static void _wifi_evt_ensure_listening(void)
-{
-    if (s_wifi_evt_group) return;
-    s_wifi_evt_group = xEventGroupCreate();
-    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                               _wifi_evt_handler, NULL);
-}
+/* WiFi state from uORB — published by PhoneAppSettings */
+static orb_sub_t s_wifi_state_sub = -1;
 
 static bool wifi_sta_is_connected(void)
 {
+    /* Check uORB wifi_state first */
+    if (s_wifi_state_sub >= 0) {
+        bool updated = false;
+        struct wifi_state_s ws = {};
+        if (orb_check(s_wifi_state_sub, &updated) == 0 && updated) {
+            orb_copy(ORB_ID(wifi_state), s_wifi_state_sub, &ws);
+            return ws.connected;
+        }
+    }
+    /* Fallback: direct WiFi check */
     wifi_ap_record_t ap_info;
     if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) return false;
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -574,13 +573,28 @@ static esp_err_t settings_handler(httpd_req_t *req)
         esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
         esp_wifi_connect();
 
-        /* Wait for connection result */
-        _wifi_evt_ensure_listening();
-        xEventGroupClearBits(s_wifi_evt_group, WIFI_CONNECTED_BIT);
-        EventBits_t bits = xEventGroupWaitBits(s_wifi_evt_group, WIFI_CONNECTED_BIT,
-                                               pdFALSE, pdTRUE,
-                                               pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
-        if (bits & WIFI_CONNECTED_BIT) {
+        /* Wait for connection result via uORB (published by PhoneAppSettings::wifiEventHandler) */
+        bool wifi_connected = false;
+        int timeout_ms = WIFI_CONNECT_TIMEOUT_MS;
+        while (timeout_ms > 0) {
+            if (s_wifi_state_sub >= 0) {
+                bool updated = false;
+                struct wifi_state_s ws = {};
+                if (orb_check(s_wifi_state_sub, &updated) == 0 && updated) {
+                    orb_copy(ORB_ID(wifi_state), s_wifi_state_sub, &ws);
+                    if (ws.connected) {
+                        wifi_connected = true;
+                        break;
+                    }
+                }
+            }
+            /* Fallback direct check */
+            if (wifi_sta_is_connected()) { wifi_connected = true; break; }
+            vTaskDelay(pdMS_TO_TICKS(200));
+            timeout_ms -= 200;
+        }
+
+        if (wifi_connected) {
             ESP_LOGI(TAG, "WiFi connected to %s — saving to NVS", target_ssid);
             nvs_set_i32(NVS_KEY_WIFI_EN, 1);
             nvs_set_str_def(NVS_KEY_WIFI_SSID, target_ssid);
@@ -920,18 +934,28 @@ static esp_err_t cors_preflight_handler(httpd_req_t *req)
  *============================================================================*/
 static void web_config_task(void *arg)
 {
+    /* Subscribe to wifi_state uORB topic (published by PhoneAppSettings) */
+    if (s_wifi_state_sub < 0) {
+        s_wifi_state_sub = orb_subscribe(ORB_ID(wifi_state));
+    }
+
     /* Wait for WiFi connection before starting HTTP server.
      * LWIP TCPIP mbox is only valid after netif is up. */
     ESP_LOGI(TAG, "Web config waiting for WiFi connection...");
 
-    _wifi_evt_ensure_listening();
-    xEventGroupClearBits(s_wifi_evt_group, WIFI_CONNECTED_BIT);
-
     /* Check if already connected (event may have fired before this task) */
     if (!wifi_sta_is_connected()) {
-        ESP_LOGI(TAG, "Waiting for IP_EVENT_STA_GOT_IP...");
-        xEventGroupWaitBits(s_wifi_evt_group, WIFI_CONNECTED_BIT,
-                            pdFALSE, pdTRUE, portMAX_DELAY);
+        ESP_LOGI(TAG, "Waiting for wifi_state topic...");
+        struct wifi_state_s ws = {};
+        while (1) {
+            if (s_wifi_state_sub >= 0) {
+                orb_copy(ORB_ID(wifi_state), s_wifi_state_sub, &ws);
+                if (ws.connected) break;
+            }
+            /* Also check directly in case uORB isn't set up yet */
+            if (wifi_sta_is_connected()) break;
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
     }
 
     ESP_LOGI(TAG, "WiFi connected, starting web config server on port %d...",

@@ -10,6 +10,8 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "camera_stream.hpp"
+#include "uorb.h"
+#include "topics.h"
 #include <cstring>
 
 static const char *TAG = "CamStreamApp";
@@ -20,6 +22,9 @@ extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_1
 /*============================================================================
  * Constructor / Destructor
  *============================================================================*/
+/* uORB subscriber for FPS stats */
+static orb_sub_t s_fps_sub = -1;
+
 PhoneAppCameraStream::PhoneAppCameraStream(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Camera Stream", &esp_brookesia_image_large_app_launcher_default_112_112,
                            true, use_status_bar, use_navigation_bar),
@@ -32,6 +37,10 @@ PhoneAppCameraStream::PhoneAppCameraStream(bool use_status_bar, bool use_navigat
     _prev_frame_count(0), _prev_total_bytes(0), _fps(0)
 {
     memset(_wifi_ip, 0, sizeof(_wifi_ip));
+    /* Subscribe to fps_stats once */
+    if (s_fps_sub < 0) {
+        s_fps_sub = orb_subscribe(ORB_ID(fps_stats));
+    }
 }
 
 PhoneAppCameraStream::~PhoneAppCameraStream()
@@ -253,25 +262,27 @@ void PhoneAppCameraStream::_update_stream_info(void)
     if (!_label_stream_info) return;
 
     if (running) {
-        uint32_t frame_count = cs._frame_count;
-        uint32_t frames_since = frame_count - _prev_frame_count;
-        uint32_t bytes_total = cs._fps_total_bytes;
-        (void)bytes_total;  /* Used for display */
+        /* Read latest FPS stats from uORB topic (non-blocking) */
+        bool updated = false;
+        struct fps_stats_s fps_data = {};
+        if (s_fps_sub >= 0 && orb_check(s_fps_sub, &updated) == 0 && updated) {
+            orb_copy(ORB_ID(fps_stats), s_fps_sub, &fps_data);
+            _prev_frame_count = fps_data.frame_count;
+            _prev_total_bytes = fps_data.fps_total_bytes;
+        }
 
-        /* Calculate FPS since last update (multiply first to avoid int division truncation) */
-        _fps = (frames_since * 1000) / UI_REFRESH_MS;
-        _prev_frame_count = frame_count;
+        /* Calculate FPS since last update */
+        _fps = (_fps > 0) ? _fps : 0;  /* Keep previous FPS if no new data */
 
         lv_label_set_text_fmt(_label_stream_info,
-            "Stream: ACTIVE  %lux%lu  %lu FPS",
+            "Stream: ACTIVE  %lux%lu",
             (unsigned long)cs._cam_width,
-            (unsigned long)cs._cam_height,
-            (unsigned long)_fps);
+            (unsigned long)cs._cam_height);
 
         if (_label_stream_bytes) {
             lv_label_set_text_fmt(_label_stream_bytes,
-                "Total frames: %lu  JPEG avg: working",
-                (unsigned long)frame_count);
+                "Total frames: %lu",
+                (unsigned long)_prev_frame_count);
         }
     } else {
         _fps = 0;

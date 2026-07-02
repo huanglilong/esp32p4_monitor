@@ -9,8 +9,13 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include <string.h>
 #include <stdio.h>
+
+/* uORB */
+#include "uorb.h"
+#include "topics.h"
 
 extern SemaphoreHandle_t s_codec_mutex;
 
@@ -27,6 +32,28 @@ TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
 uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
+
+/* uORB publisher for WiFi state */
+static orb_advert_t s_wifi_pub = ORB_ADVERT_INVALID;
+
+static void publish_wifi_state(bool connected, bool scanning, int8_t rssi, const char *ssid)
+{
+    if (s_wifi_pub < 0) {
+        s_wifi_pub = orb_advertise(ORB_ID(wifi_state));
+    }
+    if (s_wifi_pub >= 0) {
+        struct wifi_state_s ws = {};
+        ws.timestamp  = esp_timer_get_time();
+        ws.connected  = connected;
+        ws.scanning   = scanning;
+        ws.rssi       = rssi;
+        if (ssid) {
+            strncpy(ws.ssid, ssid, sizeof(ws.ssid) - 1);
+            ws.ssid[sizeof(ws.ssid) - 1] = '\0';
+        }
+        orb_publish(ORB_ID(wifi_state), s_wifi_pub, &ws);
+    }
+}
 
 #define NVS_NAMESPACE            "settings"
 #define NVS_KEY_WIFI_EN          "wifi_en"
@@ -924,6 +951,7 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         xEventGroupSetBits(_wifi_event_group, WIFI_CONNECTED_BIT);
         wifi_event_sta_connected_t *evt = (wifi_event_sta_connected_t *)event_data;
+        publish_wifi_state(true, false, 0, (const char *)evt->ssid);
         if (_wifi_reconnect_timer) {
             ESP_LOGI(TAG, "WiFi reconnected to %s after %lu attempt(s)", evt->ssid, _wifi_reconnect_count);
             _wifi_reconnect_count = 0;
@@ -937,6 +965,7 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
         xEventGroupClearBits(_wifi_event_group, WIFI_CONNECTED_BIT);
         wifi_event_sta_disconnected_t *evt = (wifi_event_sta_disconnected_t *)event_data;
         ESP_LOGI(TAG, "WiFi disconnected, reason=%d", evt->reason);
+        publish_wifi_state(false, false, 0, "");
         /* Check if WiFi is enabled in NVS — if so, start 10s periodic reconnect */
         nvs_handle_t nvs_h;
         if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {

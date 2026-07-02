@@ -2,9 +2,9 @@
  * uORB topic umbrella header for ESP32-P4 Monitor.
  *
  * Struct definitions and ORB_TOPIC_DECLARE() are auto-generated
- * from proto/*.msg by tools/msg_gen.py.
+ * from proto/.msg files by tools/msg_gen.py.
  *
- * To regenerate:  make uorb_topics_generate
+ * To regenerate: run idf.py uorb_topics
  */
 
 #pragma once
@@ -20,9 +20,10 @@
 
 #include "uorb.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+/* NOTE: No extern "C" wrapper here! The ORB_TOPIC_DECLARE/ORB_TOPIC_DEFINE
+ * macros expand to C++ variable declarations (const orb_metadata_t).
+ * The generated .cpp files (main/generated/) define these variables without
+ * extern "C" linkage, so the DECLARE must match — no extern "C" linkage. */
 
 // Convenience: ORB_TOPIC_DECLARE for the primary topic names
 // (generated .cpp files already contain ORB_TOPIC_DEFINE)
@@ -33,6 +34,3 @@ ORB_TOPIC_DECLARE(audio_level);
 ORB_TOPIC_DECLARE(camera_state);
 ORB_TOPIC_DECLARE(recording_state);
 ORB_TOPIC_DECLARE(volume_state);
-
-#ifdef __cplusplus
-}

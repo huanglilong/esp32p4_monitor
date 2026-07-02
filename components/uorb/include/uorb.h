@@ -46,6 +46,9 @@ typedef const orb_metadata_t *orb_id_t;
 /** Publisher handle.  < 0 means invalid. */
 typedef int orb_advert_t;
 
+/** Invalid publisher handle constant. */
+#define ORB_ADVERT_INVALID (-1)
+
 /** Subscriber handle.  < 0 means invalid. */
 typedef int orb_sub_t;
 
@@ -70,7 +73,8 @@ typedef int orb_sub_t;
  * @param depth    Queue depth per subscriber (1 = latest-only, discards old)
  */
 #define ORB_TOPIC_DEFINE(name, msg_type, depth)                            \
-    const orb_metadata_t g_orb_meta_##name = {                             \
+    extern const orb_metadata_t g_orb_meta_##name                          \
+        __attribute__((used)) = {                                          \
         .o_name  = #name,                                                  \
         .o_size  = sizeof(msg_type),                                       \
         .o_depth = (depth),                                                \

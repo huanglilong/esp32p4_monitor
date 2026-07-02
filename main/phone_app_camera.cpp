@@ -17,12 +17,21 @@ extern "C" {
 #include "camera_stream.hpp"
 #include "dl_image_define.hpp"
 
+/* uORB */
+#include "uorb.h"
+#include "topics.h"
+#include "esp_timer.h"
+
 #include <cstring>
 
 static const char *TAG = "PhoneAppCamera";
 
 /* Use built-in brookesia launcher icon for camera */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
+
+/* uORB publishers */
+static orb_advert_t s_camera_pub   = ORB_ADVERT_INVALID;
+static orb_advert_t s_detect_pub   = ORB_ADVERT_INVALID;
 
 PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Camera", &esp_brookesia_image_large_app_launcher_default_112_112,
@@ -114,6 +123,14 @@ bool PhoneAppCamera::close(void)
     if (_refresh_timer) {
         lv_timer_delete(_refresh_timer);
         _refresh_timer = nullptr;
+    }
+
+    /* Publish camera stopped state */
+    if (s_camera_pub >= 0) {
+        struct camera_state_s cs = {};
+        cs.timestamp = esp_timer_get_time();
+        cs.running   = false;
+        orb_publish(ORB_ID(camera_state), s_camera_pub, &cs);
     }
 
     /* Signal detection task to stop BEFORE deinit (avoid use-after-free) */
@@ -258,6 +275,19 @@ bool PhoneAppCamera::_init_camera(void)
 
     _cam_running = true;
     ESP_LOGI(TAG, "V4L2 camera pipeline started (%" PRIu32 "x%" PRIu32 ")", _cam_width, _cam_height);
+
+    /* Advertise camera_state topic */
+    s_camera_pub = orb_advertise(ORB_ID(camera_state));
+    if (s_camera_pub >= 0) {
+        struct camera_state_s state = {};
+        state.timestamp = esp_timer_get_time();
+        state.running   = true;
+        orb_publish(ORB_ID(camera_state), s_camera_pub, &state);
+    }
+
+    /* Advertise detection_result topic */
+    s_detect_pub = orb_advertise(ORB_ID(detection_result));
+
     return true;
 
 fail:
@@ -399,15 +429,25 @@ void PhoneAppCamera::_detection_task(void *arg)
         /* Filter for person class (COCO class 0).
          * COCODetect::run() internally handles coordinate scaling from model
          * space to input image size, so results are already in camera resolution. */
+        int person_count = 0;
         if (xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             app->_detect_results.clear();
             for (auto &r : results) {
                 if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
                     app->_detect_results.push_back(r);
+                    person_count++;
                 }
             }
             app->_detect_available = true;
             xSemaphoreGive(app->_detect_mutex);
+        }
+
+        /* Publish detection result via uORB */
+        if (s_detect_pub >= 0) {
+            struct detection_result_s dr = {};
+            dr.timestamp    = esp_timer_get_time();
+            dr.person_count = person_count;
+            orb_publish(ORB_ID(detection_result), s_detect_pub, &dr);
         }
 
         /* Wait for next detection cycle */

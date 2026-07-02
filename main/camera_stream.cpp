@@ -23,6 +23,10 @@
 #include <unistd.h>
 #include <cstring>
 
+/* uORB */
+#include "uorb.h"
+#include "topics.h"
+
 static const char *TAG = "CameraStream";
 
 /* Forward declaration: BSP I2C bus handle getter (provided by Waveshare BSP) */
@@ -638,10 +642,27 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 xSemaphoreGive(cs->_encoder_sem);
             }
 
+
             /* Return buffer */
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
 
             cs->_frame_count = cs->_frame_count + 1;
+
+            /* Publish FPS stats via uORB */
+            {
+                static orb_advert_t s_fps_pub = ORB_ADVERT_INVALID;
+                if (s_fps_pub < 0) {
+                    s_fps_pub = orb_advertise(ORB_ID(fps_stats));
+                }
+                if (s_fps_pub >= 0) {
+                    struct fps_stats_s fps = {};
+                    fps.timestamp      = esp_timer_get_time();
+                    fps.frame_count    = cs->_frame_count;
+                    fps.fps_total_bytes = cs->_fps_total_bytes;
+                    fps.fps            = 0.0f;
+                    orb_publish(ORB_ID(fps_stats), s_fps_pub, &fps);
+                }
+            }
 
             /* Yield CPU to prevent SDIO/WiFi starvation */
             vTaskDelay(pdMS_TO_TICKS(50));
