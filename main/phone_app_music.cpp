@@ -1,8 +1,7 @@
 #include "phone_app_music.hpp"
+#include "peripherals.hpp"
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
-#include "esp_codec_dev.h"
-#include "esp_lvgl_port.h"
 #include "nvs.h"
 #include "bsp/display.h"
 #include <string.h>
@@ -12,25 +11,6 @@
 #include <stdlib.h>
 
 static const char *TAG = "MusicApp";
-
-/* External peripheral init/deinit from main.cpp */
-extern bool monitor_init_sdcard(void);
-extern void monitor_deinit_sdcard(void);
-extern void monitor_init_audio(void);
-extern void monitor_deinit_audio(void);
-
-extern esp_codec_dev_handle_t s_codec_handle;
-extern SemaphoreHandle_t s_codec_mutex;
-static inline void safe_set_volume(int vol) {
-    if (s_codec_handle && s_codec_mutex &&
-        xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        esp_codec_dev_set_out_vol(s_codec_handle, vol);
-        xSemaphoreGive(s_codec_mutex);
-    }
-}
-
-/* External handles from main.cpp */
-extern esp_codec_dev_handle_t s_codec_handle;
 
 /* External icon from brookesia */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
@@ -69,10 +49,10 @@ bool PhoneAppMusic::run(void)
     ESP_LOGI(TAG, "Music app starting...");
 
     /* Init audio I2S + DAC (speaker output) */
-    monitor_init_audio();
+    PeripheralManager::instance().init_audio();
 
     /* Init SD card for music files */
-    if (!monitor_init_sdcard()) {
+    if (!PeripheralManager::instance().init_sdcard()) {
         ESP_LOGW(TAG, "SD card not available, music app may have no files");
     }
 
@@ -126,7 +106,7 @@ bool PhoneAppMusic::run(void)
         char txt[16];
         snprintf(txt, sizeof(txt), "Vol: %d", app->_volume);
         lv_label_set_text(app->_label_vol, txt);
-        safe_set_volume(app->_volume);
+        PeripheralManager::instance().set_volume(app->_volume);
         /* Defer NVS write (debounce to avoid flash wear) */
         app->_nvs_dirty = true;
     }, LV_EVENT_VALUE_CHANGED, this);
@@ -192,7 +172,7 @@ bool PhoneAppMusic::run(void)
     }
 
     /* Set initial volume on codec */
-    safe_set_volume(_volume);
+    PeripheralManager::instance().set_volume(_volume);
 
     /* Deferred auto-next timer: checks _auto_next flag to avoid GMF re-entrancy.
      * _asp_event_cb sets _auto_next=true instead of calling _next() directly. */
@@ -225,7 +205,9 @@ bool PhoneAppMusic::run(void)
                     char txt[16];
                     snprintf(txt, sizeof(txt), "Vol: %ld", saved_vol);
                     lv_label_set_text(app->_label_vol, txt);
-                    if (s_codec_handle) safe_set_volume((int)saved_vol);
+                    if (PeripheralManager::instance().codec_handle()) {
+                        PeripheralManager::instance().set_volume((int)saved_vol);
+                    }
                 }
             }
             nvs_close(nvs_h);
@@ -292,8 +274,8 @@ bool PhoneAppMusic::close(void)
     }
 
     /* Deinit audio and SD card — release DMA/PSRAM resources */
-    monitor_deinit_audio();
-    monitor_deinit_sdcard();
+    PeripheralManager::instance().deinit_audio();
+    PeripheralManager::instance().deinit_sdcard();
 
     ESP_LOGI(TAG, "Music app closed");
     return true;
@@ -456,11 +438,7 @@ void PhoneAppMusic::_prev(void)
 int PhoneAppMusic::_asp_output_cb(uint8_t *data, int data_size, void *ctx)
 {
     (void)ctx;
-    if (!s_codec_handle || !s_codec_mutex || data_size <= 0) return -1;
-    if (xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(50)) != pdPASS) return -1;
-    int ret = esp_codec_dev_write(s_codec_handle, data, data_size);
-    xSemaphoreGive(s_codec_mutex);
-    return (ret == ESP_CODEC_DEV_OK) ? data_size : -1;
+    return PeripheralManager::instance().codec_write(data, data_size);
 }
 
 /* Event callback: handles state transitions */

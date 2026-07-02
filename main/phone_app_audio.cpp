@@ -1,4 +1,5 @@
 #include "phone_app_audio.hpp"
+#include "peripherals.hpp"
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -11,15 +12,6 @@
 #include <sys/time.h>
 
 static const char *TAG = "PhoneAppAudio";
-
-/* External peripheral init/deinit from main.cpp */
-extern bool monitor_init_sdcard(void);
-extern void monitor_deinit_sdcard(void);
-extern void monitor_init_audio(void);
-extern void monitor_deinit_audio(void);
-
-/* External audio handles from main.cpp */
-extern i2s_chan_handle_t s_rx_handle;              // I2S RX for mic
 
 /* External launcher icon from brookesia */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
@@ -85,10 +77,10 @@ bool PhoneAppAudio::run(void)
     ESP_LOGI(TAG, "Audio app starting...");
 
     /* Init audio I2S + codecs (mic + speaker) */
-    monitor_init_audio();
+    PeripheralManager::instance().init_audio();
 
     /* Init SD card for recording storage */
-    monitor_init_sdcard();
+    PeripheralManager::instance().init_sdcard();
 
     lv_obj_t *screen = lv_scr_act();
     int32_t screen_w = BSP_LCD_H_RES;
@@ -218,8 +210,8 @@ bool PhoneAppAudio::close(void)
     }
 
     /* Deinit audio and SD card — release DMA/PSRAM resources */
-    monitor_deinit_audio();
-    monitor_deinit_sdcard();
+    PeripheralManager::instance().deinit_audio();
+    PeripheralManager::instance().deinit_sdcard();
 
     ESP_LOGI(TAG, "Audio app closed");
     return true;
@@ -244,7 +236,7 @@ void PhoneAppAudio::_audio_task(void *arg)
     while (app->_task_running) {
         /* Read from mic via direct I2S RX */
         size_t bytes_read = 0;
-        esp_err_t ret = i2s_channel_read(s_rx_handle, buf, AUDIO_BUF_BYTES, &bytes_read, pdMS_TO_TICKS(100));
+        esp_err_t ret = i2s_channel_read(PeripheralManager::instance().rx_handle(), buf, AUDIO_BUF_BYTES, &bytes_read, pdMS_TO_TICKS(100));
         if (ret != ESP_OK || bytes_read == 0) {
             continue;
         }

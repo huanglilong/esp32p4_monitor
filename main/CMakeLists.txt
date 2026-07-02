@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.cpp" "phone_app_camera.cpp" "phone_app_audio.cpp"
+    SRCS "main.cpp" "peripherals.cpp" "phone_app_camera.cpp" "phone_app_audio.cpp"
          "phone_app_music.cpp" "phone_app_settings.cpp"
          "phone_app_camera_stream.cpp" "camera_stream.cpp"
          "web_config_server.cpp"

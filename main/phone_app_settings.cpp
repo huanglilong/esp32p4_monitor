@@ -1,11 +1,11 @@
 #include "phone_app_settings.hpp"
+#include "peripherals.hpp"
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
-#include "esp_codec_dev.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -17,11 +17,8 @@
 #include "uorb.h"
 #include "topics.h"
 
-extern SemaphoreHandle_t s_codec_mutex;
-
 static const char *TAG = "Settings";
 
-extern esp_codec_dev_handle_t s_codec_handle;
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
 /* Static WiFi state — persists across Settings app open/close cycles */
@@ -385,11 +382,7 @@ void PhoneAppSettings::applySettings(void)
     if (vol < VOLUME_MIN) vol = VOLUME_MIN;
     if (vol > VOLUME_MAX) vol = VOLUME_MAX;
     _nvs_param_map[NVS_KEY_VOLUME] = vol;
-    if (s_codec_handle && s_codec_mutex &&
-        xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        esp_codec_dev_set_out_vol(s_codec_handle, (int)vol);
-        xSemaphoreGive(s_codec_mutex);
-    }
+    PeripheralManager::instance().set_volume((int)vol);
 
     int32_t bri = _nvs_param_map[NVS_KEY_BRIGHTNESS];
     if (bri < BRIGHTNESS_MIN) bri = BRIGHTNESS_MIN;
@@ -628,13 +621,7 @@ void PhoneAppSettings::onVolumeSliderChanged(lv_event_t *e)
         lv_label_set_text(app->_label_vol, buf);
         app->_nvs_param_map[NVS_KEY_VOLUME] = vol;
         app->_nvs_dirty = true;  // Defer NVS write (500ms debounce)
-        if (s_codec_handle) {
-            extern SemaphoreHandle_t s_codec_mutex;
-            if (s_codec_mutex && xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                esp_codec_dev_set_out_vol(s_codec_handle, (int)vol);
-                xSemaphoreGive(s_codec_mutex);
-            }
-        }
+        PeripheralManager::instance().set_volume((int)vol);
     }
 }
 

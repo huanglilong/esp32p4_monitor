@@ -14,6 +14,7 @@
  */
 
 #include "web_config_server.hpp"
+#include "peripherals.hpp"
 #include "sdkconfig.h"
 
 #include <stdio.h>
@@ -52,20 +53,8 @@ extern "C" {
 
 static const char *TAG = "WebConfig";
 
-/* Extern: set by main.cpp after GT911 I2C probe */
-#include "esp_codec_dev.h"
-
+/* Board detection — still extern until fully migrated */
 extern bool g_has_lcd;
-extern esp_codec_dev_handle_t s_codec_handle;
-extern SemaphoreHandle_t s_codec_mutex;
-
-/* Audio peripheral externs */
-extern i2s_chan_handle_t s_rx_handle;
-extern i2s_chan_handle_t s_tx_handle;
-extern bool monitor_init_sdcard(void);
-extern void monitor_init_audio(void);
-extern void monitor_deinit_audio(void);
-extern void monitor_deinit_sdcard(void);
 
 #define WEB_CONFIG_PORT         8080
 
@@ -141,7 +130,7 @@ static void audio_task(void *arg)
     if (!buf) { s_audio_running = false; s_audio_task = NULL; vTaskDelete(NULL); return; }
     while (s_audio_running) {
         size_t n = 0;
-        if (i2s_channel_read(s_rx_handle, buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(100)) != ESP_OK || n == 0) continue;
+        if (i2s_channel_read(PeripheralManager::instance().rx_handle(), buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(100)) != ESP_OK || n == 0) continue;
         int32_t spc = n / (2 * sizeof(int16_t));
         if (s_is_recording && s_pcm_buf && s_shine) {
             for (int32_t i = 0; i < spc; i++) {
@@ -524,12 +513,8 @@ static esp_err_t settings_handler(httpd_req_t *req)
         if (vol < VOLUME_MIN) vol = VOLUME_MIN;
         if (vol > VOLUME_MAX) vol = VOLUME_MAX;
         nvs_set_i32(NVS_KEY_VOLUME, vol);
-        /* Apply to codec immediately (thread-safe via mutex) */
-        if (s_codec_handle && s_codec_mutex &&
-            xSemaphoreTake(s_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            esp_codec_dev_set_out_vol(s_codec_handle, vol);
-            xSemaphoreGive(s_codec_mutex);
-        }
+        /* Apply to codec immediately (thread-safe via PeripheralManager) */
+        PeripheralManager::instance().set_volume((int)vol);
     }
 
     /* WiFi: skip if ssid or password is explicitly provided but empty */
@@ -762,8 +747,8 @@ static bool __cam_running(void) {
 /* Lazy-init SD card + audio codec on headless boards */
 static bool __audio_init(void) {
     if (s_audio_inited) return true;
-    if (!monitor_init_sdcard()) { ESP_LOGE(TAG,"SD init fail"); return false; }
-    monitor_init_audio();
+    if (!PeripheralManager::instance().init_sdcard()) { ESP_LOGE(TAG,"SD init fail"); return false; }
+    PeripheralManager::instance().init_audio();
     s_audio_inited = true;
     return true;
 }
@@ -874,9 +859,7 @@ static void _url_decode(char *s) {
 
 /* Playback callbacks */
 static int _asp_out(uint8_t *d, int sz, void *_) { (void)_;
-    if(!s_codec_handle||!s_codec_mutex||sz<=0) return -1;
-    if(xSemaphoreTake(s_codec_mutex,pdMS_TO_TICKS(50))!=pdPASS) return -1;
-    int r=esp_codec_dev_write(s_codec_handle,d,sz); xSemaphoreGive(s_codec_mutex); return (r==ESP_CODEC_DEV_OK)?sz:-1; }
+    return PeripheralManager::instance().codec_write(d, sz); }
 static int _asp_evt(esp_asp_event_pkt_t *pkt, void *_) { (void)_;
     if(pkt->type==ESP_ASP_EVENT_TYPE_STATE){ int s=*(esp_asp_state_t*)pkt->payload;
         if(s==ESP_ASP_STATE_FINISHED||s==ESP_ASP_STATE_STOPPED||s==ESP_ASP_STATE_ERROR) s_playing=false; } return 0; }
@@ -1109,7 +1092,7 @@ void web_config_server_stop(void)
     if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
     s_playing = false;
     if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
-    if (s_audio_inited) { monitor_deinit_audio(); monitor_deinit_sdcard(); s_audio_inited=false; }
+    if (s_audio_inited) { PeripheralManager::instance().deinit_audio(); PeripheralManager::instance().deinit_sdcard(); s_audio_inited=false; }
 
     /* Signal task to exit its idle loop — it will clean up HTTP server
      * and mDNS from within its own context, then self-delete. */
