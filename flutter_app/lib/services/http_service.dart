@@ -8,6 +8,45 @@ import '../models/esp32_message.dart';
 
 /// HTTP-based service for ESP32-P4 communication.
 /// Uses Dart HttpClient which handles chunked transfer encoding automatically.
+/// Read a complete HTTP response from a raw socket. Handles ESP32 keep-alive
+/// (server doesn't close connection) by reading until Content-Length bytes.
+Future<String> _readHttpResponse(Socket socket) async {
+  final completer = Completer<String>();
+  final buf = StringBuffer();
+  int? contentLength;
+  int bodyStart = -1;
+  int bodyBytes = 0;
+
+  socket.cast<List<int>>().transform(utf8.decoder).listen(
+    (chunk) {
+      buf.write(chunk);
+      if (contentLength == null) {
+        final i = buf.toString().indexOf('\r\n\r\n');
+        if (i >= 0) {
+          // Parse Content-Length from headers
+          final headers = buf.toString().substring(0, i);
+          final clMatch = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false)
+              .firstMatch(headers);
+          if (clMatch != null) {
+            contentLength = int.parse(clMatch.group(1)!);
+            bodyStart = i + 4;
+          }
+        }
+      }
+      if (contentLength != null) {
+        bodyBytes = buf.length - bodyStart!;
+        if (bodyBytes >= contentLength!) {
+          if (!completer.isCompleted) completer.complete(buf.toString());
+        }
+      }
+    },
+    onError: (e) { if (!completer.isCompleted) completer.completeError(e); },
+    onDone: () { if (!completer.isCompleted) completer.complete(buf.toString()); },
+    cancelOnError: true,
+  );
+  return completer.future.timeout(const Duration(seconds: 5));
+}
+
 class Esp32HttpService {
   Esp32Device? _connectedDevice;
 
@@ -99,7 +138,7 @@ class Esp32HttpService {
         '\r\n',
       );
       await socket.flush();
-      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      final resp = await _readHttpResponse(socket);
       socket.close();
       if (!resp.contains('200 OK')) {
         throw Exception('Server returned non-200');
@@ -289,7 +328,7 @@ class Esp32HttpService {
         '$body',
       );
       await socket.flush();
-      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      final resp = await _readHttpResponse(socket);
       socket.close();
       if (resp.contains('200 OK')) {
         print('$TAG ✅ Quality set to $q');
@@ -322,7 +361,7 @@ class Esp32HttpService {
         '\r\n',
       );
       await socket.flush();
-      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      final resp = await _readHttpResponse(socket);
       socket.close();
       // Find JSON body after headers (double \r\n)
       final bodyStart = resp.indexOf('\r\n\r\n');
@@ -366,7 +405,7 @@ class Esp32HttpService {
         '$json',
       );
       await socket.flush();
-      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      final resp = await _readHttpResponse(socket);
       socket.close();
       if (resp.contains('200 OK')) {
         print('$TAG ✅ Settings saved');
@@ -395,7 +434,7 @@ class Esp32HttpService {
         '\r\n',
       );
       await socket.flush();
-      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      final resp = await _readHttpResponse(socket);
       socket.close();
       if (resp.contains('200 OK')) {
         print('$TAG ✅ Factory reset executed');
@@ -428,7 +467,7 @@ class Esp32HttpService {
         '$body',
       );
       await socket.flush();
-      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      final resp = await _readHttpResponse(socket);
       socket.close();
       if (resp.contains('200 OK')) {
         print('$TAG ✅ Camera stream ${enable ? "started" : "stopped"}');
@@ -457,7 +496,7 @@ class Esp32HttpService {
         '\r\n',
       );
       await socket.flush();
-      final resp = await socket.cast<List<int>>().transform(utf8.decoder).first;
+      final resp = await _readHttpResponse(socket);
       socket.close();
       final bodyStart = resp.indexOf('\r\n\r\n');
       if (bodyStart < 0) throw Exception('No response body');

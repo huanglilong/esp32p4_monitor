@@ -17,7 +17,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _ipController = TextEditingController();
-  final _portController = TextEditingController(text: '80');
 
   AppState get _state => AppStateScope.of(context);
 
@@ -32,7 +31,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _ipController.dispose();
-    _portController.dispose();
     super.dispose();
   }
 
@@ -164,30 +162,15 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add Device Manually'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _ipController,
-              decoration: const InputDecoration(
-                labelText: 'IP Address',
-                hintText: '192.168.1.100',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.url,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _portController,
-              decoration: const InputDecoration(
-                labelText: 'Port',
-                hintText: '80',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.number,
-            ),
-          ],
+        title: const Text('Add Device'),
+        content: TextField(
+          controller: _ipController,
+          decoration: const InputDecoration(
+            labelText: 'Hostname or IP',
+            hintText: 'esp-web.local or 192.168.1.100',
+            border: OutlineInputBorder(),
+          ),
+          keyboardType: TextInputType.url,
         ),
         actions: [
           TextButton(
@@ -196,10 +179,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           FilledButton(
             onPressed: () {
-              final ip = _ipController.text.trim();
-              final port = int.tryParse(_portController.text.trim()) ?? 80;
-              if (ip.isNotEmpty) {
-                _state.addManualDevice(ip, port);
+              final host = _ipController.text.trim();
+              if (host.isNotEmpty) {
+                _state.addManualDevice(host, 80);
               }
               Navigator.pop(context);
             },

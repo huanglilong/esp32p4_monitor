@@ -19,7 +19,7 @@ class DeviceDiscovery {
 
   /// Start mDNS discovery for ESP32-P4 devices.
   Stream<Esp32Device> startDiscovery({
-    Duration timeout = const Duration(seconds: 10),
+    Duration timeout = const Duration(seconds: 20),
   }) {
     if (_isRunning) {
       return _controller!.stream;
@@ -52,17 +52,13 @@ class DeviceDiscovery {
         print('[DeviceDiscovery] ⚠️ joinMulticast failed: $e');
       }
 
-      // Send mDNS queries for all known service types
-      for (final serviceType in _serviceTypes) {
-        print('[DeviceDiscovery]   Sending mDNS query for $serviceType');
-        final queryPacket = _buildMdnsQuery(serviceType);
-        _udpSocket!.send(queryPacket, _mdnsAddr, _mdnsPort);
-      }
-
+      // Set up listener BEFORE sending queries — ESP32 responds in ~ms
+      int rawPackets = 0;
       _udpSocket!.listen((event) {
         if (event == RawSocketEvent.read) {
           final packet = _udpSocket!.receive();
           if (packet != null) {
+            rawPackets++;
             final device = _parseMdnsResponse(packet.data, packet.address);
             if (device != null && !_controller!.isClosed) {
               print(
@@ -73,6 +69,16 @@ class DeviceDiscovery {
           }
         }
       });
+
+      // Send mDNS queries — repeat 3 times with 1s delay for reliability (UDP)
+      for (int round = 0; round < 3; round++) {
+        for (final serviceType in _serviceTypes) {
+          final queryPacket = _buildMdnsQuery(serviceType);
+          _udpSocket!.send(queryPacket, _mdnsAddr, _mdnsPort);
+        }
+        if (round < 2) await Future.delayed(const Duration(seconds: 1));
+      }
+      print('[DeviceDiscovery]   mDNS queries sent (3 rounds, recv $rawPackets raw packets)');
     } catch (e) {
       print('[DeviceDiscovery] ⚠️ mDNS failed: $e (manual add still works)');
     }
@@ -149,20 +155,30 @@ class DeviceDiscovery {
   /// Parse mDNS response for SRV record containing hostname + port info.
   Esp32Device? _parseMdnsResponse(Uint8List data, InternetAddress source) {
     try {
+      if (data.length < 12) return null;
       int offset = 12; // Skip DNS header
 
+      // Header fields
+      final qdCount = (data[4] << 8) | data[5];
+      final anCount = (data[6] << 8) | data[7];
+      final nsCount = (data[8] << 8) | data[9];
+      final arCount = (data[10] << 8) | data[11];
+      final totalRecords = anCount + nsCount + arCount;
+
       // Skip question section
-      while (offset < data.length) {
-        if (data[offset] == 0) {
-          offset += 5; // null label + QTYPE + QCLASS
-          break;
+      for (int q = 0; q < qdCount; q++) {
+        while (offset < data.length) {
+          if (data[offset] == 0) { offset += 1; break; }
+          if ((data[offset] & 0xC0) == 0xC0) { offset += 2; break; }
+          offset += data[offset] + 1;
         }
-        offset += data[offset] + 1;
+        offset += 4; // QTYPE + QCLASS
       }
 
-      // Scan answer records for SRV record (type 33)
-      while (offset + 10 < data.length) {
-        // Skip record name (compressed or labels)
+      // Scan all record sections for SRV (type 33)
+      final typesFound = <int>[];
+      for (int r = 0; r < totalRecords && offset + 10 < data.length; r++) {
+        // Skip record name
         if ((data[offset] & 0xC0) == 0xC0) {
           offset += 2;
         } else {
@@ -173,15 +189,14 @@ class DeviceDiscovery {
         }
 
         if (offset + 8 > data.length) break;
-
         final type = (data[offset] << 8) | data[offset + 1];
         final dataLen = (data[offset + 8] << 8) | data[offset + 9];
         offset += 10;
+        typesFound.add(type);
 
         if (type == 33 && dataLen >= 6 && offset + dataLen <= data.length) {
-          // SRV record: priority(2) + weight(2) + port(2) + target(name)
+          // SRV: priority(2) + weight(2) + port(2) + target(name)
           final port = (data[offset + 4] << 8) | data[offset + 5];
-          // Parse target hostname (e.g. "esp-web.local")
           String hostname = source.address;
           try {
             final (name, _) = _readDnsName(data, offset + 6);
@@ -198,7 +213,14 @@ class DeviceDiscovery {
         }
         offset += dataLen;
       }
-    } catch (_) {}
+
+      // No SRV found — debug log
+      print('[DeviceDiscovery] ⚠️ No SRV in response '
+          '(QD=$qdCount AN=$anCount NS=$nsCount AR=$arCount, '
+          'types=${typesFound.map((t) => '0x${t.toRadixString(16)}').toList()})');
+    } catch (e) {
+      print('[DeviceDiscovery] ⚠️ Parse error: $e');
+    }
     return null;
   }
 
