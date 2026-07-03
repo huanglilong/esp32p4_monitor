@@ -24,6 +24,7 @@ private:
     static void _detection_task(void *arg);
     bool _init_camera(void);
     bool _deinit_camera(void);
+    void _cleanup_camera_init(void);
 
     /* Detection init/deinit */
     bool _init_detection(void);

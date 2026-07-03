@@ -227,8 +227,9 @@ void CameraStream::stop(void)
 bool CameraStream::_init_video(void)
 {
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    struct v4l2_format fmt = {};      // Declared early to avoid goto-cross-init
-    struct v4l2_streamparm sparm = {}; // Same
+    struct v4l2_format fmt = {};
+    struct v4l2_streamparm sparm = {};
+    struct v4l2_requestbuffers req = {};
 
     /* Step 1: Init video pipeline via esp_video (safe to call multiple times) */
     if (example_video_init() != ESP_OK) {
@@ -236,133 +237,141 @@ bool CameraStream::_init_video(void)
         return false;
     }
 
-    /* Step 1b: Reduce sensor frame rate from 50fps → ~10fps by increasing VTS.
-     * This reduces ISP DMA bandwidth from ~32 MB/s to ~6.4 MB/s,
-     * relieving PSRAM pressure during WiFi streaming. */
+    /* Step 1b: Reduce sensor frame rate from 50fps → ~10fps by increasing VTS. */
     ov5647_set_vts_10fps();
 
-    /* Step 2: Open V4L2 device */
-    _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
-    if (_video_fd < 0) {
-        ESP_LOGE(TAG, "Failed to open %s", EXAMPLE_CAM_DEV_PATH);
-        return false;
-    }
-    ESP_LOGI(TAG, "V4L2 device opened: %s", EXAMPLE_CAM_DEV_PATH);
+    bool ok = false;
+    do {
+        /* Step 2: Open V4L2 device */
+        _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
+        if (_video_fd < 0) {
+            ESP_LOGE(TAG, "Failed to open %s", EXAMPLE_CAM_DEV_PATH);
+            break;
+        }
+        ESP_LOGI(TAG, "V4L2 device opened: %s", EXAMPLE_CAM_DEV_PATH);
 
-    /* Step 3: Read frame rate (matches reference: VIDIOC_G_PARM).
-     * Note: Driver caches the original preset value (50fps); actual sensor
-     * frame rate is ~5fps due to VTS=9840 set in ov5647_set_vts_10fps(). */
-    sparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(_video_fd, VIDIOC_G_PARM, &sparm) == 0) {
-        struct v4l2_fract *tpf = &sparm.parm.capture.timeperframe;
-        uint32_t fps = (tpf->denominator && tpf->numerator) ? tpf->denominator / tpf->numerator : 0;
-        ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~5 fps from VTS=9840)", fps);
-    } else {
-        ESP_LOGW(TAG, "VIDIOC_G_PARM failed, frame rate unknown");
-    }
+        /* Step 3: Read frame rate */
+        sparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (ioctl(_video_fd, VIDIOC_G_PARM, &sparm) == 0) {
+            struct v4l2_fract *tpf = &sparm.parm.capture.timeperframe;
+            uint32_t fps = (tpf->denominator && tpf->numerator) ? tpf->denominator / tpf->numerator : 0;
+            ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~5 fps from VTS=9840)", fps);
+        } else {
+            ESP_LOGW(TAG, "VIDIOC_G_PARM failed, frame rate unknown");
+        }
 
-    /* Step 4: REQBUFS (matches reference: REQBUFS before G_FMT) */
-    struct v4l2_requestbuffers req = {};
-    req.count = 2;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory = V4L2_MEMORY_MMAP;
-    ESP_LOGI(TAG, "V4L2 REQBUFS: count=%" PRIu32, req.count);
-    if (ioctl(_video_fd, VIDIOC_REQBUFS, &req) != 0) {
-        ESP_LOGE(TAG, "VIDIOC_REQBUFS failed");
+        /* Step 4: REQBUFS */
+        req = {};
+        req.count = 2;
+        req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        req.memory = V4L2_MEMORY_MMAP;
+        ESP_LOGI(TAG, "V4L2 REQBUFS: count=%" PRIu32, req.count);
+        if (ioctl(_video_fd, VIDIOC_REQBUFS, &req) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_REQBUFS failed");
+            break;
+        }
+        _v4l2_buf_count = req.count;
+        ESP_LOGI(TAG, "V4L2 REQBUFS ok: got %" PRIu32 " buffers", _v4l2_buf_count);
+
+        /* Step 5: mmap + QBUF each buffer */
+        bool all_bufs_ok = true;
+        for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
+            struct v4l2_buffer buf = {};
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = i;
+            if (ioctl(_video_fd, VIDIOC_QUERYBUF, &buf) != 0) {
+                ESP_LOGE(TAG, "VIDIOC_QUERYBUF[%" PRIu32 "] failed", i);
+                all_bufs_ok = false;
+                break;
+            }
+            ESP_LOGI(TAG, "V4L2 buf[%" PRIu32 "]: offset=0x%x len=%" PRIu32, i, buf.m.offset, buf.length);
+            _v4l2_bufs[i] = (uint8_t *)mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
+                                              MAP_SHARED, _video_fd, buf.m.offset);
+            if (_v4l2_bufs[i] == MAP_FAILED) {
+                ESP_LOGE(TAG, "mmap[%" PRIu32 "] failed", i);
+                _v4l2_bufs[i] = nullptr;
+                all_bufs_ok = false;
+                break;
+            }
+            _v4l2_buf_len[i] = buf.length;
+            if (ioctl(_video_fd, VIDIOC_QBUF, &buf) != 0) {
+                ESP_LOGE(TAG, "VIDIOC_QBUF[%" PRIu32 "] failed", i);
+                all_bufs_ok = false;
+                break;
+            }
+        }
+        if (!all_bufs_ok) break;
+
+        /* Step 6: G_FMT to read pixel format */
+        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (ioctl(_video_fd, VIDIOC_G_FMT, &fmt) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_G_FMT failed");
+            break;
+        }
+        _cam_width = fmt.fmt.pix.width;
+        _cam_height = fmt.fmt.pix.height;
+        _cam_pixel_format = fmt.fmt.pix.pixelformat;
+        ESP_LOGI(TAG, "V4L2 G_FMT: %" PRIu32 "x%" PRIu32 " %c%c%c%c (0x%08" PRIx32 ")",
+                 _cam_width, _cam_height,
+                 (char)(_cam_pixel_format & 0xFF),
+                 (char)((_cam_pixel_format >> 8) & 0xFF),
+                 (char)((_cam_pixel_format >> 16) & 0xFF),
+                 (char)((_cam_pixel_format >> 24) & 0xFF),
+                 _cam_pixel_format);
+
+        /* Step 7: Init JPEG encoder for non-JPEG formats */
+        if (_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+            example_encoder_config_t enc_cfg = {
+                .width = _cam_width,
+                .height = _cam_height,
+                .pixel_format = _cam_pixel_format,
+                .quality = _jpeg_quality,
+            };
+            ESP_LOGI(TAG, "Encoder init: %" PRIu32 "x%" PRIu32 " quality=%d",
+                     _cam_width, _cam_height, _jpeg_quality);
+            if (example_encoder_init(&enc_cfg, &_encoder_handle) != ESP_OK) {
+                ESP_LOGE(TAG, "Encoder init failed for format 0x%08" PRIx32, _cam_pixel_format);
+                break;
+            }
+            if (example_encoder_alloc_output_buffer(_encoder_handle, &_jpeg_out_buf, &_jpeg_out_size) != ESP_OK) {
+                ESP_LOGE(TAG, "Encoder output buffer alloc failed");
+                break;
+            }
+            ESP_LOGI(TAG, "Encoder output buffer: %" PRIu32 " bytes", _jpeg_out_size);
+            _encoder_sem = xSemaphoreCreateBinary();
+            if (!_encoder_sem) {
+                ESP_LOGE(TAG, "Encoder semaphore create failed");
+                break;
+            }
+            xSemaphoreGive(_encoder_sem);
+        }
+
+        /* Step 8: VIDIOC_STREAMON */
+        ESP_LOGI(TAG, "V4L2 STREAMON...");
+        if (ioctl(_video_fd, VIDIOC_STREAMON, &type) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_STREAMON failed");
+            break;
+        }
+
+        ok = true;
+    } while (0);
+
+    if (!ok) {
+        if (_encoder_sem) { vSemaphoreDelete(_encoder_sem); _encoder_sem = nullptr; }
+        if (_jpeg_out_buf) { example_encoder_free_output_buffer(_encoder_handle, _jpeg_out_buf); _jpeg_out_buf = nullptr; }
+        if (_encoder_handle) { example_encoder_deinit(_encoder_handle); _encoder_handle = nullptr; }
+        for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
+            if (_v4l2_bufs[i]) { munmap(_v4l2_bufs[i], _v4l2_buf_len[i]); _v4l2_bufs[i] = nullptr; }
+        }
         ::close(_video_fd); _video_fd = -1;
+        /* Unregister CSI/ISP VFS device so next start can re-register */
+        example_video_deinit();
         return false;
-    }
-    _v4l2_buf_count = req.count;
-    ESP_LOGI(TAG, "V4L2 REQBUFS ok: got %" PRIu32 " buffers", _v4l2_buf_count);
-
-    /* Step 5: mmap + QBUF each buffer (matches reference) */
-    for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
-        struct v4l2_buffer buf = {};
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-        if (ioctl(_video_fd, VIDIOC_QUERYBUF, &buf) != 0) {
-            ESP_LOGE(TAG, "VIDIOC_QUERYBUF[%" PRIu32 "] failed", i);
-            goto fail;
-        }
-        ESP_LOGI(TAG, "V4L2 buf[%" PRIu32 "]: offset=0x%x len=%" PRIu32, i, buf.m.offset, buf.length);
-        _v4l2_bufs[i] = (uint8_t *)mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
-                                          MAP_SHARED, _video_fd, buf.m.offset);
-        if (_v4l2_bufs[i] == MAP_FAILED) {
-            ESP_LOGE(TAG, "mmap[%" PRIu32 "] failed", i);
-            _v4l2_bufs[i] = nullptr;
-            goto fail;
-        }
-        _v4l2_buf_len[i] = buf.length;
-        if (ioctl(_video_fd, VIDIOC_QBUF, &buf) != 0) {
-            ESP_LOGE(TAG, "VIDIOC_QBUF[%" PRIu32 "] failed", i);
-            goto fail;
-        }
-    }
-
-    /* Step 6: G_FMT to read pixel format (matches reference: after REQBUFS) */
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(_video_fd, VIDIOC_G_FMT, &fmt) != 0) {
-        ESP_LOGE(TAG, "VIDIOC_G_FMT failed");
-        goto fail;
-    }
-    _cam_width = fmt.fmt.pix.width;
-    _cam_height = fmt.fmt.pix.height;
-    _cam_pixel_format = fmt.fmt.pix.pixelformat;
-    ESP_LOGI(TAG, "V4L2 G_FMT: %" PRIu32 "x%" PRIu32 " %c%c%c%c (0x%08" PRIx32 ")",
-             _cam_width, _cam_height,
-             (char)(_cam_pixel_format & 0xFF),
-             (char)((_cam_pixel_format >> 8) & 0xFF),
-             (char)((_cam_pixel_format >> 16) & 0xFF),
-             (char)((_cam_pixel_format >> 24) & 0xFF),
-             _cam_pixel_format);
-
-    /* Step 7: Init JPEG encoder for non-JPEG formats (matches reference) */
-    if (_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
-        example_encoder_config_t enc_cfg = {
-            .width = _cam_width,
-            .height = _cam_height,
-            .pixel_format = _cam_pixel_format,
-            .quality = _jpeg_quality,
-        };
-        ESP_LOGI(TAG, "Encoder init: %" PRIu32 "x%" PRIu32 " quality=%d",
-                 _cam_width, _cam_height, _jpeg_quality);
-        if (example_encoder_init(&enc_cfg, &_encoder_handle) != ESP_OK) {
-            ESP_LOGE(TAG, "Encoder init failed for format 0x%08" PRIx32, _cam_pixel_format);
-            goto fail;
-        }
-        if (example_encoder_alloc_output_buffer(_encoder_handle, &_jpeg_out_buf, &_jpeg_out_size) != ESP_OK) {
-            ESP_LOGE(TAG, "Encoder output buffer alloc failed");
-            goto fail;
-        }
-        ESP_LOGI(TAG, "Encoder output buffer: %" PRIu32 " bytes", _jpeg_out_size);
-        _encoder_sem = xSemaphoreCreateBinary();
-        if (!_encoder_sem) {
-            ESP_LOGE(TAG, "Encoder semaphore create failed");
-            goto fail;
-        }
-        xSemaphoreGive(_encoder_sem);
-    }
-
-    /* Step 8: VIDIOC_STREAMON (matches reference) */
-    ESP_LOGI(TAG, "V4L2 STREAMON...");
-    if (ioctl(_video_fd, VIDIOC_STREAMON, &type) != 0) {
-        ESP_LOGE(TAG, "VIDIOC_STREAMON failed");
-        goto fail;
     }
 
     ESP_LOGI(TAG, "V4L2 pipeline active: %" PRIu32 "x%" PRIu32 " streaming", _cam_width, _cam_height);
     return true;
-
-fail:
-    if (_encoder_sem) { vSemaphoreDelete(_encoder_sem); _encoder_sem = nullptr; }
-    if (_jpeg_out_buf) { example_encoder_free_output_buffer(_encoder_handle, _jpeg_out_buf); _jpeg_out_buf = nullptr; }
-    if (_encoder_handle) { example_encoder_deinit(_encoder_handle); _encoder_handle = nullptr; }
-    for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
-        if (_v4l2_bufs[i]) { munmap(_v4l2_bufs[i], _v4l2_buf_len[i]); _v4l2_bufs[i] = nullptr; }
-    }
-    ::close(_video_fd); _video_fd = -1;
-    return false;
 }
 
 void CameraStream::_deinit_video(void)
@@ -397,6 +406,12 @@ void CameraStream::_deinit_video(void)
     if (_encoder_sem) {
         vSemaphoreDelete(_encoder_sem);
         _encoder_sem = nullptr;
+    }
+
+    /* Release CSI/ISP pipeline (esp_video). This unregisters the VFS device
+     * so that the next Camera App or Camera Stream start can re-register it. */
+    if (example_video_deinit() != ESP_OK) {
+        ESP_LOGW(TAG, "example_video_deinit failed (may already be deinited)");
     }
 }
 

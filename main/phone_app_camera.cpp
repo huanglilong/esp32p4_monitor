@@ -197,7 +197,7 @@ bool PhoneAppCamera::_init_camera(void)
     _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
     if (_video_fd < 0) {
         ESP_LOGE(TAG, "Failed to open %s", EXAMPLE_CAM_DEV_PATH);
-        CameraDriver::instance().release();
+        _cleanup_camera_init();
         return false;
     }
 
@@ -206,8 +206,7 @@ bool PhoneAppCamera::_init_camera(void)
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(_video_fd, VIDIOC_G_FMT, &fmt) != 0) {
         ESP_LOGE(TAG, "VIDIOC_G_FMT failed");
-        ::close(_video_fd); _video_fd = -1;
-        CameraDriver::instance().release();
+        _cleanup_camera_init();
         return false;
     }
 
@@ -226,9 +225,7 @@ bool PhoneAppCamera::_init_camera(void)
     _cam_buffer = heap_caps_aligned_alloc(128, _cam_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!_cam_buffer) {
         ESP_LOGE(TAG, "Failed to allocate camera buffer (%zu bytes)", _cam_buf_size);
-        ::close(_video_fd);
-        _video_fd = -1;
-        CameraDriver::instance().release();
+        _cleanup_camera_init();
         return false;
     }
     memset(_cam_buffer, 0x00, _cam_buf_size);
@@ -240,42 +237,49 @@ bool PhoneAppCamera::_init_camera(void)
     req.memory = V4L2_MEMORY_MMAP;
     if (ioctl(_video_fd, VIDIOC_REQBUFS, &req) != 0) {
         ESP_LOGE(TAG, "VIDIOC_REQBUFS failed");
-        free(_cam_buffer); _cam_buffer = nullptr;
-        ::close(_video_fd); _video_fd = -1;
-        CameraDriver::instance().release();
+        _cleanup_camera_init();
         return false;
     }
     _v4l2_buf_count = req.count;
     ESP_LOGI(TAG, "V4L2 buffers allocated: %" PRIu32, _v4l2_buf_count);
 
     /* Map and enqueue each buffer */
-    for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
+    bool buffers_ok = true;
+    for (uint32_t i = 0; i < _v4l2_buf_count && buffers_ok; i++) {
         struct v4l2_buffer buf = {};
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
         if (ioctl(_video_fd, VIDIOC_QUERYBUF, &buf) != 0) {
             ESP_LOGE(TAG, "VIDIOC_QUERYBUF[%" PRIu32 "] failed", i);
-            goto fail;
+            buffers_ok = false;
+            break;
         }
         _v4l2_buffers[i] = (uint8_t *)mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
                                              MAP_SHARED, _video_fd, buf.m.offset);
         if (_v4l2_buffers[i] == MAP_FAILED) {
             ESP_LOGE(TAG, "mmap[%" PRIu32 "] failed", i);
             _v4l2_buffers[i] = nullptr;
-            goto fail;
+            buffers_ok = false;
+            break;
         }
         _v4l2_buf_len[i] = buf.length;
         if (ioctl(_video_fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG, "VIDIOC_QBUF[%" PRIu32 "] failed", i);
-            goto fail;
+            buffers_ok = false;
+            break;
         }
+    }
+    if (!buffers_ok) {
+        _cleanup_camera_init();
+        return false;
     }
 
     /* Start streaming */
     if (ioctl(_video_fd, VIDIOC_STREAMON, &stream_type) != 0) {
         ESP_LOGE(TAG, "VIDIOC_STREAMON failed");
-        goto fail;
+        _cleanup_camera_init();
+        return false;
     }
 
     _cam_running = true;
@@ -285,8 +289,11 @@ bool PhoneAppCamera::_init_camera(void)
     s_detect_pub = orb_advertise(ORB_ID(detection_result));
 
     return true;
+}
 
-fail:
+/* Helper: clean up partial camera init state on failure. */
+void PhoneAppCamera::_cleanup_camera_init(void)
+{
     for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
         if (_v4l2_buffers[i]) {
             munmap(_v4l2_buffers[i], _v4l2_buf_len[i]);
@@ -296,7 +303,7 @@ fail:
     free(_cam_buffer); _cam_buffer = nullptr;
     ::close(_video_fd); _video_fd = -1;
     CameraDriver::instance().release();
-    return false;
+    example_video_deinit();
 }
 
 bool PhoneAppCamera::_deinit_camera(void)
