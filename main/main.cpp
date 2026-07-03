@@ -170,6 +170,32 @@ void shared_mdns_release(void)
     if (mtx) xSemaphoreGive(mtx);
 }
 
+void shared_mdns_update_delegate_ip(void)
+{
+    SemaphoreHandle_t mtx = _mdns_mutex_get();
+    if (mtx) xSemaphoreTake(mtx, portMAX_DELAY);
+
+    if (!s_mdns_initialized || strcmp(s_mdns_unique_hostname, "esp-web") == 0) {
+        if (mtx) xSemaphoreGive(mtx);
+        return;
+    }
+
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info;
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK &&
+        ip_info.ip.addr != 0) {
+        static mdns_ip_addr_t s_delegate_addr = {};
+        s_delegate_addr.addr.u_addr.ip4 = ip_info.ip;
+        s_delegate_addr.addr.type = ESP_IPADDR_TYPE_V4;
+        s_delegate_addr.next = NULL;
+        mdns_delegate_hostname_set_address(s_mdns_unique_hostname, &s_delegate_addr);
+        ESP_LOGI(TAG, "mDNS delegate: %s.local → " IPSTR,
+                 s_mdns_unique_hostname, IP2STR(&ip_info.ip));
+    }
+
+    if (mtx) xSemaphoreGive(mtx);
+}
+
 /* Forward declarations */
 static void monitor_init_display(lv_display_t **disp);
 static void monitor_init_brookesia(lv_display_t *disp);

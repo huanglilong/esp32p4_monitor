@@ -10,6 +10,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "example_config.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -978,6 +979,8 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
+        /* Update mDNS delegated hostname IP now that WiFi has an address */
+        shared_mdns_update_delegate_ip();
     }
 }
 

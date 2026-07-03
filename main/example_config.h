@@ -61,6 +61,7 @@ extern "C" {
  * never call mdns_free() directly. */
 bool shared_mdns_ensure(void);
 void shared_mdns_release(void);
+void shared_mdns_update_delegate_ip(void);
 
 /* Returns the unique mDNS hostname (e.g. "esp-web-a1b2c3").
  * Valid after shared_mdns_ensure() has been called. */

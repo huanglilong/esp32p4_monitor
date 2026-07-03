@@ -10,6 +10,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "camera_stream.hpp"
+#include "example_config.h"
 #include "uorb.h"
 #include "topics.h"
 #include <cstring>
@@ -364,5 +365,7 @@ void PhoneAppCameraStream::_wifi_event_handler(void *arg, esp_event_base_t event
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)event_data;
         snprintf(app->_wifi_ip, sizeof(app->_wifi_ip), IPSTR, IP2STR(&evt->ip_info.ip));
         ESP_LOGI(TAG, "WiFi got IP: %s", app->_wifi_ip);
+        /* Update mDNS delegated hostname IP now that WiFi has an address */
+        shared_mdns_update_delegate_ip();
     }
 }
