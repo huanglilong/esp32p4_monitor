@@ -42,7 +42,8 @@ AudioDriver::AudioDriver() :
     _codec_handle(nullptr),
     _codec_mic_handle(nullptr),
     _rx_handle(nullptr),
-    _tx_handle(nullptr)
+    _tx_handle(nullptr),
+    _vol_pub(ORB_ADVERT_INVALID)
 {
     _lifecycle_mutex = xSemaphoreCreateMutex();
 }
@@ -275,17 +276,14 @@ void AudioDriver::set_volume(int volume)
     }
 
     /* Publish volume_state via uORB for cross-module notification */
-    {
-        static orb_advert_t vol_pub = ORB_ADVERT_INVALID;
-        if (vol_pub < 0) {
-            vol_pub = orb_advertise(ORB_ID(volume_state));
-        }
-        if (vol_pub >= 0) {
-            struct volume_state_s vs = {};
-            vs.timestamp = esp_timer_get_time();
-            vs.volume = volume;
-            orb_publish(ORB_ID(volume_state), vol_pub, &vs);
-        }
+    if (_vol_pub < 0) {
+        _vol_pub = orb_advertise(ORB_ID(volume_state));
+    }
+    if (_vol_pub >= 0) {
+        struct volume_state_s vs = {};
+        vs.timestamp = esp_timer_get_time();
+        vs.volume = volume;
+        orb_publish(ORB_ID(volume_state), _vol_pub, &vs);
     }
 }
 

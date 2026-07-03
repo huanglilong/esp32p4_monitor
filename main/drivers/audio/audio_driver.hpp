@@ -13,6 +13,7 @@
 #include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "uorb.h"
 
 class AudioDriver {
 public:
@@ -70,4 +71,6 @@ private:
     esp_codec_dev_handle_t  _codec_mic_handle;
     i2s_chan_handle_t        _rx_handle;
     i2s_chan_handle_t        _tx_handle;
+
+    orb_advert_t            _vol_pub;    /* uORB volume_state publisher handle */
 };
