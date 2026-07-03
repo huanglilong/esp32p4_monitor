@@ -106,15 +106,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: EdgeInsets.only(bottom: 16),
                     child: LinearProgressIndicator(),
                   ),
-                ..._state.devices.map(
-                  (device) => DeviceCard(
-                    device: device,
-                    isConnected: _state.connectedDevice?.id == device.id,
-                    isConnecting: _state.isConnecting,
-                    onConnect: () => _connectToDevice(device),
-                    onConnectWeb: () => _connectToDeviceWeb(device),
-                  ),
-                ),
+                ..._buildDeviceSections(_state),
               ],
             ),
           );
@@ -217,6 +209,89 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  List<Widget> _buildDeviceSections(AppState state) {
+    final scanned = state.devices.where((d) => d.isFromScan).toList();
+    final historical = state.devices.where((d) => !d.isFromScan).toList();
+    final widgets = <Widget>[];
+
+    if (scanned.isNotEmpty) {
+      widgets.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            children: [
+              Icon(Icons.wifi_find, size: 18, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 6),
+              Text(
+                'Scanned Devices',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${scanned.length}',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      for (final device in scanned) {
+        widgets.add(_buildDeviceCard(device, state));
+      }
+    }
+
+    if (historical.isNotEmpty) {
+      if (scanned.isNotEmpty) {
+        widgets.add(const Divider(height: 32));
+      }
+      widgets.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            children: [
+              Icon(Icons.history, size: 18, color: Colors.grey[500]),
+              const SizedBox(width: 6),
+              Text(
+                'History',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: Colors.grey[600],
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${historical.length}',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Colors.grey[500],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      for (final device in historical) {
+        widgets.add(_buildDeviceCard(device, state));
+      }
+    }
+
+    return widgets;
+  }
+
+  Widget _buildDeviceCard(Esp32Device device, AppState state) {
+    return DeviceCard(
+      device: device,
+      isConnected: state.connectedDevice?.id == device.id,
+      isConnecting: state.isConnecting,
+      onConnect: () => _connectToDevice(device),
+      onConnectWeb: () => _connectToDeviceWeb(device),
     );
   }
 }

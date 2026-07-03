@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'dart:convert';
@@ -107,19 +108,30 @@ class AppState extends ChangeNotifier {
     if (_isDiscovering) return;
     await _loadSavedConnectedDevices();
     _isDiscovering = true;
+    // Mark all existing devices as not from current scan
+    for (int i = 0; i < _devices.length; i++) {
+      _devices[i] = _devices[i].copyWith(isFromScan: false);
+    }
     notifyListeners();
 
     _discovery
         .startDiscovery()
         .listen(
           (device) {
-            final prioritize = _savedConnectedDeviceIds.contains(device.id);
-            if (_upsertDevice(device, prioritize: prioritize)) {
+            // Newly discovered devices are from scan
+            final scanDevice = device.copyWith(isFromScan: true);
+            if (_upsertDevice(scanDevice)) {
               notifyListeners();
             }
+            // Check reachability in background
+            _checkReachability(scanDevice);
           },
           onDone: () {
             _isDiscovering = false;
+            // Check reachability for all historical devices too
+            for (final d in _devices.where((d) => !d.isFromScan)) {
+              _checkReachability(d);
+            }
             notifyListeners();
           },
         );
@@ -131,10 +143,12 @@ class AppState extends ChangeNotifier {
       host: host,
       port: port,
       id: '$host:$port',
+      isFromScan: true,
     );
     if (_upsertDevice(device)) {
       notifyListeners();
     }
+    _checkReachability(device);
   }
 
   Future<void> _loadSavedConnectedDevices() {
@@ -144,7 +158,9 @@ class AppState extends ChangeNotifier {
         var changed = false;
         for (final device in devices) {
           _savedConnectedDeviceIds.add(device.id);
-          changed = _upsertDevice(device) || changed;
+          // Saved devices are historical (not from current scan)
+          final histDevice = device.copyWith(isFromScan: false);
+          changed = _upsertDevice(histDevice) || changed;
         }
         if (changed && !_disposed) notifyListeners();
       } catch (e) {
@@ -153,24 +169,69 @@ class AppState extends ChangeNotifier {
     }();
   }
 
-  bool _upsertDevice(Esp32Device device, {bool prioritize = false}) {
+  /// Check if a device is reachable by attempting a TCP connection.
+  /// Tries port 80 first (camera), then 8080 (web config).
+  Future<void> _checkReachability(Esp32Device device) async {
+    bool reachable = false;
+    try {
+      final socket = await Socket.connect(
+        device.host,
+        80,
+        timeout: const Duration(seconds: 2),
+      );
+      socket.destroy();
+      reachable = true;
+    } catch (_) {
+      // Port 80 failed, try 8080
+      try {
+        final socket = await Socket.connect(
+          device.host,
+          8080,
+          timeout: const Duration(seconds: 2),
+        );
+        socket.destroy();
+        reachable = true;
+      } catch (_) {
+        reachable = false;
+      }
+    }
+
+    final index = _devices.indexWhere((d) => d.id == device.id);
+    if (index >= 0 && _devices[index].isReachable != reachable) {
+      _devices[index] = _devices[index].copyWith(isReachable: reachable);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  bool _upsertDevice(Esp32Device device) {
     final index = _devices.indexWhere((d) => d.id == device.id);
     if (index < 0) {
-      if (prioritize) {
-        _devices.insert(0, device);
-      } else {
-        _devices.add(device);
-      }
+      _devices.add(device);
+      _sortDevices();
       return true;
     }
 
-    _devices[index] = device;
-    if (prioritize && index != 0) {
-      _devices
-        ..removeAt(index)
-        ..insert(0, device);
-    }
+    // Merge: preserve isFromScan=true if either existing or new is from scan
+    final existing = _devices[index];
+    final merged = existing.copyWith(
+      isFromScan: existing.isFromScan || device.isFromScan,
+      isReachable: device.isReachable,
+    );
+    _devices[index] = merged;
+    _sortDevices();
     return true;
+  }
+
+  /// Sort devices: newly scanned first, then historical (saved) devices.
+  /// Within each group, maintain insertion order.
+  void _sortDevices() {
+    _devices.sort((a, b) {
+      // Newly scanned devices come first
+      if (a.isFromScan != b.isFromScan) {
+        return a.isFromScan ? -1 : 1;
+      }
+      return 0;
+    });
   }
 
   // ── Logging ──
@@ -203,7 +264,7 @@ class AppState extends ChangeNotifier {
       await _httpService.connect(device);
       await _deviceStore.saveConnectedDevice(device);
       _savedConnectedDeviceIds.add(device.id);
-      _upsertDevice(device, prioritize: true);
+      _upsertDevice(device);
       _addLog('Connected to ${device.name}');
       // Fetch camera info on connect (may fail on headless boards — non-fatal)
       try {
@@ -280,7 +341,7 @@ class AppState extends ChangeNotifier {
       await _httpService.connectWeb(device);
       await _deviceStore.saveConnectedDevice(device);
       _savedConnectedDeviceIds.add(device.id);
-      _upsertDevice(device, prioritize: true);
+      _upsertDevice(device);
       _addLog('Web connected to ${device.name}');
     } catch (e) {
       _connectionError = e.toString();

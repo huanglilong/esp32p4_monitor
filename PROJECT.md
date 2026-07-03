@@ -587,6 +587,8 @@ GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 | 功能 | 说明 |
 |------|------|
 | **设备发现** | mDNS + HTTP 子网扫描 |
+| **设备排序** | 新扫描设备优先，历史设备在后，分区显示 |
+| **设备状态** | Connected/Reachable/Offline/History 徽章 (TCP 端口探测) |
 | **Camera 实时预览** | MJPEG 流解码 (端口 81) |
 | **Settings 配置** | WiFi/音量/Camera Stream 开关 + 恢复出厂设置 |
 | **音频录制** | 调用 8080 API 远程录制 MP3 到 SD 卡 |

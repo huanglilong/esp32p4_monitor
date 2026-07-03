@@ -124,6 +124,8 @@
 | S81 | **example_video_init VFS 泄漏修复** | `esp_video_init()` 失败时强制调用 `esp_video_deinit()` 清理部分注册的 VFS 设备（如 video20），防止后续 `example_video_init()` 永远失败 | ✅ |
 | S82 | **main.cpp nothrow 分配** | 所有 `new` 分配改为 `new(std::nothrow)` 防止 OOM 时 `std::bad_alloc` 崩溃（ESP-IDF 禁用 C++ 异常） | ✅ |
 | S83 | **example_video_init VFS 强制清理重试** | `esp_video_init()` 失败时用 `esp_vfs_unregister()` 强制注销残留 `video20`，然后重试一次，修复因前次会话残留导致的永久失败 | ✅ |
+| S84 | **Flutter 设备列表排序** | 新扫描设备排在前面，历史（已保存）设备排在后面，分区显示 "Scanned Devices" / "History" 标题 | ✅ |
+| S85 | **Flutter 设备可达性状态** | 设备卡片显示状态徽章：Connected(绿) / Reachable(蓝) / Offline(橙) / History(灰)，TCP 端口 80/8080 探测 | ✅ |
 
 ---
 
@@ -244,7 +246,7 @@
 
 | 日期 | 变更 |
 |------|------|
-| 2026-07-03 | +S72~S83 线程安全与稳定性修复: mDNS引用计数/互斥, eTaskGetState竞态→handle检查, PhoneAppCamera帧撕裂, CameraStream原子启动, COCODetect nothrow, cJSON_Print NULL检查, AudioDriver volume线程安全, detector/model_ready atomic, example_video_init VFS泄漏/强制清理重试, main.cpp nothrow分配 |
+| 2026-07-04 | +S84 S85 Flutter 设备列表排序 (新扫描优先/历史在后) + 设备可达性状态徽章 (Connected/Reachable/Offline/History) |
 | 2026-07-03 | +S68 mDNS 双主机名: 保留 `esp-web` 便捷名 + 新增 `esp-web-XXXXXX` 委托主机名（MAC后3字节），单设备零配置 + 多设备精确定位 |
 | 2026-07-03 | +S50~S56 线程安全与性能修复: CameraStream 竞态, CameraDriver 互斥, uORB publish 锁优化, AudioDriver publisher 线程安全, PhoneAppCamera 帧缓冲同步, CameraStream 检测结果互斥, Web 音频操作互斥 |
 | 2026-07-03 | +S57 **CameraStream VFS 设备泄漏修复**: `_deinit_video()` 未调用 `example_video_deinit()` 导致 "video20" 设备未注销；`_init_video()` 早返 / fail 路径同样缺少；`goto fail` 跨初始化编译错误已修复 |

@@ -44,11 +44,20 @@ class DeviceCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    device.name,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          device.name,
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _StatusBadge(device: device, isConnected: isConnected),
+                    ],
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -84,6 +93,53 @@ class DeviceCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Shows device reachability and scan/history status as a badge.
+class _StatusBadge extends StatelessWidget {
+  final Esp32Device device;
+  final bool isConnected;
+
+  const _StatusBadge({required this.device, required this.isConnected});
+
+  @override
+  Widget build(BuildContext context) {
+    if (isConnected) {
+      return _chip(Icons.link, 'Connected', Colors.green);
+    }
+
+    if (device.isReachable) {
+      return _chip(Icons.wifi, 'Reachable', Colors.blue);
+    }
+
+    // Not reachable — show as offline/historical
+    if (device.isFromScan) {
+      return _chip(Icons.wifi_off, 'Offline', Colors.orange);
+    }
+    return _chip(Icons.history, 'History', Colors.grey);
+  }
+
+  Widget _chip(IconData icon, String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withAlpha(80)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 3),
+          Text(
+            label,
+            style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600),
+          ),
+        ],
       ),
     );
   }
