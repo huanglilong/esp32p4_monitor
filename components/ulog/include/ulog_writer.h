@@ -8,7 +8,7 @@
  * Design:
  *   - Singleton, initialized once at boot.
  *   - Topics are registered via add_topic() with per-topic sampling intervals.
- *   - start() creates a new .ulg file and writes header/format/subscription sections.
+ *   - start() creates a new .ulog file and writes header/format/subscription sections.
  *   - A background task polls topics and writes DATA messages to a ring buffer.
  *   - A consumer periodically flushes the ring buffer to the SD card file.
  *   - stop() closes the file cleanly.
@@ -91,7 +91,7 @@ esp_err_t ulog_writer_add_topic(ulog_writer_t *writer, orb_id_t meta,
                                 uint32_t interval_ms);
 
 /**
- * Start logging — creates a new .ulg file and begins data collection.
+ * Start logging — creates a new .ulog file and begins data collection.
  *
  * @return ESP_OK on success
  */

@@ -21,9 +21,11 @@
 #include <cerrno>
 
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,6 +34,7 @@
 #include "esp_idf_version.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include <inttypes.h>
 
 static const char *TAG = "ULog";
 
@@ -45,14 +48,31 @@ static const char *TAG = "ULog";
 /** Maximum characters in a file path. */
 #define MAX_PATH    ULOG_MAX_PATH
 
-/** Max session number digits. */
-#define MAX_SESSION_NUM 999
-
 /** Log subdirectory under the SD card mount point. */
 #define LOG_DIR_NAME "log"
 
-/** File name format. */
-#define FILE_NAME_FMT "session_%03u.ulg"
+/** File name format: data_<uptime_us>_<idx>.ulog
+ *  date = esp_timer_get_time() (µs since boot, monotonic)
+ *  idx  = sequential counter, resets when date changes */
+#define FILE_NAME_FMT "data_%010llu_%03u.ulog"
+
+/** Default max ULog storage as percentage of SD card capacity. */
+#ifndef ULOG_MAX_CAPACITY_PCT
+#ifdef CONFIG_ULOG_MAX_CAPACITY_PCT
+#define ULOG_MAX_CAPACITY_PCT  CONFIG_ULOG_MAX_CAPACITY_PCT
+#else
+#define ULOG_MAX_CAPACITY_PCT  70
+#endif
+#endif
+
+/** Minimum retained session files. */
+#ifndef ULOG_MIN_KEEP_FILES
+#ifdef CONFIG_ULOG_MIN_KEEP_FILES
+#define ULOG_MIN_KEEP_FILES  CONFIG_ULOG_MIN_KEEP_FILES
+#else
+#define ULOG_MIN_KEEP_FILES  200
+#endif
+#endif
 
 #define MS_TO_US(ms)  ((ms) * 1000ULL)
 
@@ -213,8 +233,10 @@ static esp_err_t write_flag_bits(ulog_writer_t *writer);
 static esp_err_t write_info_messages(ulog_writer_t *writer);
 static esp_err_t write_format_messages(ulog_writer_t *writer);
 static esp_err_t write_subscription_messages(ulog_writer_t *writer);
-static void find_next_session(const char *dir, char *out_path, size_t out_size);
 static void ensure_log_dir(const char *dir);
+static void cleanup_and_get_next_name(const char *dir,
+                                      uint64_t *out_date, uint32_t *out_idx,
+                                      size_t *out_total, size_t size_limit);
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
@@ -287,13 +309,34 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Ensure log directory exists */
+    /* Ensure log directory exists, cleanup old files by capacity */
     char log_dir[MAX_PATH + 8];
     snprintf(log_dir, sizeof(log_dir), "%s/%s", writer->sd_mount_path, LOG_DIR_NAME);
     ensure_log_dir(log_dir);
 
-    /* Find next available session number */
-    find_next_session(log_dir, writer->filepath, sizeof(writer->filepath));
+    /* Compute ULog storage limit from SD card total capacity */
+    size_t size_limit = 512 * 1024;  /* fallback: 512 KB */
+    {
+        struct statvfs vfs;
+        if (statvfs(writer->sd_mount_path, &vfs) == 0) {
+            uint64_t total = (uint64_t)vfs.f_frsize * vfs.f_blocks;
+            size_limit = (size_t)(total * ULOG_MAX_CAPACITY_PCT / 100);
+        }
+    }
+
+    size_t total_size = 0;
+    uint64_t file_date;
+    uint32_t file_idx;
+    cleanup_and_get_next_name(log_dir, &file_date, &file_idx, &total_size, size_limit);
+
+    char full_path[MAX_PATH + 40];
+    snprintf(full_path, sizeof(full_path), "%s/" FILE_NAME_FMT,
+             log_dir, (unsigned long long)file_date, (unsigned int)file_idx);
+    strlcpy(writer->filepath, full_path, sizeof(writer->filepath));
+
+    ESP_LOGI(TAG, "ULog storage: %u KB / %u KB limit (%d%% of SD)",
+             (unsigned)(total_size / 1024), (unsigned)(size_limit / 1024),
+             ULOG_MAX_CAPACITY_PCT);
 
     /* Open the file */
     writer->fd = open(writer->filepath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -727,23 +770,105 @@ static void ensure_log_dir(const char *dir)
     }
 }
 
-static void find_next_session(const char *dir, char *out_path, size_t out_size)
-{
-    unsigned int session_num = 1;
-    char test_path[MAX_PATH + 32]; /* extra space for path + filename */
+/** File entry for cleanup sorting.
+ *  Sorted by (date, idx) — both extracted from filename. */
+struct ulog_file_entry {
+    char     path[MAX_PATH + 40];
+    uint64_t date;   /**< From filename: esp_timer_get_time() at creation */
+    uint32_t idx;    /**< From filename: sequential counter */
+    off_t    size;   /**< File size (bytes) */
+};
 
-    for (; session_num <= MAX_SESSION_NUM; session_num++) {
-        snprintf(test_path, sizeof(test_path), "%s/" FILE_NAME_FMT, dir, session_num);
-        struct stat st;
-        if (stat(test_path, &st) != 0) {
-            /* File doesn't exist, use this name */
-            strlcpy(out_path, test_path, out_size);
-            return;
+/**
+ * Comparator for sorting files by (date, idx) — oldest first.
+ */
+static int cmp_mtime(const void *a, const void *b)
+{
+    const auto *fa = (const ulog_file_entry *)a;
+    const auto *fb = (const ulog_file_entry *)b;
+    if (fa->date < fb->date) return -1;
+    if (fa->date > fb->date) return  1;
+    /* Same date: lower idx is older */
+    if (fa->idx < fb->idx) return -1;
+    if (fa->idx > fb->idx) return  1;
+    return 0;
+}
+
+/**
+ * Scan .ulog files, parse (date, idx) from filename "data_<date>_<idx>.ulog",
+ * sort oldest-first by (date, idx), and delete oldest until total size ≤ limit.
+ *
+ * @param out_date   Next file's date (esp_timer_get_time() / 1000000)
+ * @param out_idx    Next file's idx = max(existing idxs) + 1, or 0 if none
+ * @param out_total  Total size after cleanup
+ * @param size_limit Max allowed total size in bytes (computed from SD capacity)
+ */
+static void cleanup_and_get_next_name(const char *dir,
+                                      uint64_t *out_date, uint32_t *out_idx,
+                                      size_t *out_total, size_t size_limit)
+{
+    ulog_file_entry files[256];
+    int count = 0;
+    size_t total = 0;
+    uint32_t max_idx = 0;
+
+    uint64_t now_date = (uint64_t)(esp_timer_get_time() / 1000000ULL);
+
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d)) != NULL && count < 256) {
+            const char *name = ent->d_name;
+            size_t nl = strlen(name);
+            if (nl < 6) continue;
+            if (strcmp(name + nl - 5, ".ulog") != 0) continue;
+            snprintf(files[count].path, sizeof(files[count].path),
+                     "%s/%s", dir, name);
+
+            /* Parse (date, idx) from "data_<date>_<idx>.ulog" */
+            unsigned long long parsed_date;
+            unsigned int parsed_idx;
+            if (sscanf(name, "data_%llu_%u.ulog", &parsed_date, &parsed_idx) == 2) {
+                files[count].date = (uint64_t)parsed_date;
+                files[count].idx  = (uint32_t)parsed_idx;
+            } else {
+                files[count].date = 0;
+                files[count].idx  = 0;
+            }
+
+            struct stat st;
+            if (stat(files[count].path, &st) == 0) {
+                files[count].size = st.st_size;
+                total += (size_t)st.st_size;
+
+                if (files[count].idx >= max_idx) {
+                    max_idx = files[count].idx + 1;
+                }
+            }
+            count++;
         }
+        closedir(d);
     }
 
-    /* All slots taken, overwrite the oldest (session_001) */
-    snprintf(test_path, sizeof(test_path), "%s/" FILE_NAME_FMT, dir, 1);
-    strlcpy(out_path, test_path, out_size);
-    ESP_LOGW(TAG, "Max sessions reached, overwriting %s", out_path);
+    *out_total = total;
+    *out_date = now_date;
+    *out_idx  = max_idx;
+
+    /* Nothing to clean up? */
+    if (count <= (int)ULOG_MIN_KEEP_FILES) return;
+
+    /* Sort oldest first by (date, idx) */
+    qsort(files, (size_t)count, sizeof(files[0]), cmp_mtime);
+
+    /* Delete oldest until under capacity, respecting floor */
+    int floor = (int)ULOG_MIN_KEEP_FILES;
+    struct stat st;
+    for (int i = 0; i < count - floor && total > size_limit; i++) {
+        if (stat(files[i].path, &st) != 0) continue;
+        if (unlink(files[i].path) == 0) {
+            total -= (size_t)st.st_size;
+            ESP_LOGI(TAG, "ULog cleanup: removed %s (%d KB)",
+                     files[i].path, (int)(st.st_size / 1024));
+        }
+    }
 }
