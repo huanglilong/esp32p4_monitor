@@ -105,6 +105,12 @@ esp_err_t example_video_init(void)
     return ESP_OK;
 
 failed_2:
+    /* esp_video_init() may have partially registered VFS devices (e.g. video20)
+     * before failing.  Its internal s_video_device_inited_flags may not reflect
+     * this partial state, so a subsequent esp_video_deinit() call would skip
+     * cleanup.  Force a full deinit here to unregister any leftover VFS devices,
+     * ensuring the next example_video_init() can succeed. */
+    esp_video_deinit();
 #if EXAMPLE_MIPI_CSI_XCLK_PIN > 0
     esp_cam_sensor_xclk_stop(s_xclk_handle);
 failed_1:
