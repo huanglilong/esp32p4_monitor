@@ -52,12 +52,14 @@ extern "C" {
 /* SD Card */
 #define SDMMC_MOUNT_POINT     "/sdcard"
 
-/* Shared mDNS initialization guard.
- * Both CameraStream and web_config_server call mdns_init().
- * The second caller must skip mdns_init()/netbiosns_init() since
- * the first already initialized them. Use shared_mdns_ensure()
- * instead of calling mdns_init() directly. */
+/* Shared mDNS initialization guard with reference counting.
+ * Both CameraStream and web_config_server use mDNS.
+ * - shared_mdns_ensure() increments ref count; first caller inits mDNS.
+ * - shared_mdns_release() decrements ref count; last caller deinits mDNS.
+ * Individual modules should only add/remove their own services,
+ * never call mdns_free() directly. */
 bool shared_mdns_ensure(void);
+void shared_mdns_release(void);
 
 /* Returns the unique mDNS hostname (e.g. "esp-web-a1b2c3").
  * Valid after shared_mdns_ensure() has been called. */

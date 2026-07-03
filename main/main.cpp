@@ -71,17 +71,43 @@ static void _build_mdns_hostnames(void)
 }
 
 /*============================================================================
- * Shared mDNS initialization guard.
- * Both CameraStream and web_config_server may call mdns_init().
- * Only the first call should succeed; subsequent calls skip re-init.
- * Use shared_mdns_ensure() instead of calling mdns_init() directly.
+ * Shared mDNS initialization guard with reference counting.
+ * Both CameraStream and web_config_server use mDNS.
+ * - shared_mdns_ensure() increments the ref count; first caller inits mDNS.
+ * - shared_mdns_release() decrements the ref count; last caller deinits mDNS.
+ * Individual modules should only add/remove their own services, never call
+ * mdns_free() directly.
  *============================================================================*/
-static bool s_shared_mdns_initialized = false;
+static SemaphoreHandle_t s_mdns_mutex = NULL;
+static int  s_mdns_refcount = 0;
+static bool s_mdns_initialized = false;
+
+/* Create the mutex lazily on first call.  Safe because shared_mdns_ensure()
+ * is called before FreeRTOS scheduler starts (from main) or from the first
+ * task that needs mDNS.  If called concurrently, the worst case is two
+ * mutexes are created and one leaks — but that's better than a data race. */
+static SemaphoreHandle_t _mdns_mutex_get(void)
+{
+    if (!s_mdns_mutex) {
+        s_mdns_mutex = xSemaphoreCreateMutex();
+    }
+    return s_mdns_mutex;
+}
 
 bool shared_mdns_ensure(void)
 {
-    if (s_shared_mdns_initialized) return true;
-    if (mdns_init() != ESP_OK) return false;
+    SemaphoreHandle_t mtx = _mdns_mutex_get();
+    if (mtx) xSemaphoreTake(mtx, portMAX_DELAY);
+
+    if (s_mdns_initialized) {
+        s_mdns_refcount++;
+        if (mtx) xSemaphoreGive(mtx);
+        return true;
+    }
+    if (mdns_init() != ESP_OK) {
+        if (mtx) xSemaphoreGive(mtx);
+        return false;
+    }
 
     _build_mdns_hostnames();
 
@@ -98,9 +124,32 @@ bool shared_mdns_ensure(void)
     netbiosns_init();
     netbiosns_set_name(s_mdns_unique_hostname);
 
-    s_shared_mdns_initialized = true;
+    s_mdns_initialized = true;
+    s_mdns_refcount = 1;
     ESP_LOGI(TAG, "mDNS: %s.local (primary) + esp-web.local (alias)", s_mdns_unique_hostname);
+
+    if (mtx) xSemaphoreGive(mtx);
     return true;
+}
+
+void shared_mdns_release(void)
+{
+    SemaphoreHandle_t mtx = _mdns_mutex_get();
+    if (mtx) xSemaphoreTake(mtx, portMAX_DELAY);
+
+    if (!s_mdns_initialized) {
+        if (mtx) xSemaphoreGive(mtx);
+        return;
+    }
+    s_mdns_refcount--;
+    if (s_mdns_refcount <= 0) {
+        mdns_free();
+        s_mdns_initialized = false;
+        s_mdns_refcount = 0;
+        ESP_LOGI(TAG, "mDNS: fully deinitialized (last user released)");
+    }
+
+    if (mtx) xSemaphoreGive(mtx);
 }
 
 /* Forward declarations */
@@ -147,21 +196,21 @@ static void monitor_init_brookesia(lv_display_t *disp)
 {
     bsp_display_lock(0);
 
-    ESP_Brookesia_Phone *phone = new ESP_Brookesia_Phone(disp);
+    ESP_Brookesia_Phone *phone = new (std::nothrow) ESP_Brookesia_Phone(disp);
     ESP_BROOKESIA_CHECK_NULL_EXIT(phone, "Create phone failed");
 
     ESP_Brookesia_PhoneStylesheet_t *stylesheet = nullptr;
     if ((BSP_LCD_H_RES == 1024) && (BSP_LCD_V_RES == 600)) {
-        stylesheet = new ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET());
+        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET());
         ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     } else if ((BSP_LCD_H_RES == 800) && (BSP_LCD_V_RES == 480)) {
-        stylesheet = new ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_480_DARK_STYLESHEET());
+        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_480_DARK_STYLESHEET());
         ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     } else if ((BSP_LCD_H_RES == 480) && (BSP_LCD_V_RES == 480)) {
-        stylesheet = new ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_480_480_DARK_STYLESHEET());
+        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_480_480_DARK_STYLESHEET());
         ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     } else if ((BSP_LCD_H_RES == 800) && (BSP_LCD_V_RES == 1280)) {
-        stylesheet = new ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_1280_DARK_STYLESHEET());
+        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_1280_DARK_STYLESHEET());
         ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     }
 
@@ -183,23 +232,23 @@ static void monitor_init_brookesia(lv_display_t *disp)
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_squareline, "Create app squareline failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_squareline) >= 0), "Install app squareline failed");
 
-    PhoneAppCamera *app_camera = new PhoneAppCamera(false, false);
+    PhoneAppCamera *app_camera = new (std::nothrow) PhoneAppCamera(false, false);
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_camera, "Create camera app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_camera) >= 0), "Install camera app failed");
 
-    PhoneAppAudio *app_audio = new PhoneAppAudio(false, false);
+    PhoneAppAudio *app_audio = new (std::nothrow) PhoneAppAudio(false, false);
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_audio, "Create audio app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_audio) >= 0), "Install audio app failed");
 
-    PhoneAppMusic *app_music = new PhoneAppMusic(false, false);
+    PhoneAppMusic *app_music = new (std::nothrow) PhoneAppMusic(false, false);
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_music, "Create music app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_music) >= 0), "Install music app failed");
 
-    PhoneAppSettings *app_settings = new PhoneAppSettings(false, false);
+    PhoneAppSettings *app_settings = new (std::nothrow) PhoneAppSettings(false, false);
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_settings, "Create settings app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_settings) >= 0), "Install settings app failed");
 
-    PhoneAppCameraStream *app_cam_stream = new PhoneAppCameraStream(false, false);
+    PhoneAppCameraStream *app_cam_stream = new (std::nothrow) PhoneAppCameraStream(false, false);
     ESP_BROOKESIA_CHECK_NULL_EXIT(app_cam_stream, "Create camera stream app failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_cam_stream) >= 0), "Install camera stream app failed");
 
