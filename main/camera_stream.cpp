@@ -146,8 +146,22 @@ bool CameraStream::start(void)
 {
     if (_running) return true;
 
+    /* Claim camera hardware via CameraDriver BEFORE setting _running.
+     * This ensures cross-module mutual exclusion from the earliest point. */
+    if (!CameraDriver::instance().claim()) {
+        ESP_LOGW(TAG, "Camera hardware in use, cannot start stream");
+        return false;
+    }
+
+    /* Set _running early to prevent concurrent start() calls.
+     * Resources are allocated below; if init fails, we clear _running
+     * and release the claim. */
+    _running = true;
+
     if (!_init_video()) {
         ESP_LOGE(TAG, "Video init failed");
+        _running = false;
+        CameraDriver::instance().release();
         return false;
     }
 
@@ -158,7 +172,9 @@ bool CameraStream::start(void)
     if (!_start_http_server()) {
         ESP_LOGE(TAG, "HTTP server init failed");
         _deinit_video();
-        // _deinit_detection is called in stop()
+        _deinit_detection();
+        _running = false;
+        CameraDriver::instance().release();
         return false;
     }
 
@@ -170,13 +186,6 @@ bool CameraStream::start(void)
     _fps_total_bytes = 0;
     clock_gettime(CLOCK_MONOTONIC, &_fps_window_start);
 
-    _running = true;
-
-    /* Claim camera hardware via CameraDriver for cross-module mutual exclusion.
-     * Allows PeripheralManager::camera_available() and other modules to detect
-     * that the camera hardware is in use. */
-    CameraDriver::instance().claim();
-
     ESP_LOGI(TAG, "Stream started → http://esp-web.local/stream (port 81)");
     return true;
 }
@@ -185,7 +194,10 @@ void CameraStream::stop(void)
 {
     if (!_running) return;
 
-    _running = false;
+    /* Keep _running=true until all resources are torn down.
+     * This prevents concurrent access to partially-freed resources
+     * (e.g., HTTP handler reading _v4l2_bufs while we munmap them).
+     * The HTTP server stop ensures no new requests arrive. */
 
     /* Release camera hardware via CameraDriver */
     CameraDriver::instance().release();
@@ -194,6 +206,9 @@ void CameraStream::stop(void)
     _deinit_mdns();
     _deinit_detection();
     _deinit_video();
+
+    /* Now safe to clear _running — all resources are freed */
+    _running = false;
 
     ESP_LOGI(TAG, "Stream stopped");
 }
