@@ -174,14 +174,20 @@ bool PhoneAppCamera::_init_camera(void)
 {
     int stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    /* Guard: CameraStream must not be running (V4L2 /dev/video0 is exclusive) */
-    if (CameraStream::instance().isRunning()) {
-        ESP_LOGW(TAG, "Camera Stream active, cannot open Camera App");
+    /* Claim camera hardware via CameraDriver FIRST, before any V4L2 operations.
+     * This ensures atomic check-and-claim (no TOCTOU gap with CameraStream).
+     * CameraStream::start() also claims before setting _running=true. */
+    if (!CameraDriver::instance().claim()) {
+        ESP_LOGW(TAG, "Camera hardware in use, cannot open Camera App");
         return false;
     }
 
     /* Init video pipeline (CSI + ISP) via esp_video. Safe to call multiple times. */
-    ESP_RETURN_ON_FALSE(example_video_init() == ESP_OK, false, TAG, "example_video_init failed");
+    if (example_video_init() != ESP_OK) {
+        ESP_LOGE(TAG, "example_video_init failed");
+        CameraDriver::instance().release();
+        return false;
+    }
 
     /* Reduce sensor frame rate from 50fps → ~10fps (VTS: 984→4920).
      * ISP DMA: ~32 MB/s → ~6.4 MB/s. */
@@ -191,6 +197,7 @@ bool PhoneAppCamera::_init_camera(void)
     _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
     if (_video_fd < 0) {
         ESP_LOGE(TAG, "Failed to open %s", EXAMPLE_CAM_DEV_PATH);
+        CameraDriver::instance().release();
         return false;
     }
 
@@ -200,6 +207,7 @@ bool PhoneAppCamera::_init_camera(void)
     if (ioctl(_video_fd, VIDIOC_G_FMT, &fmt) != 0) {
         ESP_LOGE(TAG, "VIDIOC_G_FMT failed");
         ::close(_video_fd); _video_fd = -1;
+        CameraDriver::instance().release();
         return false;
     }
 
@@ -220,6 +228,7 @@ bool PhoneAppCamera::_init_camera(void)
         ESP_LOGE(TAG, "Failed to allocate camera buffer (%zu bytes)", _cam_buf_size);
         ::close(_video_fd);
         _video_fd = -1;
+        CameraDriver::instance().release();
         return false;
     }
     memset(_cam_buffer, 0x00, _cam_buf_size);
@@ -233,6 +242,7 @@ bool PhoneAppCamera::_init_camera(void)
         ESP_LOGE(TAG, "VIDIOC_REQBUFS failed");
         free(_cam_buffer); _cam_buffer = nullptr;
         ::close(_video_fd); _video_fd = -1;
+        CameraDriver::instance().release();
         return false;
     }
     _v4l2_buf_count = req.count;
@@ -271,9 +281,6 @@ bool PhoneAppCamera::_init_camera(void)
     _cam_running = true;
     ESP_LOGI(TAG, "V4L2 camera pipeline started (%" PRIu32 "x%" PRIu32 ")", _cam_width, _cam_height);
 
-    /* Claim camera hardware via CameraDriver */
-    CameraDriver::instance().claim();
-
     /* Advertise detection_result topic */
     s_detect_pub = orb_advertise(ORB_ID(detection_result));
 
@@ -288,6 +295,7 @@ fail:
     }
     free(_cam_buffer); _cam_buffer = nullptr;
     ::close(_video_fd); _video_fd = -1;
+    CameraDriver::instance().release();
     return false;
 }
 
