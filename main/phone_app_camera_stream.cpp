@@ -90,6 +90,12 @@ bool PhoneAppCameraStream::close(void)
     esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                   _wifi_event_handler);
 
+    /* Unsubscribe from fps_stats uORB topic */
+    if (s_fps_sub >= 0) {
+        orb_unsubscribe(s_fps_sub);
+        s_fps_sub = -1;
+    }
+
     /* Clean up timer */
     if (_timer) {
         lv_timer_delete(_timer);
