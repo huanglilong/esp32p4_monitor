@@ -1221,7 +1221,7 @@ static void web_config_task(void *arg)
         mdns_service_add("ESP32-WebConfig", "_http", "_tcp", WEB_CONFIG_PORT,
                          txt, sizeof(txt) / sizeof(txt[0]));
         s_mdns_running = true;
-        ESP_LOGI(TAG, "mDNS: %s.local:%d (primary) + esp-web.local:%d (alias)", shared_mdns_hostname(), WEB_CONFIG_PORT, WEB_CONFIG_PORT);
+        ESP_LOGI(TAG, "mDNS: esp-web.local:%d + %s.local:%d", WEB_CONFIG_PORT, shared_mdns_hostname(), WEB_CONFIG_PORT);
     } else {
         ESP_LOGW(TAG, "mDNS init failed");
     }

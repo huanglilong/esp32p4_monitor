@@ -32,6 +32,7 @@
 #include "mdns.h"
 #include "lwip/apps/netbiosns.h"
 #include "esp_mac.h"
+#include "esp_netif.h"
 #include "ulog_writer.h"
 
 static const char *TAG = "monitor";
@@ -75,17 +76,14 @@ static void _build_mdns_hostnames(void)
  * Both CameraStream and web_config_server use mDNS.
  * - shared_mdns_ensure() increments the ref count; first caller inits mDNS.
  * - shared_mdns_release() decrements the ref count; last caller deinits mDNS.
- * Individual modules should only add/remove their own services, never call
- * mdns_free() directly.
+ *
+ * MUST be called after WiFi is connected and has an IP address,
+ * otherwise the delegated unique hostname won't resolve.
  *============================================================================*/
 static SemaphoreHandle_t s_mdns_mutex = NULL;
 static int  s_mdns_refcount = 0;
 static bool s_mdns_initialized = false;
 
-/* Create the mutex lazily on first call.  Safe because shared_mdns_ensure()
- * is called before FreeRTOS scheduler starts (from main) or from the first
- * task that needs mDNS.  If called concurrently, the worst case is two
- * mutexes are created and one leaks — but that's better than a data race. */
 static SemaphoreHandle_t _mdns_mutex_get(void)
 {
     if (!s_mdns_mutex) {
@@ -111,22 +109,42 @@ bool shared_mdns_ensure(void)
 
     _build_mdns_hostnames();
 
-    /* Primary hostname: unique per device — SRV records use this name,
-     * so discovery clients (Flutter app) always get a stable identifier. */
-    mdns_hostname_set(s_mdns_unique_hostname);
+    /* Primary hostname: "esp-web" — convenient for single-device use.
+     * In multi-device networks, mDNS conflict resolution appends a
+     * suffix (e.g. esp-web-2), but the unique delegated hostname
+     * below always resolves deterministically. */
+    mdns_hostname_set("esp-web");
 
-    /* Delegated hostname: "esp-web" — convenient alias for single-device
-     * scenarios.  NULL address = auto-detect from netif. */
+    /* Delegated hostname: "esp-web-XXXXXX" — unique per device.
+     * Unlike the primary hostname, this never conflicts.
+     * Get the current WiFi STA IP and associate it with the delegate,
+     * so both hostnames resolve to this device. */
     if (strcmp(s_mdns_unique_hostname, "esp-web") != 0) {
-        mdns_delegate_hostname_add("esp-web", NULL);
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        esp_netif_ip_info_t ip_info;
+        if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK &&
+            ip_info.ip.addr != 0) {
+            static mdns_ip_addr_t s_delegate_addr = {};
+            s_delegate_addr.addr.u_addr.ip4 = ip_info.ip;
+            s_delegate_addr.addr.type = ESP_IPADDR_TYPE_V4;
+            s_delegate_addr.next = NULL;
+            mdns_delegate_hostname_add(s_mdns_unique_hostname, &s_delegate_addr);
+            ESP_LOGI(TAG, "mDNS: esp-web.local + %s.local → " IPSTR,
+                     s_mdns_unique_hostname, IP2STR(&ip_info.ip));
+        } else {
+            mdns_delegate_hostname_add(s_mdns_unique_hostname, NULL);
+            ESP_LOGW(TAG, "mDNS: esp-web.local + %s.local (no IP yet, delegate may not resolve)",
+                     s_mdns_unique_hostname);
+        }
+    } else {
+        ESP_LOGI(TAG, "mDNS: esp-web.local");
     }
 
     netbiosns_init();
-    netbiosns_set_name(s_mdns_unique_hostname);
+    netbiosns_set_name("esp-web");
 
     s_mdns_initialized = true;
     s_mdns_refcount = 1;
-    ESP_LOGI(TAG, "mDNS: %s.local (primary) + esp-web.local (alias)", s_mdns_unique_hostname);
 
     if (mtx) xSemaphoreGive(mtx);
     return true;

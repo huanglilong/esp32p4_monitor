@@ -1001,7 +1001,7 @@ void CameraStream::_init_mdns(void)
     }
 
     _mdns_running = true;
-    ESP_LOGI(TAG, "mDNS: %s.local (primary) + esp-web.local (alias)", shared_mdns_hostname());
+    ESP_LOGI(TAG, "mDNS: esp-web.local + %s.local", shared_mdns_hostname());
 }
 
 void CameraStream::_deinit_mdns(void)

@@ -56,6 +56,7 @@ extern "C" {
  * Both CameraStream and web_config_server use mDNS.
  * - shared_mdns_ensure() increments ref count; first caller inits mDNS.
  * - shared_mdns_release() decrements ref count; last caller deinits mDNS.
+ * MUST be called after WiFi is connected (delegated hostname needs IP).
  * Individual modules should only add/remove their own services,
  * never call mdns_free() directly. */
 bool shared_mdns_ensure(void);
