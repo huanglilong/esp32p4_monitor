@@ -6,6 +6,7 @@
 #include "dl_detect_define.hpp"
 #include <time.h>
 #include <list>
+#include <atomic>
 
 class COCODetect;  // Forward declaration
 
@@ -76,13 +77,13 @@ public:
     static constexpr int   FPS_LOG_INTERVAL_S = 2;  /* Log FPS every 2s */
 
     /* Detection — inline, no separate task/buffer needed */
-    COCODetect             * volatile _detector;          /* Cross-task: loader writes, handler reads */
+    std::atomic<COCODetect *>   _detector;          /* Cross-task: loader writes, handler reads */
     uint8_t                      *_detect_in_buf;   /* Copy buffer for inference */
     uint32_t                      _detect_in_size;
     std::list<dl::detect::result_t> _detect_results;
     SemaphoreHandle_t            _detect_mutex;     /* Protects _detect_results + _detect_available */
     mutable bool                 _detect_available;   /* Non-volatile: same task */
-    volatile bool                _model_ready;         /* Model loaded and ready for inference (cross-task: loader→handler) */
+    std::atomic<bool>            _model_ready;         /* Model loaded and ready for inference (cross-task: loader→handler) */
     TaskHandle_t                 _model_load_task;     /* Background task that loads the model */
     static constexpr float       PERSON_SCORE_THRESHOLD = 0.35f;
     static constexpr int         DETECT_INTERVAL_FRAMES = 3;
@@ -119,7 +120,7 @@ private:
     httpd_handle_t         _httpd_81;          // Port 81: MJPEG stream
 
     /* State */
-    volatile bool          _running;
+    std::atomic<bool>          _running;
 
     /* mDNS */
     bool                   _mdns_running;
