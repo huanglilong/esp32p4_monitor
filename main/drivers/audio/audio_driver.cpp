@@ -267,10 +267,10 @@ void AudioDriver::set_volume(int volume)
 {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
-    _volume = volume;
 
     if (_codec_handle && _codec_mutex &&
         xSemaphoreTake(_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _volume = volume;  /* Store inside mutex for thread safety */
         esp_codec_dev_set_out_vol(_codec_handle, volume);
         xSemaphoreGive(_codec_mutex);
     }
