@@ -6,8 +6,10 @@
 
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_vfs.h"
 #include "example_video_common.h"
 #include "esp_cam_sensor_xclk.h"
+#include "esp_video_device.h"
 
 /* Forward-declare BSP I2C handle getter (provided by Waveshare BSP component).
  * We avoid including bsp/esp-bsp.h here to keep the component self-contained. */
@@ -106,11 +108,37 @@ esp_err_t example_video_init(void)
 
 failed_2:
     /* esp_video_init() may have partially registered VFS devices (e.g. video20)
-     * before failing.  Its internal s_video_device_inited_flags may not reflect
-     * this partial state, so a subsequent esp_video_deinit() call would skip
-     * cleanup.  Force a full deinit here to unregister any leftover VFS devices,
-     * ensuring the next example_video_init() can succeed. */
+     * before failing, but s_video_device_inited_flags may not reflect this
+     * partial state.  esp_video_deinit() checks that flag and skips cleanup.
+     *
+     * A common scenario: a previous session registered video20 but
+     * example_video_deinit() was never called (crash, early return, etc.),
+     * or esp_video_deinit() failed because the V4L2 fd was still open.
+     * This leaves video20 in the VFS, causing all future init attempts to
+     * fail with "Failed to register video VFS dev name=video20".
+     *
+     * Recovery: force-unregister the stale VFS device by name, then retry
+     * esp_video_init().  We use esp_vfs_unregister() directly since
+     * esp_video_deinit() may not clean it up due to its internal flag state. */
+    ESP_LOGW(TAG, "esp_video_init failed, attempting VFS cleanup and retry...");
+    {
+        char vfs_path[16];
+        snprintf(vfs_path, sizeof(vfs_path), "/dev/video%d", ESP_VIDEO_ISP1_DEVICE_ID);
+        esp_err_t vfs_ret = esp_vfs_unregister(vfs_path);
+        if (vfs_ret == ESP_OK) {
+            ESP_LOGW(TAG, "Unregistered stale VFS device %s", vfs_path);
+        }
+    }
+    /* Also try esp_video_deinit() to clean up any other partial state */
     esp_video_deinit();
+
+    ret = esp_video_init(cam_config_ptr);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "esp_video_init retry succeeded after VFS cleanup");
+        s_is_init = true;
+        return ESP_OK;
+    }
+    ESP_LOGE(TAG, "esp_video_init retry also failed (0x%x)", ret);
 #if EXAMPLE_MIPI_CSI_XCLK_PIN > 0
     esp_cam_sensor_xclk_stop(s_xclk_handle);
 failed_1:
