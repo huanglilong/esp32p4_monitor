@@ -658,8 +658,15 @@ void PhoneAppSettings::_nvs_save_timer_cb(lv_timer_t *timer)
     PhoneAppSettings *app = (PhoneAppSettings *)timer->user_data;
     if (!app || !app->_nvs_dirty) return;
     app->_nvs_dirty = false;
-    app->setNvsParam(NVS_KEY_VOLUME, app->_nvs_param_map[NVS_KEY_VOLUME]);
-    app->setNvsParam(NVS_KEY_BRIGHTNESS, app->_nvs_param_map[NVS_KEY_BRIGHTNESS]);
+    /* Batch both writes in a single NVS open/close session
+     * (avoids 2x flash access overhead from separate setNvsParam calls). */
+    nvs_handle_t nvs_h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_h) == ESP_OK) {
+        nvs_set_i32(nvs_h, NVS_KEY_VOLUME, app->_nvs_param_map[NVS_KEY_VOLUME]);
+        nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, app->_nvs_param_map[NVS_KEY_BRIGHTNESS]);
+        nvs_commit(nvs_h);
+        nvs_close(nvs_h);
+    }
 }
 
 /*============================================================================
