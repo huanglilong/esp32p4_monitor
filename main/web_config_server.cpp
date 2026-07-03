@@ -16,6 +16,7 @@
 #include "web_config_server.hpp"
 #include "peripherals.hpp"
 #include "sdkconfig.h"
+#include "example_config.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -106,14 +107,13 @@ static volatile bool    s_playing = false;
 
 /* Mutex to serialize audio operations across concurrent HTTP handlers.
  * Without this, two clients hitting /api/record and /api/play simultaneously
- * could corrupt s_is_recording, s_asp, s_shine, etc. */
+ * could corrupt s_is_recording, s_asp, s_shine, etc.
+ * Created at task startup (not lazily) to avoid a race between two handlers
+ * both seeing s_audio_mutex == NULL and creating separate mutexes. */
 static SemaphoreHandle_t s_audio_mutex = NULL;
 
 static void audio_lock(void)
 {
-    if (!s_audio_mutex) {
-        s_audio_mutex = xSemaphoreCreateMutex();
-    }
     if (s_audio_mutex) {
         xSemaphoreTake(s_audio_mutex, portMAX_DELAY);
     }
@@ -151,8 +151,15 @@ static void audio_task(void *arg)
     int16_t *buf = (int16_t *)calloc(1, REC_BUF_BYTES);
     if (!buf) { s_audio_running = false; s_audio_task = NULL; vTaskDelete(NULL); return; }
     while (s_audio_running) {
+        /* Guard: if audio driver was deinitialized (e.g., by PhoneAppAudio::close()),
+         * rx_handle() returns nullptr and i2s_channel_read would crash. */
+        i2s_chan_handle_t rx = PeripheralManager::instance().rx_handle();
+        if (!rx) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
         size_t n = 0;
-        if (i2s_channel_read(PeripheralManager::instance().rx_handle(), buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(100)) != ESP_OK || n == 0) continue;
+        if (i2s_channel_read(rx, buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(100)) != ESP_OK || n == 0) continue;
         int32_t spc = n / (2 * sizeof(int16_t));
         if (s_is_recording && s_pcm_buf && s_shine) {
             for (int32_t i = 0; i < spc; i++) {
@@ -173,15 +180,59 @@ static void audio_task(void *arg)
 }
 
 /*============================================================================
- * NVS Helpers
+ * NVS Helpers — with RAM cache for frequently-read integer keys.
+ *
+ * Inspired by PX4's layered parameter system: read from RAM cache (O(1)),
+ * fall through to NVS on cache miss, and invalidate on write.
+ * This avoids ~1ms flash access per nvs_get_i32_def() call.
  *============================================================================*/
+
+/** Cached NVS integer entry. */
+typedef struct {
+    const char *key;
+    int32_t     value;
+    bool        valid;    /* true after first read from NVS */
+} nvs_cache_entry_t;
+
+#define NVS_CACHE_MAX 8
+static nvs_cache_entry_t s_nvs_cache[NVS_CACHE_MAX];
+static int s_nvs_cache_count;
+
+/** Find or create a cache slot for the given key. Returns slot index, or -1. */
+static int nvs_cache_find(const char *key)
+{
+    for (int i = 0; i < s_nvs_cache_count; i++) {
+        if (strcmp(s_nvs_cache[i].key, key) == 0) return i;
+    }
+    if (s_nvs_cache_count < NVS_CACHE_MAX) {
+        int i = s_nvs_cache_count++;
+        s_nvs_cache[i].key   = key;
+        s_nvs_cache[i].valid = false;
+        return i;
+    }
+    return -1;
+}
+
 static int32_t nvs_get_i32_def(const char *key, int32_t def)
 {
+    /* Check RAM cache first (O(1), no flash access) */
+    int ci = nvs_cache_find(key);
+    if (ci >= 0 && s_nvs_cache[ci].valid) {
+        return s_nvs_cache[ci].value;
+    }
+
+    /* Cache miss: read from NVS */
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return def;
     int32_t val = def;
     nvs_get_i32(h, key, &val);
     nvs_close(h);
+
+    /* Populate cache */
+    if (ci >= 0) {
+        s_nvs_cache[ci].value = val;
+        s_nvs_cache[ci].valid = true;
+    }
     return val;
 }
 
@@ -192,6 +243,13 @@ static void nvs_set_i32(const char *key, int32_t value)
     nvs_set_i32(h, key, value);
     nvs_commit(h);
     nvs_close(h);
+
+    /* Update cache (write-through) */
+    int ci = nvs_cache_find(key);
+    if (ci >= 0) {
+        s_nvs_cache[ci].value = value;
+        s_nvs_cache[ci].valid = true;
+    }
 }
 
 static void nvs_get_str(const char *key, char *out, size_t max_len)
@@ -729,6 +787,11 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "Factory reset requested! Erasing NVS settings...");
 
+    /* Invalidate RAM cache — all cached values are stale */
+    for (int i = 0; i < s_nvs_cache_count; i++) {
+        s_nvs_cache[i].valid = false;
+    }
+
     /* Erase all keys in the "settings" namespace */
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
@@ -880,15 +943,28 @@ static esp_err_t h_list(httpd_req_t *req) {
     return ESP_OK;
 }
 
-/* URL-decode %XX sequences in-place */
+/* URL-decode %XX sequences in-place.
+ * Validates hex digits: non-hex characters after '%' are left as-is. */
+static int _hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    c = c & 0xDF;  /* toupper */
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;     /* not a hex digit */
+}
+
 static void _url_decode(char *s) {
     char *r = s, *w = s;
     while (*r) {
         if (r[0] == '%' && r[1] && r[2]) {
-            int hi = r[1] >= 'A' ? (r[1] & 0xDF) - 'A' + 10 : r[1] - '0';
-            int lo = r[2] >= 'A' ? (r[2] & 0xDF) - 'A' + 10 : r[2] - '0';
-            *w++ = (char)((hi << 4) | lo);
-            r += 3;
+            int hi = _hex_digit(r[1]);
+            int lo = _hex_digit(r[2]);
+            if (hi >= 0 && lo >= 0) {
+                *w++ = (char)((hi << 4) | lo);
+                r += 3;
+            } else {
+                /* Invalid hex — copy '%' literally and continue */
+                *w++ = *r++;
+            }
         } else *w++ = *r++;
     }
     *w = '\0';
@@ -963,6 +1039,10 @@ static void web_config_task(void *arg)
     if (s_wifi_state_sub < 0) {
         s_wifi_state_sub = orb_subscribe(ORB_ID(wifi_state));
     }
+
+    /* Create audio mutex BEFORE any HTTP handlers can run.
+     * Avoids race where two handlers lazily create separate mutexes. */
+    s_audio_mutex = xSemaphoreCreateMutex();
 
     /* Wait for WiFi connection before starting HTTP server.
      * LWIP TCPIP mbox is only valid after netif is up. */
@@ -1057,12 +1137,8 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_cors_reset);
 
     /* mDNS: advertise web config on the local network */
-    if (mdns_init() == ESP_OK) {
-        mdns_hostname_set("esp-web");
+    if (shared_mdns_ensure()) {
         mdns_instance_name_set("esp-web-config");
-
-        netbiosns_init();
-        netbiosns_set_name("esp-web");
 
         mdns_txt_item_t txt[] = {
             {(char *)"board", (char *)CONFIG_IDF_TARGET},
@@ -1100,6 +1176,10 @@ static void web_config_task(void *arg)
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
+    }
+    if (s_audio_mutex) {
+        vSemaphoreDelete(s_audio_mutex);
+        s_audio_mutex = NULL;
     }
     s_task_handle = NULL;
     vTaskDelete(NULL);
