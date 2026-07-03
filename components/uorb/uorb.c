@@ -220,6 +220,11 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
         return -1;
     }
 
+    /* Lock only to find the topic and snapshot subscriber indices.
+     * Queue operations (xQueueOverwrite/xQueueSend) are FreeRTOS
+     * thread-safe, so we don't need to hold the lock during delivery.
+     * This dramatically reduces contention for high-frequency topics
+     * (e.g., fps_stats published every frame). */
     lock();
     int t_idx = topic_find(meta);
     if (t_idx < 0) {
@@ -228,10 +233,24 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
     }
 
     orb_topic_reg_t *topic = &s_topics[t_idx];
+    int n_subs = topic->num_subscribers;
+    int sub_indices[ORB_MAX_SUBSCRIBERS];
+    for (int i = 0; i < n_subs && i < ORB_MAX_SUBSCRIBERS; i++) {
+        sub_indices[i] = topic->sub_indices[i];
+    }
+    unlock();
+
     const bool overwrite = (meta->o_depth == 1);
 
-    for (int i = 0; i < topic->num_subscribers; i++) {
-        int s_idx = topic->sub_indices[i];
+    /* Deliver to subscribers lock-free (queue ops are thread-safe).
+     * Note: a subscriber could unsubscribe between our snapshot and
+     * delivery, but s_subs[] entries are never reclaimed (only marked
+     * inactive with topic_idx=-1), so the queue handle is still valid
+     * or NULL. xQueueOverwrite/Send on a deleted queue is harmless
+     * because vQueueDelete happens only after orb_unsubscribe() returns. */
+    for (int i = 0; i < n_subs; i++) {
+        int s_idx = sub_indices[i];
+        if (s_idx < 0 || s_idx >= s_num_subs) continue;
         QueueHandle_t q = s_subs[s_idx].queue;
         if (q == NULL) {
             continue;
@@ -246,7 +265,6 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
         }
     }
 
-    unlock();
     return 0;
 }
 
