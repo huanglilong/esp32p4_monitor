@@ -31,6 +31,7 @@
 #include "example_config.h"
 #include "mdns.h"
 #include "lwip/apps/netbiosns.h"
+#include "esp_mac.h"
 
 static const char *TAG = "monitor";
 
@@ -38,9 +39,41 @@ static const char *TAG = "monitor";
 bool g_has_lcd = false;
 
 /*============================================================================
+ * mDNS hostnames:
+ *   Primary:   "esp-web-XXXXXX"   — unique per device (MAC suffix), always
+ *                                   resolves deterministically.  This is the
+ *                                   hostname advertised in SRV records, so
+ *                                   Flutter app discovery always sees a stable,
+ *                                   unique name.
+ *   Delegated: "esp-web"           — convenient alias for single-device use.
+ *                                   In multi-device networks this may conflict
+ *                                   and get auto-renamed by mDNS (e.g. esp-web-2),
+ *                                   but the primary hostname above is always stable.
+ *============================================================================*/
+static char s_mdns_unique_hostname[24] = {0};
+
+const char *shared_mdns_hostname(void)
+{
+    return s_mdns_unique_hostname;
+}
+
+static void _build_mdns_hostnames(void)
+{
+    uint8_t mac[6];
+    if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+        snprintf(s_mdns_unique_hostname, sizeof(s_mdns_unique_hostname),
+                 "esp-web-%02x%02x%02x", mac[3], mac[4], mac[5]);
+    } else {
+        /* Fallback: use generic name if MAC read fails (should not happen) */
+        strlcpy(s_mdns_unique_hostname, "esp-web", sizeof(s_mdns_unique_hostname));
+    }
+}
+
+/*============================================================================
  * Shared mDNS initialization guard.
  * Both CameraStream and web_config_server may call mdns_init().
  * Only the first call should succeed; subsequent calls skip re-init.
+ * Use shared_mdns_ensure() instead of calling mdns_init() directly.
  *============================================================================*/
 static bool s_shared_mdns_initialized = false;
 
@@ -48,12 +81,24 @@ bool shared_mdns_ensure(void)
 {
     if (s_shared_mdns_initialized) return true;
     if (mdns_init() != ESP_OK) return false;
-    mdns_hostname_set("esp-web");
+
+    _build_mdns_hostnames();
+
+    /* Primary hostname: unique per device — SRV records use this name,
+     * so discovery clients (Flutter app) always get a stable identifier. */
+    mdns_hostname_set(s_mdns_unique_hostname);
+
+    /* Delegated hostname: "esp-web" — convenient alias for single-device
+     * scenarios.  NULL address = auto-detect from netif. */
+    if (strcmp(s_mdns_unique_hostname, "esp-web") != 0) {
+        mdns_delegate_hostname_add("esp-web", NULL);
+    }
 
     netbiosns_init();
-    netbiosns_set_name("esp-web");
+    netbiosns_set_name(s_mdns_unique_hostname);
 
     s_shared_mdns_initialized = true;
+    ESP_LOGI(TAG, "mDNS: %s.local (primary) + esp-web.local (alias)", s_mdns_unique_hostname);
     return true;
 }
 

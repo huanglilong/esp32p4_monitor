@@ -56,7 +56,8 @@
 │  ESP-IDF simple_video_server                │
 │  · Port 80: API (camera_info, capture, cfg) │
 │  · Port 81: MJPEG stream (/stream)          │
-│  · mDNS: esp-web.local (_http._tcp)         │
+│  · mDNS: esp-web-XXXXXX.local (primary)      │
+│           esp-web.local (alias)               │
 └─────────────────────────────────────────────┘
 ```
 

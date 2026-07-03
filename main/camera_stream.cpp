@@ -194,7 +194,7 @@ bool CameraStream::start(void)
     _fps_total_bytes = 0;
     clock_gettime(CLOCK_MONOTONIC, &_fps_window_start);
 
-    ESP_LOGI(TAG, "Stream started → http://esp-web.local/stream (port 81)");
+    ESP_LOGI(TAG, "Stream started → http://%s.local/stream (port 81)", shared_mdns_hostname());
     return true;
 }
 
@@ -992,7 +992,7 @@ void CameraStream::_init_mdns(void)
     }
 
     _mdns_running = true;
-    ESP_LOGI(TAG, "mDNS: esp-web.local (NetBIOS: esp-web)");
+    ESP_LOGI(TAG, "mDNS: %s.local (primary) + esp-web.local (alias)", shared_mdns_hostname());
 }
 
 void CameraStream::_deinit_mdns(void)

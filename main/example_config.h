@@ -59,6 +59,10 @@ extern "C" {
  * instead of calling mdns_init() directly. */
 bool shared_mdns_ensure(void);
 
+/* Returns the unique mDNS hostname (e.g. "esp-web-a1b2c3").
+ * Valid after shared_mdns_ensure() has been called. */
+const char *shared_mdns_hostname(void);
+
 #ifdef __cplusplus
 }
 #endif

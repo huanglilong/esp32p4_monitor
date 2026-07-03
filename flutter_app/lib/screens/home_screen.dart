@@ -167,7 +167,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _ipController,
           decoration: const InputDecoration(
             labelText: 'Hostname or IP',
-            hintText: 'esp-web.local or 192.168.1.100',
+            hintText: 'esp-web.local or esp-web-XXXXXX.local',
             border: OutlineInputBorder(),
           ),
           keyboardType: TextInputType.url,

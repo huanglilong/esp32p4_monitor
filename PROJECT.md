@@ -465,7 +465,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 **Camera Stream 功能**:
 - 通过 WiFi 将摄像头画面以 MJPEG 格式推流到 HTTP (port 81)
 - 参考 `simple_video_server` 项目, 使用 V4L2 + `esp_new_jpeg` SW 编码器
-- mDNS: `esp-web.local`
+- mDNS: `esp-web-XXXXXX.local` (primary, unique per device) + `esp-web.local` (convenient alias)
 - 启动条件: Toggle ON + WiFi 已连接 + Settings App 运行中
 - 自动停止: Toggle OFF / WiFi 断开 / 退出 Settings App
 - **不持久化**: 重启后默认 OFF

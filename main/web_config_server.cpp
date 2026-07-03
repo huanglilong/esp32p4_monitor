@@ -6,7 +6,7 @@
  * All settings are persisted to NVS namespace "settings".
  *
  * Serves on port 8080 on both boards (coexists with CameraStream port 80/81).
- * Advertised via mDNS as esp-web.local (shared hostname with CameraStream).
+ * Advertised via mDNS as <hostname>.local (unique per device, shared with CameraStream).
  *
  * Assumption: NVS already contains WiFi SSID/password.
  * The device must already be connected to a network before the web UI
@@ -1147,7 +1147,7 @@ static void web_config_task(void *arg)
         mdns_service_add("ESP32-WebConfig", "_http", "_tcp", WEB_CONFIG_PORT,
                          txt, sizeof(txt) / sizeof(txt[0]));
         s_mdns_running = true;
-        ESP_LOGI(TAG, "mDNS: esp-web.local:%d (NetBIOS: esp-web)", WEB_CONFIG_PORT);
+        ESP_LOGI(TAG, "mDNS: %s.local:%d (primary) + esp-web.local:%d (alias)", shared_mdns_hostname(), WEB_CONFIG_PORT, WEB_CONFIG_PORT);
     } else {
         ESP_LOGW(TAG, "mDNS init failed");
     }
