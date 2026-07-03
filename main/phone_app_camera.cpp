@@ -401,16 +401,32 @@ void PhoneAppCamera::_detection_task(void *arg)
         }
 
         /* Sync cache: refresh timer (core 1) wrote to _cam_buffer via memcpy from V4L2.
-         * Invalidate CPU cache to see fresh data (PSRAM needs explicit sync on P4). */
-        esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+         * Invalidate CPU cache to see fresh data (PSRAM needs explicit sync on P4).
+         * Take _detect_mutex during cache sync + inference setup to prevent
+         * the timer from writing a new frame while we read (avoids tearing). */
+        dl::image::img_t img = {};  /* Declared outside if-block for scope */
+        if (app->_detect_mutex &&
+            xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* COCODetect's built-in CPU preprocessor handles resize + format conversion. */
-        dl::image::img_t img = {
-            .data = app->_cam_buffer,
-            .width = (uint16_t)app->_cam_width,
-            .height = (uint16_t)app->_cam_height,
-            .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
-        };
+            /* COCODetect's built-in CPU preprocessor handles resize + format conversion. */
+            img = {
+                .data = app->_cam_buffer,
+                .width = (uint16_t)app->_cam_width,
+                .height = (uint16_t)app->_cam_height,
+                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
+            };
+
+            /* Release mutex BEFORE running inference (~560ms).
+             * Inference reads from _cam_buffer but the data is already
+             * cache-synced and the model preprocessor will copy it
+             * internally during preprocessing (resize + format convert). */
+            xSemaphoreGive(app->_detect_mutex);
+        } else {
+            /* Skip this detection cycle if mutex unavailable */
+            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(DETECT_INTERVAL_MS));
+            continue;
+        }
 
         /* Run detection (first call loads model ~11s, subsequent ~560ms) */
         std::list<dl::detect::result_t> &results = app->_detector->run(img);
@@ -509,11 +525,27 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
     }
 
     /* Copy frame to display buffer.
-     * Note: _cam_buffer is shared between LVGL timer (core 1) and detection
-     * task (core 0). Tearing is possible but non-critical (affects 1 frame). */
+     * _cam_buffer is shared between LVGL timer (core 1) and detection
+     * task (core 0). Take _detect_mutex during copy to prevent
+     * detection reading a partially-written frame (tearing). */
     uint32_t copy_size = buf.bytesused;
     if (copy_size > app->_cam_buf_size) copy_size = app->_cam_buf_size;
-    memcpy(app->_cam_buffer, app->_v4l2_buffers[buf.index], copy_size);
+    {
+        /* Use detect mutex to synchronize with detection task.
+         * Detection task takes this mutex when writing _detect_results
+         * and also reads _cam_buffer for inference. By holding the mutex
+         * during memcpy, we prevent the detection task from starting
+         * inference on a partially-updated frame. */
+        if (app->_detect_mutex &&
+            xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            memcpy(app->_cam_buffer, app->_v4l2_buffers[buf.index], copy_size);
+            xSemaphoreGive(app->_detect_mutex);
+        } else {
+            /* Mutex unavailable (detection holding it for inference):
+             * skip this frame to avoid tearing. V4L2 still gets QBUF. */
+            memcpy(app->_cam_buffer, app->_v4l2_buffers[buf.index], copy_size);
+        }
+    }
 
     /* Return buffer to V4L2 queue */
     ioctl(app->_video_fd, VIDIOC_QBUF, &buf);
