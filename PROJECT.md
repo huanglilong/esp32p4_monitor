@@ -43,8 +43,18 @@ esp32p4_monitor/
 │   ├── Kconfig.projbuild           # 项目 Kconfig 菜单
 │   ├── example_config.h        # 引脚和参数宏定义
 │   ├── main.cpp                    # 主程序 (C++): 多板支持, 按需初始化
-│   ├── peripherals.hpp             # PeripheralManager facade — 统一外设管理
-│   ├── peripherals.cpp             # PeripheralManager 实现 (init/deinit/refcount/mutex)
+│   ├── peripherals.hpp             # PeripheralManager facade — 委托给独立 Driver 模块
+│   ├── peripherals.cpp             # PeripheralManager 实现 (thin facade)
+│   ├── drivers/                    # Driver 模块 (PX4-style 目录结构)
+│   │   ├── audio/
+│   │   │   ├── audio_driver.hpp    # AudioDriver — I2S + codec 生命周期 + volume uORB
+│   │   │   └── audio_driver.cpp
+│   │   ├── sdcard/
+│   │   │   ├── sdcard_driver.hpp   # SDCardDriver — SD 卡 mount/unmount + LDO
+│   │   │   └── sdcard_driver.cpp
+│   │   └── camera/
+│   │       ├── camera_driver.hpp   # CameraDriver — camera_state pub/sub + claim/release
+│   │       └── camera_driver.cpp
 │   ├── web_config_server.hpp       # Web 配置服务器头文件
 │   ├── web_config_server.cpp       # Web 配置服务器 (HTTP :8080, WiFi/音量设置)
 │   ├── phone_app_camera.hpp        # Camera App 头文件
@@ -133,9 +143,33 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 | `detection_result` | `detection_result_s` | 1 | NPU 检测 task | UI 绘图 timer |
 | `wifi_state` | `wifi_state_s` | 1 | Settings (wifi_scan) | Web Config, UI |
 | `audio_level` | `audio_level_s` | 1 | Audio task | UI 电平表 |
-| `camera_state` | `camera_state_s` | 1 | Camera App | Detection task |
+| `camera_state` | `camera_state_s` | 1 | CameraDriver | PeripheralManager, CameraStream, PhoneAppCamera |
 | `recording_state` | `recording_state_s` | 1 | Audio/Web task | UI 录制状态 |
-| `volume_state` | `volume_state_s` | 1 | Settings slider | Music Playback |
+| `volume_state` | `volume_state_s` | 1 | AudioDriver (via PeripheralManager) | Music Playback |
+
+## Driver 模块架构 (Phase 3 重构)
+
+PeripheralManager 从 monolithic facade 重构为 thin facade，外设逻辑拆分为独立 Driver 单例:
+
+```
+App 层 (Audio/Music/Camera/Settings/web_config)
+         ↓ 调用 (API 不变)
+PeripheralManager (thin facade)
+  ├── AudioDriver::instance()     — I2S + codec 生命周期 + volume uORB
+  ├── SDCardDriver::instance()    — SD mount/unmount + LDO power-cycle
+  └── CameraDriver::instance()    — camera_state pub/sub + claim/release
+```
+
+| Driver | 目录 | 职责 | 线程安全 |
+|--------|------|------|----------|
+| AudioDriver | `drivers/audio/` | I2S channel + ES8311/ES7210 codec init/deinit, volume/mic_gain/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
+| SDCardDriver | `drivers/sdcard/` | SDSPI mount/unmount, LDO VO4 power-cycle, refcount | lifecycle_mutex |
+| CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API | uORB pub/sub |
+
+**设计要点**:
+- PeripheralManager API 完全不变，app 模块无需修改
+- 各 Driver 可独立使用 (如 `AudioDriver::instance().set_volume(80)`)
+- CameraDriver 的 `claim()/release()` 替代了 CameraStream/PhoneAppCamera 中直接发布 camera_state uORB 的代码
 
 ## FreeRTOS 任务列表
 
@@ -235,8 +269,9 @@ app_main()
 
 > **注意**: SD 卡和音频 I2S 不再在 `app_main()` 中初始化, 而是由 Audio/Music App 在 `run()` 中按需初始化,
 >   在 `close()` 中释放。这减少了空闲时的 DMA 对 PSRAM 的占用, 降低因负载导致 crash 的风险。
->   **引用计数**: `monitor_init_sdcard()` / `monitor_init_audio()` 使用引用计数保证多次调用安全。
+>   **引用计数**: `PeripheralManager::init_sdcard()` / `init_audio()` 委托给 `SDCardDriver` / `AudioDriver`，使用引用计数保证多次调用安全。
 >   每次打开 App 引用计数 +1, 退出 -1, 只有计数归零才真正释放硬件资源。
+>   **Camera 互斥**: `CameraDriver::claim()/release()` 通过 uORB `camera_state` topic 实现跨模块互斥。
 
 
 ## 关键修改和问题解决

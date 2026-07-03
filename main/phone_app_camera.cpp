@@ -21,6 +21,7 @@ extern "C" {
 #include "uorb.h"
 #include "topics.h"
 #include "esp_timer.h"
+#include "camera_driver.hpp"
 
 #include <cstring>
 
@@ -30,7 +31,6 @@ static const char *TAG = "PhoneAppCamera";
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
 /* uORB publishers */
-static orb_advert_t s_camera_pub   = ORB_ADVERT_INVALID;
 static orb_advert_t s_detect_pub   = ORB_ADVERT_INVALID;
 
 PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
@@ -125,13 +125,8 @@ bool PhoneAppCamera::close(void)
         _refresh_timer = nullptr;
     }
 
-    /* Publish camera stopped state */
-    if (s_camera_pub >= 0) {
-        struct camera_state_s cs = {};
-        cs.timestamp = esp_timer_get_time();
-        cs.running   = false;
-        orb_publish(ORB_ID(camera_state), s_camera_pub, &cs);
-    }
+    /* Release camera hardware via CameraDriver */
+    CameraDriver::instance().release();
 
     /* Signal detection task to stop BEFORE deinit (avoid use-after-free) */
     _cam_running = false;
@@ -276,14 +271,8 @@ bool PhoneAppCamera::_init_camera(void)
     _cam_running = true;
     ESP_LOGI(TAG, "V4L2 camera pipeline started (%" PRIu32 "x%" PRIu32 ")", _cam_width, _cam_height);
 
-    /* Advertise camera_state topic */
-    s_camera_pub = orb_advertise(ORB_ID(camera_state));
-    if (s_camera_pub >= 0) {
-        struct camera_state_s state = {};
-        state.timestamp = esp_timer_get_time();
-        state.running   = true;
-        orb_publish(ORB_ID(camera_state), s_camera_pub, &state);
-    }
+    /* Claim camera hardware via CameraDriver */
+    CameraDriver::instance().claim();
 
     /* Advertise detection_result topic */
     s_detect_pub = orb_advertise(ORB_ID(detection_result));
