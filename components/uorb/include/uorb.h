@@ -32,9 +32,10 @@ extern "C" {
  * referenced with ORB_ID() from other files.
  */
 typedef struct orb_metadata {
-    const char *o_name;   /**< Unique topic name */
-    size_t      o_size;   /**< Size of the message struct (bytes) */
-    uint8_t     o_depth;  /**< Queue depth per subscriber (1 = latest-only) */
+    const char *o_name;     /**< Unique topic name */
+    const char *o_format;   /**< ULog format string (e.g. "topic:uint64_t field;float field2;") */
+    size_t      o_size;     /**< Size of the message struct (bytes) */
+    uint8_t     o_depth;    /**< Queue depth per subscriber (1 = latest-only) */
 } orb_metadata_t;
 
 typedef const orb_metadata_t *orb_id_t;
@@ -68,16 +69,18 @@ typedef int orb_sub_t;
 /**
  * Define a uORB topic (place in a .c file, e.g. topics.c).
  *
- * @param name     Topic identifier (used with ORB_ID())
- * @param msg_type C struct type of the message
- * @param depth    Queue depth per subscriber (1 = latest-only, discards old)
+ * @param name        Topic identifier (used with ORB_ID())
+ * @param msg_type    C struct type of the message
+ * @param depth       Queue depth per subscriber (1 = latest-only, discards old)
+ * @param format_str  ULog format string (e.g. "topic:uint64_t field;float field2;")
  */
-#define ORB_TOPIC_DEFINE(name, msg_type, depth)                            \
+#define ORB_TOPIC_DEFINE(name, msg_type, depth, format_str)                \
     extern const orb_metadata_t g_orb_meta_##name                          \
         __attribute__((used)) = {                                          \
-        .o_name  = #name,                                                  \
-        .o_size  = sizeof(msg_type),                                       \
-        .o_depth = (depth),                                                \
+        .o_name   = #name,                                                 \
+        .o_format = (format_str),                                          \
+        .o_size   = sizeof(msg_type),                                      \
+        .o_depth  = (depth),                                               \
     }
 
 /**

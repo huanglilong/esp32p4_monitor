@@ -115,6 +115,15 @@ esp32p4_monitor/
 | `espressif/gmf_audio` | ^1.0 | (间接依赖, 自动拉入) |
 | `espressif/gmf_io` | ^1.0 | (间接依赖, 自动拉入) |
 | `uorb` (自定义) | 1.0.0 | 本地组件 `components/uorb/` — uORB for FreeRTOS |
+| `ulog` (自定义) | 1.0.0 | 本地组件 `components/ulog/` — ULog 日志写入 (SD 卡) |
+
+## 兼容补丁
+
+`main/compat/` 目录存放第三方组件的兼容补丁，保持 `managed_components/` 不被修改：
+
+| 文件 | 目标组件 | 原因 |
+|------|----------|------|
+| `compat/mbedtls/sha256.h` | `espressif/esp-dl` | ESP-IDF v6.x (mbedtls 4.x) 将 `sha256.h` 移至 `mbedtls/private/`，esp-dl 尚未适配 |
 
 ## uORB 消息总线
 

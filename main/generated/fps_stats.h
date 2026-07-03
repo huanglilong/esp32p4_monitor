@@ -10,6 +10,8 @@
 
 #define ORB_QUEUE_LENGTH_FPS_STATS 3
 
+#define FPS_STATS_FORMAT_STR "fps_stats:uint64_t timestamp;uint32_t frame_count;uint32_t fps_total_bytes;float fps;"
+
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct fps_stats_s
 {

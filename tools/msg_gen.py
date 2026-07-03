@@ -155,16 +155,38 @@ def _include_guard_close(guard: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────
+#  ULog format string generation
+# ────────────────────────────────────────────────────────────
+
+def _format_string(spec: MsgSpec) -> str:
+    """
+    Generate the ULog format string for a topic.
+    Format: "topic_name:type0 name0;type1 name1;..."
+    Example: "fps_stats:uint64_t timestamp;uint32_t frame_count;float fps;"
+    """
+    parts = [f"{spec.topic_name}:"]
+    for f in spec.fields:
+        base = TYPE_MAP.get(f.type_raw, f.type_raw)
+        if f.array_len:
+            parts.append(f"{base}[{f.array_len}] {f.name};")
+        else:
+            parts.append(f"{base} {f.name};")
+    return ''.join(parts)
+
+
+# ────────────────────────────────────────────────────────────
 #  Per-topic header (*.h)
 # ────────────────────────────────────────────────────────────
 
 def _render_header(spec: MsgSpec) -> str:
     guard = _guard_name(spec.topic_name)
+    fmt_str = _format_string(spec)
     lines = [_license_header(),
              _include_guard_open(guard),
              '#include <cstdint>\n',
              '#include <cstddef>\n\n',
              f'#define ORB_QUEUE_LENGTH_{spec.topic_name.upper()} {spec.queue_depth}\n\n',
+             f'#define {spec.topic_name.upper()}_FORMAT_STR "{fmt_str}"\n\n',
              '// NOLINTNEXTLINE(modernize-use-using)\n'
              f'typedef struct {spec.topic_name}_s\n'
              '{\n',
@@ -194,6 +216,7 @@ def _render_header(spec: MsgSpec) -> str:
 # ────────────────────────────────────────────────────────────
 
 def _render_source(spec: MsgSpec) -> str:
+    fmt_str = _format_string(spec)
     lines = [
         _license_header(),
         f'#include "{spec.topic_name}.h"\n',
@@ -202,7 +225,7 @@ def _render_source(spec: MsgSpec) -> str:
 
     for topic in spec.all_topic_names:
         lines.append(
-            f'ORB_TOPIC_DEFINE({topic}, {spec.topic_name}_s, {spec.queue_depth});\n'
+            f'ORB_TOPIC_DEFINE({topic}, {spec.topic_name}_s, {spec.queue_depth}, "{fmt_str}");\n'
         )
 
     return ''.join(lines)

@@ -9,6 +9,7 @@ ORB_TOPIC_DECLARE(camera_state);
 ORB_TOPIC_DECLARE(detection_result);
 ORB_TOPIC_DECLARE(fps_stats);
 ORB_TOPIC_DECLARE(recording_state);
+ORB_TOPIC_DECLARE(ulog_state);
 ORB_TOPIC_DECLARE(volume_state);
 ORB_TOPIC_DECLARE(wifi_state);
 
@@ -18,6 +19,7 @@ static const struct orb_metadata *const s_topics[ORB_TOPICS_COUNT] = {
     ORB_ID(detection_result),
     ORB_ID(fps_stats),
     ORB_ID(recording_state),
+    ORB_ID(ulog_state),
     ORB_ID(volume_state),
     ORB_ID(wifi_state),
 };

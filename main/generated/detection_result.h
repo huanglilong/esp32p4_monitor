@@ -10,6 +10,8 @@
 
 #define ORB_QUEUE_LENGTH_DETECTION_RESULT 1
 
+#define DETECTION_RESULT_FORMAT_STR "detection_result:uint64_t timestamp;int32_t person_count;"
+
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct detection_result_s
 {

@@ -17,6 +17,7 @@
 #include "generated/camera_state.h"
 #include "generated/recording_state.h"
 #include "generated/volume_state.h"
+#include "generated/ulog_state.h"
 
 #include "uorb.h"
 
@@ -34,3 +35,4 @@ ORB_TOPIC_DECLARE(audio_level);
 ORB_TOPIC_DECLARE(camera_state);
 ORB_TOPIC_DECLARE(recording_state);
 ORB_TOPIC_DECLARE(volume_state);
+ORB_TOPIC_DECLARE(ulog_state);

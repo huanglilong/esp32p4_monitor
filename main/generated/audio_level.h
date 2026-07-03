@@ -10,6 +10,8 @@
 
 #define ORB_QUEUE_LENGTH_AUDIO_LEVEL 1
 
+#define AUDIO_LEVEL_FORMAT_STR "audio_level:uint64_t timestamp;float level_left;float level_right;"
+
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct audio_level_s
 {

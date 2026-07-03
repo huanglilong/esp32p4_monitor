@@ -5,4 +5,4 @@
 #include "camera_state.h"
 #include <uorb.h>
 
-ORB_TOPIC_DEFINE(camera_state, camera_state_s, 1);
+ORB_TOPIC_DEFINE(camera_state, camera_state_s, 1, "camera_state:uint64_t timestamp;bool running;");

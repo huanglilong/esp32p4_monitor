@@ -10,6 +10,8 @@
 
 #define ORB_QUEUE_LENGTH_RECORDING_STATE 1
 
+#define RECORDING_STATE_FORMAT_STR "recording_state:uint64_t timestamp;bool active;uint32_t bytes_written;uint32_t elapsed_ms;"
+
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct recording_state_s
 {

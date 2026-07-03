@@ -7,7 +7,7 @@
 #include <cstdint>
 #include "uorb.h"
 
-static constexpr size_t ORB_TOPICS_COUNT { 7 };
+static constexpr size_t ORB_TOPICS_COUNT { 8 };
 
 enum class ORB_ID : uint8_t {
     audio_level = 0,
@@ -15,8 +15,9 @@ enum class ORB_ID : uint8_t {
     detection_result = 2,
     fps_stats = 3,
     recording_state = 4,
-    volume_state = 5,
-    wifi_state = 6,
+    ulog_state = 5,
+    volume_state = 6,
+    wifi_state = 7,
     INVALID
 };
 

@@ -5,4 +5,4 @@
 #include "volume_state.h"
 #include <uorb.h>
 
-ORB_TOPIC_DEFINE(volume_state, volume_state_s, 1);
+ORB_TOPIC_DEFINE(volume_state, volume_state_s, 1, "volume_state:uint64_t timestamp;int32_t volume;");

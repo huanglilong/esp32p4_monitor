@@ -32,6 +32,7 @@
 #include "mdns.h"
 #include "lwip/apps/netbiosns.h"
 #include "esp_mac.h"
+#include "ulog_writer.h"
 
 static const char *TAG = "monitor";
 
@@ -455,6 +456,19 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "=== WIFI6 mode (no display) ===");
     }
     web_config_server_start();
+
+    /* ── ULog Logger initialization ── */
+    ulog_writer_t *ulog = ulog_writer_get();
+    ulog_writer_init(ulog, "/sdcard");
+    ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
+    ulog_writer_add_topic(ulog, ORB_ID(detection_result), 0); /* default 100ms */
+    ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */
+    ulog_writer_add_topic(ulog, ORB_ID(audio_level), 100);    /* same as UI refresh */
+    ulog_writer_add_topic(ulog, ORB_ID(camera_state), 0);     /* default 100ms */
+    ulog_writer_add_topic(ulog, ORB_ID(recording_state), 0);  /* default 100ms */
+    ulog_writer_add_topic(ulog, ORB_ID(volume_state), 0);     /* default 100ms */
+    ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
+    ESP_LOGI(TAG, "ULog writer initialized with %d topics", 8);
 
     /* Idle loop */
     while (1) {

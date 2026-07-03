@@ -16,14 +16,15 @@ file(GLOB UORB_MSG_FILES  ${UORB_MSG_DIR}/*.msg)
 
 # List every generated output file explicitly
 set(UORB_GEN_FILES
-    ${UORB_GEN_DIR}/fps_stats.h        ${UORB_GEN_DIR}/fps_stats.cpp
-    ${UORB_GEN_DIR}/detection_result.h ${UORB_GEN_DIR}/detection_result.cpp
-    ${UORB_GEN_DIR}/wifi_state.h      ${UORB_GEN_DIR}/wifi_state.cpp
-    ${UORB_GEN_DIR}/audio_level.h     ${UORB_GEN_DIR}/audio_level.cpp
-    ${UORB_GEN_DIR}/camera_state.h    ${UORB_GEN_DIR}/camera_state.cpp
-    ${UORB_GEN_DIR}/recording_state.h ${UORB_GEN_DIR}/recording_state.cpp
-    ${UORB_GEN_DIR}/volume_state.h    ${UORB_GEN_DIR}/volume_state.cpp
-    ${UORB_GEN_DIR}/uORBTopics.hpp    ${UORB_GEN_DIR}/uORBTopics.cpp
+    ${UORB_GEN_DIR}/audio_level.h         ${UORB_GEN_DIR}/audio_level.cpp
+    ${UORB_GEN_DIR}/camera_state.h        ${UORB_GEN_DIR}/camera_state.cpp
+    ${UORB_GEN_DIR}/detection_result.h    ${UORB_GEN_DIR}/detection_result.cpp
+    ${UORB_GEN_DIR}/fps_stats.h           ${UORB_GEN_DIR}/fps_stats.cpp
+    ${UORB_GEN_DIR}/recording_state.h     ${UORB_GEN_DIR}/recording_state.cpp
+    ${UORB_GEN_DIR}/ulog_state.h          ${UORB_GEN_DIR}/ulog_state.cpp
+    ${UORB_GEN_DIR}/volume_state.h        ${UORB_GEN_DIR}/volume_state.cpp
+    ${UORB_GEN_DIR}/wifi_state.h          ${UORB_GEN_DIR}/wifi_state.cpp
+    ${UORB_GEN_DIR}/uORBTopics.hpp        ${UORB_GEN_DIR}/uORBTopics.cpp
 )
 
 # add_custom_command(OUTPUT ...) tells CMake:

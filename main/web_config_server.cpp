@@ -48,6 +48,9 @@
 #include <sys/time.h>
 #include "driver/i2s_std.h"
 #include "esp_audio_simple_player.h"
+
+/* ULog writer */
+#include "ulog_writer.h"
 extern "C" {
 #include "layer3.h"
 }
@@ -1018,6 +1021,50 @@ static esp_err_t h_stop(httpd_req_t *req) {
     httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
 }
 
+/* ULog endpoints */
+static esp_err_t ulog_status_handler(httpd_req_t *req)
+{
+    ulog_writer_t *ulog = ulog_writer_get();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "running", ulog_writer_get_state(ulog) == ULOG_STATE_RUNNING);
+    cJSON_AddStringToObject(root, "filepath", ulog_writer_get_filepath(ulog));
+    cJSON_AddNumberToObject(root, "bytes_written", (double)ulog_writer_get_bytes_written(ulog));
+    const char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    cJSON_free((void *)json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t ulog_start_handler(httpd_req_t *req)
+{
+    /* Ensure SD card is mounted */
+    if (!SDCardDriver::instance().init()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD card not available\"}");
+        return ESP_OK;
+    }
+    ulog_writer_t *ulog = ulog_writer_get();
+    esp_err_t err = ulog_writer_start(ulog);
+    httpd_resp_set_type(req, "application/json");
+    if (err == ESP_OK) {
+        httpd_resp_sendstr(req, "{\"ok\":1}");
+    } else {
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Start failed\"}");
+    }
+    return ESP_OK;
+}
+
+static esp_err_t ulog_stop_handler(httpd_req_t *req)
+{
+    ulog_writer_t *ulog = ulog_writer_get();
+    ulog_writer_stop(ulog);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":1}");
+    return ESP_OK;
+}
+
 /* CORS preflight handler — responds to OPTIONS requests for POST endpoints.
  * Browsers require this before cross-origin POST with Content-Type: application/json. */
 static esp_err_t cors_preflight_handler(httpd_req_t *req)
@@ -1069,7 +1116,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 16;  /* 5 core + 6 audio + 3 CORS + 2 spare */
+    config.max_uri_handlers = 20;  /* 5 core + 6 audio + 3 CORS + 5 ULog + 1 spare */
     config.lru_purge_enable = true;
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
@@ -1135,6 +1182,33 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_cors_settings);
     httpd_register_uri_handler(s_httpd, &uri_cors_cam);
     httpd_register_uri_handler(s_httpd, &uri_cors_reset);
+
+    /* ULog endpoints */
+    httpd_uri_t uri_ulog_status = {
+        .uri = "/api/ulog/status", .method = HTTP_GET,
+        .handler = ulog_status_handler, .user_ctx = NULL
+    };
+    httpd_uri_t uri_ulog_start = {
+        .uri = "/api/ulog/start", .method = HTTP_POST,
+        .handler = ulog_start_handler, .user_ctx = NULL
+    };
+    httpd_uri_t uri_ulog_stop = {
+        .uri = "/api/ulog/stop", .method = HTTP_POST,
+        .handler = ulog_stop_handler, .user_ctx = NULL
+    };
+    httpd_uri_t uri_ulog_cors = {
+        .uri = "/api/ulog/start", .method = HTTP_OPTIONS,
+        .handler = cors_preflight_handler, .user_ctx = NULL
+    };
+    httpd_uri_t uri_ulog_cors2 = {
+        .uri = "/api/ulog/stop", .method = HTTP_OPTIONS,
+        .handler = cors_preflight_handler, .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &uri_ulog_status);
+    httpd_register_uri_handler(s_httpd, &uri_ulog_start);
+    httpd_register_uri_handler(s_httpd, &uri_ulog_stop);
+    httpd_register_uri_handler(s_httpd, &uri_ulog_cors);
+    httpd_register_uri_handler(s_httpd, &uri_ulog_cors2);
 
     /* mDNS: advertise web config on the local network */
     if (shared_mdns_ensure()) {
