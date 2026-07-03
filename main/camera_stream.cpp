@@ -126,17 +126,24 @@ CameraStream::CameraStream() :
     _detector(nullptr),
     _detect_in_buf(nullptr), _detect_in_size(0),
     _detect_results(),
+    _detect_mutex(nullptr),
     _detect_available(false),
     _model_ready(false),
     _model_load_task(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _mdns_running(false)
-{}
+{
+    _detect_mutex = xSemaphoreCreateMutex();
+}
 
 CameraStream::~CameraStream()
 {
     stop();
+    if (_detect_mutex) {
+        vSemaphoreDelete(_detect_mutex);
+        _detect_mutex = nullptr;
+    }
 }
 
 /*============================================================================
@@ -509,13 +516,17 @@ void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
     /* Run detection. First call loads model (~11s), subsequent ~560ms.
      * Filter for person class (COCO class 0). */
     std::list<dl::detect::result_t> &results = _detector->run(img);
-    _detect_results.clear();
-    for (auto &r : results) {
-        if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
-            _detect_results.push_back(r);
+    if (_detect_mutex &&
+        xSemaphoreTake(_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _detect_results.clear();
+        for (auto &r : results) {
+            if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
+                _detect_results.push_back(r);
+            }
         }
+        _detect_available = true;
+        xSemaphoreGive(_detect_mutex);
     }
-    _detect_available = true;
 }
 
 /*============================================================================
@@ -626,15 +637,19 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 jpeg_size = buf.bytesused;
             } else {
                 /* Draw latest detection boxes on the V4L2 buffer before encoding */
-                if (cs->_detect_available && !cs->_detect_results.empty()) {
-                    for (auto &r : cs->_detect_results) {
-                        cs->_draw_box_on_buffer(cs->_v4l2_bufs[buf.index],
-                                                cs->_cam_width, cs->_cam_height,
-                                                r.box[0], r.box[1], r.box[2], r.box[3],
-                                                0x07E0);  // Green in RGB565
+                if (cs->_detect_available && cs->_detect_mutex &&
+                    xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
+                    if (!cs->_detect_results.empty()) {
+                        for (auto &r : cs->_detect_results) {
+                            cs->_draw_box_on_buffer(cs->_v4l2_bufs[buf.index],
+                                                    cs->_cam_width, cs->_cam_height,
+                                                    r.box[0], r.box[1], r.box[2], r.box[3],
+                                                    0x07E0);  // Green in RGB565
+                        }
+                        esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
+                                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
                     }
-                    esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
-                                    ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                    xSemaphoreGive(cs->_detect_mutex);
                 }
 
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
@@ -735,11 +750,19 @@ static esp_err_t detection_info_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "model_ready", cs->_model_ready);
 
     float max_conf = 0.0f;
-    for (auto &r : cs->_detect_results) {
-        if (r.score > max_conf) max_conf = r.score;
+    size_t person_count = 0;
+    bool detect_avail = false;
+    if (cs->_detect_mutex &&
+        xSemaphoreTake(cs->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        for (auto &r : cs->_detect_results) {
+            if (r.score > max_conf) max_conf = r.score;
+        }
+        person_count = cs->_detect_results.size();
+        detect_avail = cs->_detect_available;
+        xSemaphoreGive(cs->_detect_mutex);
     }
-    cJSON_AddNumberToObject(root, "person_count", cs->_detect_results.size());
-    cJSON_AddNumberToObject(root, "max_confidence", cs->_detect_available ? max_conf : 0.0);
+    cJSON_AddNumberToObject(root, "person_count", person_count);
+    cJSON_AddNumberToObject(root, "max_confidence", detect_avail ? max_conf : 0.0);
 
     char *json_str = cJSON_Print(root);
     cJSON_Delete(root);
