@@ -104,6 +104,28 @@ static char           s_rec_path[128];
 static esp_asp_handle_t s_asp = NULL;
 static volatile bool    s_playing = false;
 
+/* Mutex to serialize audio operations across concurrent HTTP handlers.
+ * Without this, two clients hitting /api/record and /api/play simultaneously
+ * could corrupt s_is_recording, s_asp, s_shine, etc. */
+static SemaphoreHandle_t s_audio_mutex = NULL;
+
+static void audio_lock(void)
+{
+    if (!s_audio_mutex) {
+        s_audio_mutex = xSemaphoreCreateMutex();
+    }
+    if (s_audio_mutex) {
+        xSemaphoreTake(s_audio_mutex, portMAX_DELAY);
+    }
+}
+
+static void audio_unlock(void)
+{
+    if (s_audio_mutex) {
+        xSemaphoreGive(s_audio_mutex);
+    }
+}
+
 static void _stop_audio_task_if_running(void)
 {
     if (!s_audio_task && !s_audio_running) {
@@ -756,16 +778,18 @@ static bool __audio_init(void) {
 /* GET /api/audio/record_start */
 static esp_err_t h_rec_start(httpd_req_t *req) {
     if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
-    if (s_is_recording)   { httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
-    if (!__audio_init())  { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
+    audio_lock();
+    if (s_is_recording)   { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
+    if (!__audio_init())  { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
     if (!s_audio_task) {
         s_audio_running = true;
         if (xTaskCreatePinnedToCore(audio_task, "w_audio", 12*1024, NULL, 1, &s_audio_task, 0) != pdPASS)
-            { s_audio_running = false; httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+            { s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     }
     s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
     if (!s_pcm_buf) {
         _stop_audio_task_if_running();
+        audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
     }
@@ -777,6 +801,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         free(s_pcm_buf);
         s_pcm_buf = NULL;
         _stop_audio_task_if_running();
+        audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
     }
@@ -797,6 +822,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_is_recording = true;
+    audio_unlock();
     ESP_LOGI(TAG, "Recording: %s", s_rec_path);
     httpd_resp_sendstr(req, "{\"ok\":1}");
     return ESP_OK;
@@ -805,21 +831,26 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
 /* GET /api/audio/record_stop */
 static esp_err_t h_rec_stop(httpd_req_t *req) {
     if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
+    audio_lock();
     if (!s_is_recording) {
         /* Recover from stale state if a previous record_start failed mid-way. */
         _stop_audio_task_if_running();
         if (s_shine) { shine_close(s_shine); s_shine = NULL; }
         if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf = NULL; }
         if (s_rec_file) { fclose(s_rec_file); s_rec_file = NULL; }
+        audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":1}");
         return ESP_OK;
     }
     s_is_recording = false;
+    audio_unlock();  /* Release lock before blocking _stop_audio_task_if_running */
     _stop_audio_task_if_running(); /* Stop audio task to release I2S RX */
+    audio_lock();
     FILE *f = s_rec_file; s_rec_file = NULL;
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine, &wr); if(d&&wr>0&&f) fwrite(d,1,wr,f); shine_close(s_shine); s_shine=NULL; }
     if (f) fclose(f);
     if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
+    audio_unlock();
     char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", s_rec_path, (unsigned long)s_rec_bytes);
     ESP_LOGI(TAG,"Saved: %s (%lu)", s_rec_path, (unsigned long)s_rec_bytes);
     httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
@@ -880,6 +911,7 @@ static esp_err_t h_play(httpd_req_t *req) {
     if(!strlen(fn)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     _url_decode(fn);
     char uri[160]; snprintf(uri,sizeof(uri),"file://" REC_DIR "/%s",fn);
+    audio_lock();
     /* Stop + destroy previous player for clean state (matching Music App lifecycle) */
     if (s_asp) {
         esp_audio_simple_player_stop(s_asp);
@@ -889,21 +921,24 @@ static esp_err_t h_play(httpd_req_t *req) {
     }
     s_playing = false;
     esp_asp_cfg_t c={.out={.cb=_asp_out},.task_prio=5,.task_stack=4096,.task_core=0};
-    if(esp_audio_simple_player_new(&c,&s_asp)!=ESP_GMF_ERR_OK||!s_asp){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
+    if(esp_audio_simple_player_new(&c,&s_asp)!=ESP_GMF_ERR_OK||!s_asp){ audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     esp_audio_simple_player_set_event(s_asp,_asp_evt,NULL);
     esp_gmf_err_t ret = esp_audio_simple_player_run(s_asp, uri, NULL);
     if (ret != ESP_GMF_ERR_OK) {
         ESP_LOGE(TAG, "Play failed: %d, uri=%s", ret, uri);
+        audio_unlock();
         httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK;
     }
-    s_playing=true; ESP_LOGI(TAG,"Play: %s",uri);
+    s_playing=true; audio_unlock(); ESP_LOGI(TAG,"Play: %s",uri);
     httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
 }
 
 /* GET /api/audio/stop */
 static esp_err_t h_stop(httpd_req_t *req) {
     if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
+    audio_lock();
     if(s_asp){ esp_audio_simple_player_stop(s_asp); s_playing=false; }
+    audio_unlock();
     httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
 }
 
@@ -1092,13 +1127,18 @@ void web_config_server_stop(void)
     if (!s_running) return;
 
     /* Stop audio */
-    s_is_recording = false; s_audio_running = false; vTaskDelay(pdMS_TO_TICKS(300));
+    audio_lock();
+    s_is_recording = false; s_audio_running = false;
+    audio_unlock();
+    vTaskDelay(pdMS_TO_TICKS(300));
+    audio_lock();
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine,&wr); if(d&&wr>0&&s_rec_file) fwrite(d,1,wr,s_rec_file); shine_close(s_shine); s_shine=NULL; }
     if (s_rec_file) { fclose(s_rec_file); s_rec_file=NULL; }
     if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
     s_playing = false;
     if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
     if (s_audio_inited) { PeripheralManager::instance().deinit_audio(); PeripheralManager::instance().deinit_sdcard(); s_audio_inited=false; }
+    audio_unlock();
 
     /* Signal task to exit its idle loop — it will clean up HTTP server
      * and mDNS from within its own context, then self-delete. */
