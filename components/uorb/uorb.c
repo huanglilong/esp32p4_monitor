@@ -48,7 +48,16 @@ static orb_topic_reg_t s_topics[ORB_MAX_TOPICS];
 /** Subscriber table (flat, handles are indices into this array). */
 #define ORB_MAX_SUBS  (ORB_MAX_TOPICS * ORB_MAX_SUBSCRIBERS)
 static orb_sub_entry_t s_subs[ORB_MAX_SUBS];
-static int s_num_subs;         /**< Next free index in s_subs[]. */
+static int s_num_subs;         /**< High-water mark: next never-used index. */
+
+/** Free-list for reusable subscriber slots.
+ * When orb_unsubscribe() frees a slot, its index is pushed here.
+ * orb_subscribe() pops from the free-list first (if non-empty),
+ * then falls back to s_num_subs (append).
+ * This prevents subscriber slot exhaustion from repeated
+ * subscribe/unsubscribe cycles. */
+static int s_sub_free_list[ORB_MAX_SUBS];
+static int s_sub_free_count;   /**< Number of entries in the free-list. */
 
 /** Protects the registry and subscriber table. */
 static SemaphoreHandle_t s_mutex;
@@ -150,7 +159,14 @@ orb_sub_t orb_subscribe(orb_id_t meta)
         return -1;
     }
 
-    if (s_num_subs >= ORB_MAX_SUBS) {
+    /* Allocate a subscriber slot: prefer free-list (reused slots),
+     * then fall back to appending at s_num_subs. */
+    int s_idx;
+    if (s_sub_free_count > 0) {
+        s_idx = s_sub_free_list[--s_sub_free_count];
+    } else if (s_num_subs < ORB_MAX_SUBS) {
+        s_idx = s_num_subs++;
+    } else {
         unlock();
         return -1;
     }
@@ -162,7 +178,6 @@ orb_sub_t orb_subscribe(orb_id_t meta)
         return -1;
     }
 
-    int s_idx = s_num_subs++;
     s_subs[s_idx].queue     = q;
     s_subs[s_idx].topic_idx = t_idx;
 
@@ -208,6 +223,11 @@ int orb_unsubscribe(orb_sub_t handle)
     sub->queue     = NULL;
     sub->topic_idx = -1;
 
+    /* Push slot to free-list for reuse by future orb_subscribe() */
+    if (s_sub_free_count < ORB_MAX_SUBS) {
+        s_sub_free_list[s_sub_free_count++] = handle;
+    }
+
     unlock();
     return 0;
 }
@@ -244,10 +264,9 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
 
     /* Deliver to subscribers lock-free (queue ops are thread-safe).
      * Note: a subscriber could unsubscribe between our snapshot and
-     * delivery, but s_subs[] entries are never reclaimed (only marked
-     * inactive with topic_idx=-1), so the queue handle is still valid
-     * or NULL. xQueueOverwrite/Send on a deleted queue is harmless
-     * because vQueueDelete happens only after orb_unsubscribe() returns. */
+     * delivery. Since we hold a snapshot of sub_indices, the slot
+     * at s_subs[s_idx] may now be free-listed (topic_idx=-1, queue=NULL).
+     * The NULL queue check handles this safely — we just skip it. */
     for (int i = 0; i < n_subs; i++) {
         int s_idx = sub_indices[i];
         if (s_idx < 0 || s_idx >= s_num_subs) continue;
@@ -277,7 +296,8 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
     }
 
     /* We access the subscriber entry lock-free because:
-     * - s_num_subs only grows (entries are never removed from the array)
+     * - The handle is valid (checked above) and the entry is active
+     *   (topic_idx >= 0 checked below)
      * - sub->queue is written once at creation and only cleared on
      *   unsubscribe (which also requires the handle to be valid)
      * - xQueueReceive is itself thread-safe.
