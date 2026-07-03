@@ -134,18 +134,18 @@ bool PhoneAppCamera::close(void)
     /* Wait for detection task to finish current inference and self-terminate.
      * Worst case: mid-inference (~560ms) + one cycle. 3s timeout is safe.
      * Task self-deletes with vTaskDelete(NULL) and clears _detect_task_handle.
-     * Use eTaskGetState() to avoid double-delete if task already exited. */
+     * Check handle instead of eTaskGetState() — the latter races with the
+     * idle task reclaiming the TCB after vTaskDelete(NULL). */
     if (_detect_task_handle) {
         int timeout = 0;
         while (timeout < 30) {
-            if (!_detect_task_handle || eTaskGetState(_detect_task_handle) == eDeleted) {
-                _detect_task_handle = nullptr;
+            if (!_detect_task_handle) {
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(100));
             timeout++;
         }
-        if (_detect_task_handle && eTaskGetState(_detect_task_handle) != eDeleted) {
+        if (_detect_task_handle) {
             ESP_LOGW(TAG, "Detection task did not exit, force-killing");
             vTaskDelete(_detect_task_handle);
             _detect_task_handle = nullptr;
@@ -350,8 +350,9 @@ bool PhoneAppCamera::_init_detection(void)
         return false;
     }
 
-    /* Create COCODetect instance (YOLO11n 320x320 for P4) */
-    _detector = new COCODetect(COCODetect::YOLO11N_320_S8_V1, true);  // lazy load
+    /* Create COCODetect instance (YOLO11n 320x320 for P4).
+     * Use nothrow to prevent std::bad_alloc on OOM (no C++ exception support). */
+    _detector = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);  // lazy load
 
     if (!_detector) {
         ESP_LOGE(TAG, "Failed to create COCODetect instance");
@@ -557,8 +558,7 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
             xSemaphoreGive(app->_detect_mutex);
         } else {
             /* Mutex unavailable (detection holding it for inference):
-             * skip this frame to avoid tearing. V4L2 still gets QBUF. */
-            memcpy(app->_cam_buffer, app->_v4l2_buffers[buf.index], copy_size);
+             * skip this frame copy to avoid tearing — V4L2 still gets QBUF. */
         }
     }
 

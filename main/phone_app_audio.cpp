@@ -51,17 +51,20 @@ PhoneAppAudio::~PhoneAppAudio()
     }
     if (_task_running) {
         _task_running = false;
-        /* Wait up to 2s for task to exit (matches close()) */
+        /* Wait up to 2s for task to exit (matches close()).
+         * Task sets _task_handle = nullptr before vTaskDelete(NULL),
+         * so we check the handle rather than eTaskGetState() which can
+         * race with the idle task reclaiming the TCB. */
         int timeout = 0;
         while (timeout < 20) {
-            if (!_task_handle || eTaskGetState(_task_handle) == eDeleted) {
-                _task_handle = nullptr;
+            if (!_task_handle) {
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(100));
             timeout++;
         }
-        if (_task_handle && eTaskGetState(_task_handle) != eDeleted) {
+        if (_task_handle) {
+            ESP_LOGW(TAG, "Audio task did not exit within 2s, force-killing");
             vTaskDelete(_task_handle);
             _task_handle = nullptr;
         }
@@ -188,17 +191,17 @@ bool PhoneAppAudio::close(void)
     /* Wait for task to finish gracefully.
      * Task may be blocked in i2s_channel_read (100ms timeout). 2s timeout is safe.
      * Task self-deletes with vTaskDelete(nullptr) and clears _task_handle.
-     * Use eTaskGetState() to avoid double-delete if task already exited. */
+     * Check _task_handle instead of eTaskGetState() which can race with
+     * the idle task reclaiming the TCB after vTaskDelete(NULL). */
     int timeout = 0;
     while (timeout < 20) {
-        if (!_task_handle || eTaskGetState(_task_handle) == eDeleted) {
-            _task_handle = nullptr;
+        if (!_task_handle) {
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
         timeout++;
     }
-    if (_task_handle && eTaskGetState(_task_handle) != eDeleted) {
+    if (_task_handle) {
         ESP_LOGW(TAG, "Audio task did not exit within 2s, force-killing");
         vTaskDelete(_task_handle);
         _task_handle = nullptr;

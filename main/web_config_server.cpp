@@ -1244,7 +1244,7 @@ static void web_config_task(void *arg)
     /* Clean exit path: stop HTTP server and mDNS from within the task */
     if (s_mdns_running) {
         mdns_service_remove("_http", "_tcp");
-        mdns_free();
+        shared_mdns_release();
         s_mdns_running = false;
     }
     if (s_httpd) {
@@ -1298,24 +1298,25 @@ void web_config_server_stop(void)
      * and mDNS from within its own context, then self-delete. */
     s_running = false;
 
-    /* Wait for task to self-delete (max 3s) */
+    /* Wait for task to self-delete (max 3s).
+     * Task clears s_task_handle before vTaskDelete(NULL), so we just
+     * check the handle — no need for eTaskGetState() which races with
+     * the idle task reclaiming the TCB. */
     int timeout = 0;
     while (s_task_handle && timeout < 30) {
         vTaskDelay(pdMS_TO_TICKS(100));
         timeout++;
     }
-    if (s_task_handle && eTaskGetState(s_task_handle) != eDeleted) {
+    if (s_task_handle) {
         ESP_LOGW(TAG, "Web config task did not exit, force-killing");
         vTaskDelete(s_task_handle);
-        s_task_handle = NULL;
-    } else if (s_task_handle) {
-        /* Task already deleted — just clear handle */
         s_task_handle = NULL;
     }
 
     /* Fallback: if task already exited but HTTP/mDNS not cleaned up */
     if (s_mdns_running) {
-        mdns_free();
+        mdns_service_remove("_http", "_tcp");
+        shared_mdns_release();
         s_mdns_running = false;
     }
     if (s_httpd) {

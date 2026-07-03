@@ -152,19 +152,20 @@ CameraStream::~CameraStream()
  *============================================================================*/
 bool CameraStream::start(void)
 {
-    if (_running) return true;
+    /* Atomic compare-and-set: if already running, return immediately.
+     * This prevents concurrent start() calls from double-initializing. */
+    bool expected = false;
+    if (!_running.compare_exchange_strong(expected, true)) {
+        return true;  // already running
+    }
 
-    /* Claim camera hardware via CameraDriver BEFORE setting _running.
+    /* Claim camera hardware via CameraDriver BEFORE any resource allocation.
      * This ensures cross-module mutual exclusion from the earliest point. */
     if (!CameraDriver::instance().claim()) {
         ESP_LOGW(TAG, "Camera hardware in use, cannot start stream");
+        _running = false;
         return false;
     }
-
-    /* Set _running early to prevent concurrent start() calls.
-     * Resources are allocated below; if init fails, we clear _running
-     * and release the claim. */
-    _running = true;
 
     if (!_init_video()) {
         ESP_LOGE(TAG, "Video init failed");
@@ -435,7 +436,7 @@ void CameraStream::_model_load_task_fn(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    cs->_detector->set_score_thr(cs->PERSON_SCORE_THRESHOLD);
+    cs->_detector.load()->set_score_thr(cs->PERSON_SCORE_THRESHOLD);
 
     /* Warm-up inference: trigger model loading now so the stream loop
      * isn't blocked later. Uses a dummy small image. */
@@ -446,7 +447,7 @@ void CameraStream::_model_load_task_fn(void *arg)
         .height = (uint16_t)cs->_cam_height,
         .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
     };
-    cs->_detector->run(img);  /* First call loads model (~11s) */
+    cs->_detector.load()->run(img);  /* First call loads model (~11s) */
     cs->_model_ready = true;
     cs->_detect_available = false;
 
@@ -488,14 +489,14 @@ bool CameraStream::_init_detection(void)
 void CameraStream::_deinit_detection(void)
 {
     /* Stop background model-loading task if still running.
-     * The task self-deletes and clears _model_load_task on completion,
-     * so check both the handle and that the task hasn't already exited. */
+     * The task self-deletes and clears _model_load_task on completion.
+     * Since the task clears the handle before vTaskDelete(NULL), we can
+     * just check the handle — no need for eTaskGetState() which races
+     * with the idle task reclaiming the TCB. */
     if (_model_load_task) {
         TaskHandle_t t = _model_load_task;
         _model_load_task = nullptr;
-        if (eTaskGetState(t) != eDeleted) {
-            vTaskDelete(t);
-        }
+        vTaskDelete(t);
     }
 
     if (_detector) {
@@ -531,7 +532,7 @@ void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
 
     /* Run detection. First call loads model (~11s), subsequent ~560ms.
      * Filter for person class (COCO class 0). */
-    std::list<dl::detect::result_t> &results = _detector->run(img);
+    std::list<dl::detect::result_t> &results = _detector.load()->run(img);
     if (_detect_mutex &&
         xSemaphoreTake(_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         _detect_results.clear();
@@ -750,6 +751,10 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     char *json_str = cJSON_Print(root);
     cJSON_Delete(root);
 
+    if (!json_str) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     httpd_resp_set_type(req, "application/json");
     esp_err_t ret = httpd_resp_sendstr(req, json_str);
     free(json_str);
@@ -783,6 +788,10 @@ static esp_err_t detection_info_handler(httpd_req_t *req)
     char *json_str = cJSON_Print(root);
     cJSON_Delete(root);
 
+    if (!json_str) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     esp_err_t ret = httpd_resp_sendstr(req, json_str);
@@ -998,7 +1007,9 @@ void CameraStream::_init_mdns(void)
 void CameraStream::_deinit_mdns(void)
 {
     if (!_mdns_running) return;
+    /* Only remove CameraStream's _http service — do NOT call mdns_free(),
+     * as web_config_server may still be using mDNS. */
     mdns_service_remove("_http", "_tcp");
-    mdns_free();
+    shared_mdns_release();
     _mdns_running = false;
 }
