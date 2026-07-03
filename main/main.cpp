@@ -29,11 +29,33 @@
 #include "phone_app_camera_stream.hpp"
 #include "web_config_server.hpp"
 #include "example_config.h"
+#include "mdns.h"
+#include "lwip/apps/netbiosns.h"
 
 static const char *TAG = "monitor";
 
 /* Auto-detected: true if GT911 touch (I2C 0x5D) responds → LCD-4B board */
 bool g_has_lcd = false;
+
+/*============================================================================
+ * Shared mDNS initialization guard.
+ * Both CameraStream and web_config_server may call mdns_init().
+ * Only the first call should succeed; subsequent calls skip re-init.
+ *============================================================================*/
+static bool s_shared_mdns_initialized = false;
+
+bool shared_mdns_ensure(void)
+{
+    if (s_shared_mdns_initialized) return true;
+    if (mdns_init() != ESP_OK) return false;
+    mdns_hostname_set("esp-web");
+
+    netbiosns_init();
+    netbiosns_set_name("esp-web");
+
+    s_shared_mdns_initialized = true;
+    return true;
+}
 
 /* Forward declarations */
 static void monitor_init_display(lv_display_t **disp);

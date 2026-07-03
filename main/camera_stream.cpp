@@ -11,6 +11,7 @@
 #include "esp_video_init.h"
 #include "esp_video_ioctl.h"
 #include "example_video_common.h"
+#include "example_config.h"
 #include "mdns.h"
 #include "cJSON.h"
 #include "lwip/apps/netbiosns.h"
@@ -900,7 +901,8 @@ static esp_err_t index_handler(httpd_req_t *req)
 bool CameraStream::_start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.uri_match_fn = httpd_uri_match_wildcard;
+    /* All registered URIs are exact paths — use default exact-match
+     * instead of wildcard matching (faster, more secure). */
 
     /* Port 80: API + info */
     ESP_LOGI(TAG, "Starting HTTP server on port 80");
@@ -957,17 +959,13 @@ void CameraStream::_init_mdns(void)
 {
     if (_mdns_running) return;
 
-    if (mdns_init() != ESP_OK) {
+    /* Use shared mDNS guard — web_config_server may have already initialized it */
+    if (!shared_mdns_ensure()) {
         ESP_LOGW(TAG, "mDNS init failed");
         return;
     }
 
-    mdns_hostname_set("esp-web");
-    mdns_instance_name_set("web-cam");  // matches reference
-
-    /* NetBIOS (matches reference: netbiosns_init + netbiosns_set_name) */
-    netbiosns_init();
-    netbiosns_set_name("esp-web");
+    mdns_instance_name_set("web-cam");
 
     mdns_txt_item_t txt[] = {
         {(char *)"board", (char *)CONFIG_IDF_TARGET},

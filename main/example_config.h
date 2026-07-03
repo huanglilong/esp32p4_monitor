@@ -52,6 +52,13 @@ extern "C" {
 /* SD Card */
 #define SDMMC_MOUNT_POINT     "/sdcard"
 
+/* Shared mDNS initialization guard.
+ * Both CameraStream and web_config_server call mdns_init().
+ * The second caller must skip mdns_init()/netbiosns_init() since
+ * the first already initialized them. Use shared_mdns_ensure()
+ * instead of calling mdns_init() directly. */
+bool shared_mdns_ensure(void);
+
 #ifdef __cplusplus
 }
 #endif
