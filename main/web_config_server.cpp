@@ -1713,6 +1713,10 @@ static void web_config_task(void *arg)
         vSemaphoreDelete(s_audio_mutex);
         s_audio_mutex = NULL;
     }
+    if (s_wifi_state_sub >= 0) {
+        orb_unsubscribe(s_wifi_state_sub);
+        s_wifi_state_sub = -1;
+    }
     s_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -1780,6 +1784,10 @@ void web_config_server_stop(void)
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
+    }
+    if (s_wifi_state_sub >= 0) {
+        orb_unsubscribe(s_wifi_state_sub);
+        s_wifi_state_sub = -1;
     }
 
     ESP_LOGI(TAG, "Web config server stopped");
