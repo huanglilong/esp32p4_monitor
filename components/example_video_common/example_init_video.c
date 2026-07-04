@@ -16,6 +16,13 @@
 #include "driver/i2c_master.h"  /* for i2c_master_bus_handle_t */
 i2c_master_bus_handle_t bsp_i2c_get_handle(void);
 
+/* Forward-declare internal destroy functions from esp_video.
+ * These are needed to force-cleanup stale video devices when esp_video_deinit()
+ * fails or skips cleanup due to inconsistent internal flags.
+ * Declared in esp_video_device_internal.h (private include, not in public path). */
+extern esp_err_t esp_video_destroy_isp_video_device(void);
+extern esp_err_t esp_video_destroy_csi_video_device(void);
+
 #if EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR
 static const esp_video_init_csi_config_t s_csi_config = {
     .sccb_config = {
@@ -108,11 +115,25 @@ esp_err_t example_video_init(void)
 
 failed_2:
     /* esp_video_init() may have partially registered VFS devices before
-     * failing.  esp_video_deinit() uses internal flags that may not reflect
-     * partial state, so we force-unregister all video devices before retry. */
-    ESP_LOGW(TAG, "esp_video_init failed, attempting VFS cleanup and retry...");
+     * failing.  esp_video_deinit() uses internal flags (s_video_device_inited_flags)
+     * that may not reflect partial state, so it skips cleanup.
+     *
+     * IMPORTANT: Call esp_video_deinit() FIRST to let it clean up properly
+     * (it removes objects from s_video_list AND unregisters VFS). Only force-
+     * unregister VFS entries as a last resort AFTER deinit, because pre-
+     * unregistering VFS causes esp_video_destroy() to fail (can't unregister
+     * already-removed VFS), which aborts all subsequent device cleanup. */
+    ESP_LOGW(TAG, "esp_video_init failed, attempting cleanup and retry...");
 
-    /* Force-unregister all possible video VFS devices that might be stale */
+    /* Step 1: Full deinit — removes objects from s_video_list + VFS */
+    esp_video_deinit();
+
+    /* Step 2: Force-destroy any stale objects that deinit skipped
+     * (happens when s_video_device_inited_flags didn't get set) */
+    esp_video_destroy_isp_video_device();
+    esp_video_destroy_csi_video_device();
+
+    /* Step 3: Force-unregister any VFS entries still remaining */
     {
         static const int video_ids[] = { ESP_VIDEO_MIPI_CSI_DEVICE_ID, ESP_VIDEO_ISP1_DEVICE_ID };
         for (size_t i = 0; i < sizeof(video_ids) / sizeof(video_ids[0]); i++) {
@@ -121,14 +142,10 @@ failed_2:
             esp_err_t vfs_ret = esp_vfs_unregister(vfs_path);
             if (vfs_ret == ESP_OK) {
                 ESP_LOGW(TAG, "Unregistered stale VFS device %s", vfs_path);
-            } else if (vfs_ret != ESP_ERR_NOT_FOUND) {
-                ESP_LOGW(TAG, "Failed to unregister %s: %s", vfs_path, esp_err_to_name(vfs_ret));
             }
+            /* ESP_ERR_INVALID_STATE = not registered (expected), suppress */
         }
     }
-
-    /* Full deinit to clean up any internal state */
-    esp_video_deinit();
 
     /* Short delay to let hardware settle before retry */
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -155,18 +172,38 @@ esp_err_t example_video_deinit(void)
     esp_err_t ret = ESP_OK;
 
     if (!s_is_init) {
+        ESP_LOGW(TAG, "example_video_deinit: not initialized, skipping");
         return ESP_OK;
     }
 
-    ESP_RETURN_ON_ERROR(esp_video_deinit(), TAG, "failed to deinitialize video");
+    ret = esp_video_deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_video_deinit failed (0x%x), attempting force cleanup", ret);
+        /* Force-destroy ISP and CSI devices if normal deinit failed.
+         * This can happen when V4L2 fds are still open or internal flags
+         * are out of sync. Force cleanup ensures VFS devices are removed. */
+        esp_video_destroy_isp_video_device();
+        esp_video_destroy_csi_video_device();
+        /* Also force VFS unregister as last resort */
+        {
+            static const int video_ids[] = { ESP_VIDEO_MIPI_CSI_DEVICE_ID, ESP_VIDEO_ISP1_DEVICE_ID };
+            for (size_t i = 0; i < sizeof(video_ids) / sizeof(video_ids[0]); i++) {
+                char vfs_path[16];
+                snprintf(vfs_path, sizeof(vfs_path), "/dev/video%d", video_ids[i]);
+                esp_vfs_unregister(vfs_path);
+            }
+        }
+    }
 
 #if EXAMPLE_MIPI_CSI_XCLK_PIN > 0
-    ESP_RETURN_ON_ERROR(esp_cam_sensor_xclk_stop(s_xclk_handle), TAG, "failed to stop xclk");
-    ESP_RETURN_ON_ERROR(esp_cam_sensor_xclk_free(s_xclk_handle), TAG, "failed to free xclk");
+    esp_cam_sensor_xclk_stop(s_xclk_handle);
+    esp_cam_sensor_xclk_free(s_xclk_handle);
     s_xclk_handle = NULL;
 #endif
 
     s_i2cbus_handle = NULL;
+    /* Always clear s_is_init even on partial failure — prevents
+     * subsequent calls from being silently skipped. */
     s_is_init = false;
 
     return ret;
