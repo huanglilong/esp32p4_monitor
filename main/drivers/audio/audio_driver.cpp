@@ -283,6 +283,11 @@ void AudioDriver::set_volume(int volume)
         _volume = volume;  /* Store inside mutex for thread safety */
         esp_codec_dev_set_out_vol(_codec_handle, volume);
         xSemaphoreGive(_codec_mutex);
+    } else {
+        /* Codec not available or mutex timeout — skip publish to avoid
+         * advertising a volume that was never applied to hardware. */
+        ESP_LOGW(TAG, "set_volume(%d) skipped: codec/mutex unavailable", volume);
+        return;
     }
 
     /* Publish volume_state via uORB for cross-module notification */
