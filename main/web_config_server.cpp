@@ -1032,7 +1032,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     }
     s_rec_file = fopen(s_rec_path, "wb");
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
-        _stop_audio_task_if_running();
+        _stop_audio_task_if_running(); audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_is_recording = true;
