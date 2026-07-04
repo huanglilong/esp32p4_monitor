@@ -62,7 +62,7 @@ extern "C" {
 static const char *TAG = "WebConfig";
 
 /* Board detection — still extern until fully migrated */
-extern bool g_has_lcd;
+extern volatile bool g_has_lcd;
 
 #define WEB_CONFIG_PORT         8080
 
@@ -917,7 +917,7 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
  * Audio Handlers — record / play / list mp3 files on SD card
  *============================================================================*/
 static bool __cam_running(void) {
-    extern bool g_has_lcd;
+    extern volatile bool g_has_lcd;
     return (!g_has_lcd) && CameraStream::instance().isRunning();
 }
 

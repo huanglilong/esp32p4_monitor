@@ -36,8 +36,10 @@
 
 static const char *TAG = "monitor";
 
-/* Auto-detected: true if GT911 touch (I2C 0x5D) responds → LCD-4B board */
-bool g_has_lcd = false;
+/* Auto-detected: true if GT911 touch (I2C 0x5D) responds → LCD-4B board.
+ * volatile: written once in app_main (core 0), read from web_config_server
+ * task (any core). volatile ensures cross-core visibility for write-once flag. */
+volatile bool g_has_lcd = false;
 
 /*============================================================================
  * mDNS hostnames:
