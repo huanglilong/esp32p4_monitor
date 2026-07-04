@@ -10,7 +10,7 @@
 - **音频输入/输出** (ES8311 DAC + ES7210 ADC, I2S)
 - **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
 - **多板支持** 通过 GT911 I2C 自动检测 LCD-4B / WIFI6，单一固件适配
-- **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS
+- **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS, SD 卡文件管理器 (浏览/下载/删除)
 
 ### ESP-Brookesia App 列表
 
@@ -575,6 +575,23 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - `GET /api/audio/play?file=xxx.mp3` — 播放文件
 - `GET /api/audio/stop` — 停止播放
 
+### 19. Web File Manager (web_config_server 文件管理)
+
+浏览、下载、删除 SD 卡文件，通过 "Files" 按钮切换到文件管理模式。
+
+| 项目 | 配置 |
+|------|------|
+| 目录浏览 | 递归, 面包屑导航, 目录优先排序 |
+| 下载 | `GET /api/files/download?path=xxx` → binary stream + Content-Disposition |
+| 删除 | `POST /api/files/delete` → 删除文件/空目录, 含前端确认弹窗 |
+| 安全 | 路径穿越防护 (`..`, 绝对路径限制 `/sdcard/` 前缀) |
+| 互斥 | 与 Audio Recorder 模式互斥: 切换时自动停止录音/播放; 录音中禁止文件操作 |
+
+**API 端点** (3 个):
+- `GET /api/files/list?dir=/` — 列出目录内容 (JSON)
+- `GET /api/files/download?path=xxx` — 下载文件 (binary)
+- `POST /api/files/delete` — 删除文件 (body: `{"path": "xxx"}`)
+
 **板级兼容**: `monitor_init_audio()` 根据 `g_has_lcd` 自动选择:
 - **LCD-4B**: ES8311 DAC (0x30) + ES7210 ADC (0x80, 双麦)
 - **WIFI6**: ES8311 单芯片 (0x30, ADC+DAC) + NS4150B 功放
@@ -670,3 +687,4 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **CORS 预检**: Web Config Server 添加 OPTIONS 处理器, 修复浏览器跨域 POST 请求
 - [x] **WiFi 扫描优化**: 扫描任务空闲轮询从 200ms 降到 500ms
 - [x] **Web 音频录制/播放**: web_config_server 增加录音 (Start/End, Shine MP3 → SD) 和播放 (esp_audio_simple_player) 功能, Camera Stream 未运行时可用
+- [x] **Web File Manager**: SD 卡文件浏览器 (list/download/delete)，与 Audio Recorder 模式互斥

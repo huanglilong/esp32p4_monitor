@@ -30,9 +30,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _recordingBytes = 0;
   Timer? _statusTimer;
   Timer? _timerCounter;
-  List<String> _files = [];
-  bool _loadingFiles = true;
   String? _playingFile;
+
+  // File Manager state (replaces old audio-only _files / _loadingFiles)
+  String _fmDir = '/';
+  List<Map<String, dynamic>> _fmEntries = [];
+  bool _fmLoading = false;
+  String _fmError = '';
+  String _fmCapText = '';
 
   @override
   void initState() => super.initState();
@@ -45,7 +50,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!_initialized) {
       _initialized = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) { _loadSettings(); _loadFiles(); }
+        if (mounted) { _loadSettings(); _fmLoad(); }
       });
     }
   }
@@ -88,17 +93,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ));
   }
 
-  Future<void> _loadFiles() async {
-    setState(() => _loadingFiles = true);
-    try {
-      final r = await _http!.audioList();
-      if (mounted) setState(() {
-        _files = r['files'] != null ? List<String>.from(r['files']) : [];
-        _loadingFiles = false;
-      });
-    } catch (_) { if (mounted) setState(() { _files = []; _loadingFiles = false; }); }
-  }
-
   Future<void> _startRecording() async {
     try {
       final r = await _http!.audioRecordStart();
@@ -119,7 +113,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _stopRecording() async {
     _timerCounter?.cancel(); _statusTimer?.cancel();
     try { await _http!.audioRecordStop(); } catch (_) {}
-    if (mounted) { setState(() => _isRecording = false); _loadFiles(); }
+    if (mounted) { setState(() => _isRecording = false); _fmLoad(); }
   }
 
   Future<void> _playFile(String f) async {
@@ -129,6 +123,104 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _stopPlayback() async {
     try { await _http!.audioStop(); } catch (_) {}
     if (mounted) setState(() => _playingFile = null);
+  }
+
+  // === File Manager methods ===
+  Future<void> _fmLoad() async {
+    setState(() { _fmLoading = true; _fmError = ''; });
+    try {
+      final r = await _http!.filesList(_fmDir);
+      if (!mounted) return;
+      final entries = <Map<String, dynamic>>[];
+      if (r['files'] != null) {
+        for (final f in (r['files'] as List)) {
+          entries.add(Map<String, dynamic>.from(f as Map));
+        }
+      }
+      entries.sort((a, b) {
+        final aDir = a['is_dir'] == true, bDir = b['is_dir'] == true;
+        if (aDir != bDir) return aDir ? -1 : 1;
+        return (a['name'] as String).compareTo(b['name'] as String);
+      });
+      String cap = '';
+      final tk = r['total_kb'] as num?;
+      final fk = r['free_kb'] as num?;
+      if (tk != null && tk > 0) {
+        final free = fk?.toDouble() ?? 0, total = tk.toDouble(), used = total - free;
+        String fmt(double v) => v > 1048576 ? '${(v / 1048576).toStringAsFixed(1)}GB' : v > 1024 ? '${(v / 1024).toStringAsFixed(1)}MB' : '${v.toInt()}KB';
+        cap = '${fmt(used)} used / ${fmt(total)}';
+      }
+      final cur = r['current'] as String? ?? _fmDir;
+      setState(() {
+        _fmEntries = entries;
+        _fmDir = cur;
+        _fmCapText = cap;
+        _fmLoading = false;
+      });
+    } catch (e) {
+      if (mounted) setState(() { _fmError = 'Load failed: $e'; _fmLoading = false; });
+    }
+  }
+
+  void _fmNavigate(String name) {
+    final base = _fmDir.endsWith('/') ? _fmDir : '$_fmDir/';
+    _fmDir = '$base$name';
+    _fmLoad();
+  }
+
+  void _fmNavigateUp() {
+    if (_fmDir == '/' || _fmDir.isEmpty) return;
+    var p = _fmDir.endsWith('/') ? _fmDir.substring(0, _fmDir.length - 1) : _fmDir;
+    final i = p.lastIndexOf('/');
+    _fmDir = i <= 0 ? '/' : p.substring(0, i);
+    _fmLoad();
+  }
+
+  Future<void> _fmDownload(String name) async {
+    final base = _fmDir.endsWith('/') ? _fmDir : '$_fmDir/';
+    final path = '$base$name';
+    try {
+      final data = await _http!.filesDownload(path);
+      if (!mounted || data.isEmpty) return;
+      // Save via file_picker or share — for now just show success
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Downloaded: $name (${_b(data.length)})')),
+      );
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Download failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _fmDelete(String name) async {
+    final base = _fmDir.endsWith('/') ? _fmDir : '$_fmDir/';
+    final path = '$base$name';
+    final confirm = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Delete file?'),
+      content: Text(name),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete', style: TextStyle(color: Colors.redAccent))),
+      ],
+    ));
+    if (confirm != true || !mounted) return;
+    try {
+      final r = await _http!.filesDelete(path);
+      if (!mounted) return;
+      if (r['ok'] == 1) {
+        _fmLoad();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Deleted: $name')));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(r['error'] ?? 'Delete failed'), backgroundColor: Colors.red),
+        );
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   String _t(int s) => '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
@@ -163,31 +255,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ]),
         ],
         const Divider(height: 32),
-        Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(children: [
-          Row(children: [Icon(_isRecording ? Icons.fiber_manual_record : Icons.mic, color: _isRecording ? Colors.red : null), const SizedBox(width: 8),
-            Text(_isRecording ? 'Recording ${_t(_recordingSeconds)}' : 'Audio Recorder', style: tt.titleSmall)]),
-          if (_isRecording) Text(_b(_recordingBytes), style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-          const SizedBox(height: 8),
+        Card(child: Padding(padding: const EdgeInsets.all(12), child: Row(children: [
+          Icon(_isRecording ? Icons.fiber_manual_record : Icons.mic, color: _isRecording ? Colors.red : null), const SizedBox(width: 8),
+          Expanded(child: Text(_isRecording ? 'Recording ${_t(_recordingSeconds)}  ${_b(_recordingBytes)}' : 'Audio Recorder', style: tt.titleSmall)),
+          const SizedBox(width: 8),
           _isRecording
-              ? FilledButton.icon(onPressed: _stopRecording, icon: const Icon(Icons.stop), label: const Text('Stop'))
-              : FilledButton.icon(onPressed: _startRecording, icon: const Icon(Icons.fiber_manual_record), label: const Text('Record'),
+              ? FilledButton.icon(onPressed: _stopRecording, icon: const Icon(Icons.stop, size: 18), label: const Text('Stop'))
+              : FilledButton.icon(onPressed: _startRecording, icon: const Icon(Icons.fiber_manual_record, size: 18), label: const Text('Record'),
                   style: FilledButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white)),
         ]))),
         const SizedBox(height: 8),
-        Text('Recordings (${_files.length})', style: tt.titleSmall),
-        if (_loadingFiles) const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()))
-        else if (_files.isEmpty) const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('No recordings', style: TextStyle(color: Colors.grey))))
+        // === SD Card Files (directory browser + play/download/delete) ===
+        Text('SD Card', style: tt.titleSmall),
+        if (_fmCapText.isNotEmpty)
+          Text(_fmCapText, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+        const SizedBox(height: 4),
+        Row(children: [
+          Expanded(child: Text(_fmDir, style: TextStyle(color: Colors.blue[300], fontSize: 13), overflow: TextOverflow.ellipsis)),
+          if (_fmDir != '/') TextButton(onPressed: _fmNavigateUp, child: const Text('..')),
+        ]),
+        if (_fmLoading) const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()))
+        else if (_fmError.isNotEmpty) Center(child: Text(_fmError, style: const TextStyle(color: Colors.red)))
+        else if (_fmEntries.isEmpty) const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('Empty', style: TextStyle(color: Colors.grey))))
         else SizedBox(
-          height: 280,
-          child: ListView(children: _files.map((f) => ListTile(
-            visualDensity: VisualDensity.compact,
-            dense: true,
-            leading: Icon(_playingFile == f ? Icons.volume_up : Icons.music_note, color: _playingFile == f ? Colors.green : null),
-            title: Text(f, overflow: TextOverflow.ellipsis),
-            trailing: _playingFile == f
-                ? IconButton(icon: const Icon(Icons.stop_circle, color: Colors.red), onPressed: _stopPlayback)
-                : IconButton(icon: const Icon(Icons.play_circle, color: Colors.green), onPressed: () => _playFile(f)),
-          )).toList()),
+          height: 320,
+          child: ListView(children: _fmEntries.map((f) {
+            final name = f['name'] as String;
+            final isDir = f['is_dir'] == true;
+            final isMp3 = !isDir && name.toLowerCase().endsWith('.mp3');
+            final isPlaying = _playingFile == name;
+            return ListTile(
+              visualDensity: VisualDensity.compact,
+              dense: true,
+              leading: Icon(
+                isDir ? Icons.folder : isMp3 ? (isPlaying ? Icons.volume_up : Icons.music_note) : Icons.insert_drive_file,
+                color: isDir ? Colors.amber : isPlaying ? Colors.green : null,
+              ),
+              title: Text(name, overflow: TextOverflow.ellipsis),
+              subtitle: isDir ? null : Text(_b((f['size'] as num?)?.toInt() ?? 0), style: const TextStyle(fontSize: 11)),
+              onTap: isDir ? () => _fmNavigate(name) : null,
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                if (isMp3)
+                  isPlaying
+                      ? IconButton(icon: const Icon(Icons.stop_circle, color: Colors.red, size: 22), onPressed: _stopPlayback)
+                      : IconButton(icon: const Icon(Icons.play_circle, color: Colors.green, size: 22), onPressed: () => _playFile(name)),
+                if (!isDir) ...[
+                  IconButton(icon: const Icon(Icons.download, size: 22), onPressed: () => _fmDownload(name)),
+                  const SizedBox(width: 4),
+                ],
+                IconButton(icon: const Icon(Icons.delete, size: 22, color: Colors.redAccent), onPressed: () => _fmDelete(name)),
+              ]),
+            );
+          }).toList()),
         ),
       ]))),
     );

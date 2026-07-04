@@ -526,6 +526,116 @@ class Esp32HttpService {
   /// GET /api/audio/stop — Stop playback.
   Future<Map<String, dynamic>> audioStop() => _audioGet('/api/audio/stop');
 
+  // ==================== File Manager API (port 8080) ====================
+
+  /// GET /api/files/list?dir=/ — List files/directories on SD card.
+  Future<Map<String, dynamic>> filesList([String dir = '/']) =>
+      _audioGet('/api/files/list?dir=${Uri.encodeComponent(dir)}');
+
+  /// GET /api/files/download?path=xxx — Download a file from SD card.
+  Future<Uint8List> filesDownload(String path) async {
+    final device = _connectedOrThrow;
+    try {
+      final socket = await Socket.connect(
+        device.host,
+        8080,
+        timeout: const Duration(seconds: 30),
+      );
+      socket.write(
+        'GET /api/files/download?path=${Uri.encodeComponent(path)} HTTP/1.0\r\n'
+        'Host: ${device.host}:8080\r\n'
+        '\r\n',
+      );
+      await socket.flush();
+
+      final completer = Completer<Uint8List>();
+      final buf = BytesBuilder();
+      int? contentLength;
+      int bodyStart = -1;
+
+      socket.cast<List<int>>().listen(
+        (chunk) {
+          buf.add(chunk);
+
+          // Parse Content-Length header from raw bytes (binary-safe)
+          if (contentLength == null) {
+            final data = buf.toBytes();
+            // Find \r\n\r\n delimiter
+            int delim = -1;
+            for (int i = 0; i < data.length - 3; i++) {
+              if (data[i] == 13 && data[i+1] == 10 && data[i+2] == 13 && data[i+3] == 10) {
+                delim = i;
+                break;
+              }
+            }
+            if (delim >= 0) {
+              // Decode only the header portion as UTF-8
+              final headers = utf8.decode(data.sublist(0, delim));
+              final clMatch = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false)
+                  .firstMatch(headers);
+              if (clMatch != null) {
+                contentLength = int.parse(clMatch.group(1)!);
+                bodyStart = delim + 4;
+              }
+            }
+          }
+
+          // Read until body bytes reached
+          if (contentLength != null && bodyStart >= 0) {
+            final bodyBytes = buf.toBytes().length - bodyStart;
+            if (bodyBytes >= contentLength!) {
+              if (!completer.isCompleted) {
+                final all = buf.toBytes();
+                completer.complete(Uint8List.fromList(
+                    all.sublist(bodyStart, bodyStart + contentLength!)));
+              }
+            }
+          }
+        },
+        onError: (e) { if (!completer.isCompleted) completer.complete(Uint8List(0)); },
+        onDone: () { if (!completer.isCompleted) completer.complete(Uint8List(0)); },
+        cancelOnError: true,
+      );
+
+      final result = await completer.future.timeout(const Duration(seconds: 30));
+      socket.close();
+      return result;
+    } catch (e) {
+      print('$TAG ❌ File download failed: $e');
+      return Uint8List(0);
+    }
+  }
+
+  /// POST /api/files/delete — Delete a file from SD card.
+  Future<Map<String, dynamic>> filesDelete(String path) async {
+    final device = _connectedOrThrow;
+    final body = jsonEncode({'path': path});
+    try {
+      final socket = await Socket.connect(
+        device.host,
+        8080,
+        timeout: const Duration(seconds: 5),
+      );
+      socket.write(
+        'POST /api/files/delete HTTP/1.0\r\n'
+        'Host: ${device.host}:8080\r\n'
+        'Content-Type: application/json\r\n'
+        'Content-Length: ${body.length}\r\n'
+        '\r\n'
+        '$body',
+      );
+      await socket.flush();
+      final resp = await _readHttpResponse(socket);
+      socket.close();
+      final bodyStart = resp.indexOf('\r\n\r\n');
+      if (bodyStart < 0) throw Exception('No response body');
+      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+    } catch (e) {
+      print('$TAG ❌ File delete failed: $e');
+      rethrow;
+    }
+  }
+
   void dispose() {
     disconnect();
     _messageController.close();

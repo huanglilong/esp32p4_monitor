@@ -45,6 +45,10 @@
 
 /* Audio recording / playback */
 #include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "esp_vfs_fat.h"
+#include "ff.h"
 #include <sys/time.h>
 #include "driver/i2s_std.h"
 #include "esp_audio_simple_player.h"
@@ -107,6 +111,9 @@ static char           s_rec_path[128];
 /* Playback */
 static esp_asp_handle_t s_asp = NULL;
 static volatile bool    s_playing = false;
+
+/* Mutual exclusion flag — file manager sets this to block audio ops during download/delete */
+static volatile bool    s_fm_busy = false;
 
 /* Mutex to serialize audio operations across concurrent HTTP handlers.
  * Without this, two clients hitting /api/record and /api/play simultaneously
@@ -346,12 +353,24 @@ static const char *WEB_UI_HTML =
 "<div id=\"cam_status\" style=\"font-size:12px;color:#a0a0b0;margin-top:4px\"></div>"
 "</div>"
 "<div class=\"card\" id=\"audio_card\" style=\"display:none\">"
-"<h2>Audio Recorder</h2>"
+"<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:8px\">"
+"<h2 style=\"margin:0;border:none;padding:0\">Audio Recorder</h2>"
+"<button onclick=\"switchMode()\" id=\"btn_switch_mode\" style=\"width:auto;padding:4px 12px;font-size:12px;background:#333\">📁 Files</button>"
+"</div>"
 "<div style=\"display:flex;gap:8px;margin-bottom:8px\">"
 "<button id=\"btn_rec\" onclick=\"onRecord()\" style=\"flex:1\">Start Record</button>"
 "<button id=\"btn_stop\" onclick=\"onStopAll()\" style=\"flex:0 0 auto;width:auto;padding:12px 16px;background:#e65100;display:none\">Stop</button></div>"
 "<div id=\"rec_stat\" style=\"font-size:12px;color:#4caf50;margin-bottom:8px;min-height:16px\"></div>"
 "<div id=\"file_list\" style=\"font-size:13px;max-height:160px;overflow-y:auto\"></div>"
+"</div>"
+"<div class=\"card\" id=\"files_card\" style=\"display:none\">"
+"<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:8px\">"
+"<h2 style=\"margin:0;border:none;padding:0\">File Manager</h2>"
+"<button onclick=\"switchMode()\" id=\"btn_switch_fm\" style=\"width:auto;padding:4px 12px;font-size:12px;background:#333\">🎤 Audio</button>"
+"</div>"
+"<div id=\"fm_breadcrumb\" style=\"font-size:12px;color:#00d4ff;margin-bottom:4px;word-break:break-all\">/</div>"
+"<div id=\"fm_capacity\" style=\"font-size:11px;color:#666;margin-bottom:8px\"></div>"
+"<div id=\"fm_list\" style=\"font-size:13px;max-height:200px;overflow-y:auto\"></div>"
 "</div>"
 "<div class=\"card\">"
 "<h2>Volume</h2>"
@@ -384,6 +403,8 @@ static const char *WEB_UI_HTML =
 "cs.textContent=j.cam_running?'● Streaming active':'○ Stopped';"
 "cs.style.color=j.cam_running?'#4caf50':'#a0a0b0';"
 "document.getElementById('audio_card').style.display=j.cam_running?'none':'block';"
+"document.getElementById('files_card').style.display='none';"
+"fmMode=false;"
 "if(!j.cam_running)loadFiles();"
 "updateUI()}catch(e){showStatus('Failed to load settings','error')}}"
 "function showStatus(msg,cls){let s=document.getElementById('status');"
@@ -399,6 +420,8 @@ static const char *WEB_UI_HTML =
 "cs.textContent=j.running?'● Streaming active':'○ Stopped';"
 "cs.style.color=j.running?'#4caf50':'#a0a0b0';"
 "document.getElementById('audio_card').style.display=j.running?'none':'block';"
+"document.getElementById('files_card').style.display='none';"
+"fmMode=false;"
 "if(!j.running)loadFiles();"
 "showStatus(j.running?'Stream started':'Stream stopped','success')}"
 "else{showStatus(j.error||'Failed','error');loadStatus()}}"
@@ -452,6 +475,72 @@ static const char *WEB_UI_HTML =
 "if(document.getElementById('btn_rec').textContent!='Start Record')await endRecord();"
 "document.getElementById('btn_stop').style.display='none';"
 "loadFiles();showStatus('Stopped','success')}"
+"catch(e){showStatus('Error','error')}}"
+"/* File Manager */"
+"var fmCurrentDir='/';"
+"var fmMode=false; /* false=audio, true=file manager */"
+"function switchMode(){"
+"if(!fmMode){"
+"/* Switching to file manager: stop any audio */"
+"if(document.getElementById('btn_rec').textContent!='Start Record'){endRecord();}"
+"fetch('/api/audio/stop');"
+"document.getElementById('btn_stop').style.display='none';"
+"showStatus('','');"
+"fmMode=true;"
+"document.getElementById('audio_card').style.display='none';"
+"document.getElementById('files_card').style.display='block';"
+"loadFileManager('/')"
+"}else{"
+"fmMode=false;"
+"document.getElementById('files_card').style.display='none';"
+"document.getElementById('audio_card').style.display='block';"
+"loadFiles()"
+"}}"
+"async function loadFileManager(d){"
+"if(typeof d!=='undefined')fmCurrentDir=d;"
+"try{var r=await fetch('/api/files/list?dir='+encodeURIComponent(fmCurrentDir));"
+"var j=await r.json();"
+"if(!j.ok){document.getElementById('fm_breadcrumb').textContent='Error';return}"
+"document.getElementById('fm_breadcrumb').textContent=j.current||'/';"
+"var cap='';"
+"if(j.total_kb&&j.total_kb>0){var free=j.free_kb, total=j.total_kb, used=total-free;"
+"var u=used>1048576?(used/1048576).toFixed(1)+'GB':used>1024?(used/1024).toFixed(1)+'MB':used+'KB';"
+"var t=total>1048576?(total/1048576).toFixed(1)+'GB':total>1024?(total/1024).toFixed(1)+'MB':total+'KB';"
+"cap=u+' used / '+t}"
+"else if(j.total_kb!==undefined)cap='Capacity unknown';"
+"document.getElementById('fm_capacity').textContent=cap;"
+"var h='';"
+"if(fmCurrentDir!=='/')h+='<div style=\"display:flex;align-items:center;padding:3px 0;border-bottom:1px solid #0f3460;cursor:pointer;color:#00d4ff\" onclick=\"navigateUp()\">📁 ..</div>';"
+"j.files.sort(function(a,b){if(a.is_dir!=b.is_dir)return a.is_dir?-1:1;return a.name.localeCompare(b.name)});"
+"if(j.files&&j.files.length)"
+"for(var i=0;i<j.files.length;i++){"
+"var f=j.files[i];var icon=f.is_dir?'📁':'📄';"
+"var sz=f.size>1048576?(f.size/1048576).toFixed(1)+'MB':f.size>1024?Math.round(f.size/1024)+'KB':f.size+'B';"
+"var ej=JSON.stringify(f.name);"
+"if(f.is_dir){h+='<div style=\"display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #0f3460\"><span style=\"flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer\" onclick=\\'navigateTo('+ej+')\\'>'+icon+' '+f.name+' <span style=\"color:#666;font-size:10px\">'+sz+'</span></span><span style=\"display:flex;gap:4px;margin-left:8px\"><button onclick=\\'navigateTo('+ej+')\\' style=\"width:auto;padding:3px 8px;font-size:11px\">Open</button><button onclick=\\'deleteFile('+ej+')\\' style=\"width:auto;padding:3px 8px;font-size:11px;background:#c00\">🗑</button></span></div>'}"
+"else{h+='<div style=\"display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #0f3460\"><span style=\"flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">'+icon+' '+f.name+' <span style=\"color:#666;font-size:10px\">'+sz+'</span></span><span style=\"display:flex;gap:4px;margin-left:8px\"><button onclick=\\'downloadFile('+ej+')\\' style=\"width:auto;padding:3px 8px;font-size:11px\">⬇</button><button onclick=\\'deleteFile('+ej+')\\' style=\"width:auto;padding:3px 8px;font-size:11px;background:#c00\">🗑</button></span></div>'}"
+"}"
+"document.getElementById('fm_list').innerHTML=h}"
+"catch(e){document.getElementById('fm_breadcrumb').textContent='Load failed'}}"
+"function navigateTo(name){"
+"var p=fmCurrentDir;if(p[p.length-1]!=='/')p+='/';"
+"loadFileManager(p+name)}"
+"function navigateUp(){"
+"if(fmCurrentDir=='/'||fmCurrentDir=='')return;"
+"var p=fmCurrentDir;if(p[p.length-1]=='/')p=p.slice(0,-1);"
+"var i=p.lastIndexOf('/');"
+"loadFileManager(i<0?'/':p.substring(0,i)||'/')}"
+"function downloadFile(name){"
+"var p=fmCurrentDir;if(p[p.length-1]!=='/')p+='/';"
+"window.open('/api/files/download?path='+encodeURIComponent(p+name),'_blank')}"
+"async function deleteFile(name){"
+"var p=fmCurrentDir;if(p[p.length-1]!=='/')p+='/';"
+"if(!confirm('Delete '+name+'?'))return;"
+"showStatus('Deleting...','info');"
+"try{var r=await fetch('/api/files/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p+name})});"
+"var j=await r.json();"
+"if(j.ok){showStatus('Deleted: '+name,'success');loadFileManager()}"
+"else showStatus('Error: '+j.error,'error')}"
 "catch(e){showStatus('Error','error')}}"
 "async function saveSettings(){"
 "let data={wifi_en:document.getElementById('wifi_en').checked?1:0,"
@@ -841,11 +930,70 @@ static bool __audio_init(void) {
     return true;
 }
 
+/* Lazy-init SD card only (no audio) — used by file manager */
+static bool __sd_ensure(void) {
+    if (SDCardDriver::instance().available()) return true;
+    return SDCardDriver::instance().init();
+}
+
+/* Sanitize a user-supplied path to ensure it stays within /sdcard.
+ * Resolves ".." and symlinks, strips trailing slashes.
+ * Returns the normalized absolute path in `out` (max `out_len` bytes).
+ * Returns true if the path is safe (under /sdcard/), false if rejected. */
+static bool __path_sanitize(const char *user_path, char *out, size_t out_len) {
+    if (!user_path || !out || out_len == 0) return false;
+    out[0] = '\0';
+
+    /* Reject empty path */
+    if (user_path[0] == '\0') return false;
+
+    /* Prepend /sdcard unless path already starts with /sdcard */
+    char full[256];
+    if (strncmp(user_path, "/sdcard", 7) == 0 && (user_path[7] == '\0' || user_path[7] == '/')) {
+        snprintf(full, sizeof(full), "%s", user_path);
+    } else if (user_path[0] == '/') {
+        snprintf(full, sizeof(full), "/sdcard%s", user_path);
+    } else {
+        snprintf(full, sizeof(full), "/sdcard/%s", user_path);
+    }
+
+    /* Strip trailing slashes (but preserve root "/sdcard") */
+    size_t len = strlen(full);
+    while (len > 1 && full[len - 1] == '/') {
+        full[--len] = '\0';
+    }
+    if (len == 0 || (len == 1 && full[0] == '/')) {
+        snprintf(full, sizeof(full), "/sdcard");
+        len = strlen(full);
+    }
+
+    /* Reject paths containing ".." segment — simple but effective */
+    if (strstr(full, "..")) {
+        ESP_LOGW(TAG, "[FM] sanitize: rejected \"..\" in \"%s\"", full);
+        return false;
+    }
+
+    /* Ensure path starts with /sdcard/ or is exactly /sdcard */
+    if (strncmp(full, "/sdcard", 7) != 0) {
+        ESP_LOGW(TAG, "[FM] sanitize: \"%s\" does not start with /sdcard", full);
+        return false;
+    }
+    if (full[7] != '\0' && full[7] != '/') {
+        ESP_LOGW(TAG, "[FM] sanitize: \"%s\" has invalid prefix", full);
+        return false;
+    }
+
+    strlcpy(out, full, out_len);
+    ESP_LOGI(TAG, "[FM] sanitize: \"%s\" -> \"%s\"", user_path, out);
+    return true;
+}
+
 /* GET /api/audio/record_start */
 static esp_err_t h_rec_start(httpd_req_t *req) {
     if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     audio_lock();
     if (s_is_recording)   { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
+    if (s_fm_busy)        { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     if (!__audio_init())  { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
     if (!s_audio_task) {
         s_audio_running = true;
@@ -991,6 +1139,7 @@ static esp_err_t h_play(httpd_req_t *req) {
     _url_decode(fn);
     char uri[160]; snprintf(uri,sizeof(uri),"file://" REC_DIR "/%s",fn);
     audio_lock();
+    if (s_fm_busy) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     /* Stop + destroy previous player for clean state (matching Music App lifecycle) */
     if (s_asp) {
         esp_audio_simple_player_stop(s_asp);
@@ -1019,6 +1168,300 @@ static esp_err_t h_stop(httpd_req_t *req) {
     if(s_asp){ esp_audio_simple_player_stop(s_asp); s_playing=false; }
     audio_unlock();
     httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
+}
+
+/*============================================================================
+ * File Manager Handlers — list / download / delete files on SD card
+ *============================================================================*/
+
+/* GET /api/files/list?dir=/ */
+static esp_err_t h_files_list(httpd_req_t *req) {
+    ESP_LOGI(TAG, "[FM] list request received");
+
+    if (!__sd_ensure()) {
+        ESP_LOGW(TAG, "[FM] list: SD card not available");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD card not available\"}");
+        return ESP_OK;
+    }
+
+    char q[256] = {};
+    char raw_dir[128] = "/";
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK && strlen(q) > 0) {
+        httpd_query_key_value(q, "dir", raw_dir, sizeof(raw_dir));
+    }
+    if (raw_dir[0] == '\0') {
+        strlcpy(raw_dir, "/", sizeof(raw_dir));
+    }
+    _url_decode(raw_dir);  /* httpd_query_key_value does NOT decode %XX */
+    ESP_LOGI(TAG, "[FM] list: raw_dir=\"%s\"", raw_dir);
+
+    char dir[256];
+    if (!__path_sanitize(raw_dir, dir, sizeof(dir))) {
+        ESP_LOGW(TAG, "[FM] list: invalid path \"%s\"", raw_dir);
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Invalid path\"}");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "[FM] list: sanitized dir=\"%s\"", dir);
+
+    DIR *d = opendir(dir);
+    if (!d) {
+        ESP_LOGW(TAG, "[FM] list: opendir(\"%s\") failed", dir);
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Cannot open directory\"}");
+        return ESP_OK;
+    }
+
+    /* Get filesystem capacity via fatfs (statvfs not supported on ESP-IDF FAT VFS) */
+    uint64_t total_kb = 0, free_kb = 0;
+    {
+        DIR *d2 = opendir("/sdcard");
+        if (d2) {
+            /* fatfs f_getfree uses the drive associated with this DIR */
+            FATFS *fs;
+            DWORD free_clust;
+            FRESULT fr = f_getfree("", &free_clust, &fs);
+            if (fr == FR_OK && fs) {
+                uint64_t tot = (fs->n_fatent - 2) * fs->csize;
+                uint64_t fre = free_clust * fs->csize;
+                total_kb = tot * fs->ssize / 1024;
+                free_kb  = fre * fs->ssize / 1024;
+                ESP_LOGI(TAG, "[FM] capacity: total=%llu MB, free=%llu MB", total_kb / 1024, free_kb / 1024);
+            } else {
+                ESP_LOGW(TAG, "[FM] f_getfree failed: %d", fr);
+            }
+            closedir(d2);
+        } else {
+            ESP_LOGW(TAG, "[FM] capacity: opendir(/sdcard) failed");
+        }
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "ok", 1);
+    cJSON *files_arr = cJSON_CreateArray();
+    cJSON_AddItemToObject(root, "files", files_arr);
+
+    /* Show current path relative to /sdcard */
+    const char *display = dir;
+    if (strncmp(dir, "/sdcard", 7) == 0) {
+        display = dir + 7;  /* skip "/sdcard" */
+        if (display[0] == '\0') display = "/";
+    }
+    cJSON_AddStringToObject(root, "current", display);
+    cJSON_AddNumberToObject(root, "total_kb", (double)total_kb);
+    cJSON_AddNumberToObject(root, "free_kb", (double)free_kb);
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;  /* skip . and .. */
+
+        char fpath[512];
+        snprintf(fpath, sizeof(fpath), "%s/%s", dir, e->d_name);
+
+        struct stat st;
+        bool is_dir = false;
+        int64_t fsize = 0;
+        time_t mtime = 0;
+        if (stat(fpath, &st) == 0) {
+            is_dir = S_ISDIR(st.st_mode);
+            fsize = is_dir ? 0 : (int64_t)st.st_size;
+            mtime = st.st_mtime;
+        }
+
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", e->d_name);
+        cJSON_AddBoolToObject(item, "is_dir", is_dir);
+        cJSON_AddNumberToObject(item, "size", (double)fsize);
+        cJSON_AddNumberToObject(item, "mtime", (double)mtime);
+        cJSON_AddItemToArray(files_arr, item);
+    }
+    closedir(d);
+
+    char *json = cJSON_PrintUnformatted(root);
+    ESP_LOGI(TAG, "[FM] list response: %d files, %zu bytes", cJSON_GetArraySize(files_arr), strlen(json));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, json, strlen(json));
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* GET /api/files/download?path=xxx */
+static esp_err_t h_files_download(httpd_req_t *req) {
+    if (!__sd_ensure()) {
+        httpd_resp_sendstr(req, "SD card not available");
+        return ESP_OK;
+    }
+
+    /* Block concurrent audio recording/playback (TOCTOU-safe: check under mutex) */
+    audio_lock();
+    if (s_is_recording || s_playing) {
+        audio_unlock();
+        httpd_resp_sendstr(req, "Audio is active — stop recording/playback first");
+        return ESP_OK;
+    }
+    audio_unlock();
+
+    char q[256] = {}, raw[256] = {};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK || !strlen(q)) {
+        httpd_resp_sendstr(req, "Missing path");
+        return ESP_OK;
+    }
+    httpd_query_key_value(q, "path", raw, sizeof(raw));
+    if (!strlen(raw)) {
+        httpd_resp_sendstr(req, "Missing path");
+        return ESP_OK;
+    }
+    _url_decode(raw);
+
+    char fpath[320];
+    if (!__path_sanitize(raw, fpath, sizeof(fpath))) {
+        httpd_resp_sendstr(req, "Invalid path");
+        return ESP_OK;
+    }
+
+    /* Only allow files, not directories */
+    struct stat st;
+    if (stat(fpath, &st) != 0 || S_ISDIR(st.st_mode)) {
+        httpd_resp_sendstr(req, "Not a file");
+        return ESP_OK;
+    }
+
+    FILE *f = fopen(fpath, "rb");
+    if (!f) {
+        httpd_resp_sendstr(req, "Cannot open file");
+        return ESP_OK;
+    }
+
+    /* Mark FM busy before streaming — prevents audio from starting mid-transfer */
+    audio_lock();
+    if (s_is_recording || s_playing) {
+        audio_unlock();
+        fclose(f);
+        httpd_resp_sendstr(req, "Audio is active — stop recording/playback first");
+        return ESP_OK;
+    }
+    s_fm_busy = true;
+    audio_unlock();
+
+    /* Get file size for Content-Length */
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    /* Extract filename from path for Content-Disposition */
+    const char *fname = strrchr(fpath, '/');
+    fname = fname ? fname + 1 : fpath;
+
+    char disp[384];
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", fname);
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+    httpd_resp_set_type(req, "application/octet-stream");
+
+    if (fsize > 0) {
+        char clen[32];
+        snprintf(clen, sizeof(clen), "%ld", fsize);
+        httpd_resp_set_hdr(req, "Content-Length", clen);
+    }
+
+    /* Stream file in chunks (heap-allocated to avoid httpd task stack overflow) */
+    uint8_t *chunk = (uint8_t *)malloc(1024);
+    if (!chunk) {
+        fclose(f);
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "Out of memory");
+        return ESP_OK;
+    }
+    size_t n;
+    while ((n = fread(chunk, 1, 1024, f)) > 0) {
+        if (httpd_resp_send_chunk(req, (const char *)chunk, (int)n) != ESP_OK) break;
+    }
+    free(chunk);
+    httpd_resp_send_chunk(req, NULL, 0);
+    fclose(f);
+
+    s_fm_busy = false;
+    ESP_LOGI(TAG, "File downloaded: %s (%ld bytes)", fpath, fsize);
+    return ESP_OK;
+}
+
+/* POST /api/files/delete — body: {"path": "xxx"} */
+static esp_err_t h_files_delete(httpd_req_t *req) {
+    if (!__sd_ensure()) {
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD card not available\"}");
+        return ESP_OK;
+    }
+
+    /* Block concurrent audio recording/playback (TOCTOU-safe: check under mutex) */
+    audio_lock();
+    if (s_is_recording || s_playing) {
+        audio_unlock();
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Audio is active\"}");
+        return ESP_OK;
+    }
+    s_fm_busy = true;
+    audio_unlock();
+
+    char buf[512];
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Empty body\"}");
+        return ESP_OK;
+    }
+    buf[received] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Invalid JSON\"}");
+        return ESP_OK;
+    }
+
+    cJSON *j_path = cJSON_GetObjectItem(root, "path");
+    if (!j_path || !cJSON_IsString(j_path) || !j_path->valuestring) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Missing path\"}");
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    char fpath[320];
+    bool safe = __path_sanitize(j_path->valuestring, fpath, sizeof(fpath));
+    cJSON_Delete(root);
+
+    if (!safe) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Invalid path\"}");
+        return ESP_OK;
+    }
+
+    struct stat st;
+    if (stat(fpath, &st) != 0) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"File not found\"}");
+        return ESP_OK;
+    }
+
+    /* Only delete regular files (not directories), for safety */
+    if (S_ISDIR(st.st_mode)) {
+        /* Allow deleting empty directories */
+        if (rmdir(fpath) != 0) {
+            s_fm_busy = false;
+            httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Cannot delete directory (not empty?)\"}");
+            return ESP_OK;
+        }
+    } else {
+        if (unlink(fpath) != 0) {
+            s_fm_busy = false;
+            httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Delete failed\"}");
+            return ESP_OK;
+        }
+    }
+
+    ESP_LOGI(TAG, "File deleted: %s", fpath);
+    s_fm_busy = false;
+    httpd_resp_sendstr(req, "{\"ok\":1}");
+    return ESP_OK;
 }
 
 /* ULog endpoints */
@@ -1116,7 +1559,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 20;  /* 5 core + 6 audio + 3 CORS + 5 ULog + 1 spare */
+    config.max_uri_handlers = 24;  /* 5 core + 6 audio + 3 file mgr + 4 CORS + 5 ULog + 1 spare */
     config.lru_purge_enable = true;
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
@@ -1166,6 +1609,14 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_a_play);
     httpd_register_uri_handler(s_httpd, &uri_a_stop);
 
+    /* File Manager */
+    httpd_uri_t uri_fm_list = { .uri = "/api/files/list", .method = HTTP_GET, .handler = h_files_list };
+    httpd_uri_t uri_fm_dl   = { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_files_download };
+    httpd_uri_t uri_fm_del  = { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_files_delete };
+    httpd_register_uri_handler(s_httpd, &uri_fm_list);
+    httpd_register_uri_handler(s_httpd, &uri_fm_dl);
+    httpd_register_uri_handler(s_httpd, &uri_fm_del);
+
     /* CORS preflight (OPTIONS) handlers for POST endpoints */
     httpd_uri_t uri_cors_settings = {
         .uri = "/api/settings", .method = HTTP_OPTIONS,
@@ -1182,6 +1633,13 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_cors_settings);
     httpd_register_uri_handler(s_httpd, &uri_cors_cam);
     httpd_register_uri_handler(s_httpd, &uri_cors_reset);
+
+    /* CORS preflight for file delete */
+    httpd_uri_t uri_cors_fm_del = {
+        .uri = "/api/files/delete", .method = HTTP_OPTIONS,
+        .handler = cors_preflight_handler, .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &uri_cors_fm_del);
 
     /* ULog endpoints */
     httpd_uri_t uri_ulog_status = {
