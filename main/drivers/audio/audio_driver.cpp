@@ -304,9 +304,12 @@ void AudioDriver::set_volume(int volume)
 
 void AudioDriver::set_mic_gain(int gain_db)
 {
-    if (_codec_mic_handle && _codec_mutex &&
+    /* WIFI6 boards use _codec_handle for both ADC and DAC;
+     * _codec_mic_handle is NULL on WIFI6. */
+    esp_codec_dev_handle_t h = _codec_mic_handle ? _codec_mic_handle : _codec_handle;
+    if (h && _codec_mutex &&
         xSemaphoreTake(_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        esp_codec_dev_set_in_gain(_codec_mic_handle, gain_db);
+        esp_codec_dev_set_in_gain(h, gain_db);
         xSemaphoreGive(_codec_mutex);
     }
 }
