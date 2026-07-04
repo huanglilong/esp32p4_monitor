@@ -32,7 +32,7 @@ private:
 
     /* V4L2 camera handles */
     int                  _video_fd;           // V4L2 device file descriptor
-    void               *_cam_buffer;          // Camera frame buffer in PSRAM (RGB888, display+detection)
+    void               *_cam_buffer;          // Camera frame buffer in PSRAM (RGB565, display+detection)
     size_t              _cam_buf_size;        // Buffer size in bytes
     uint8_t            *_v4l2_buffers[2];     // V4L2 mmap'd buffers
     uint32_t             _v4l2_buf_len[2];    // V4L2 buffer lengths
