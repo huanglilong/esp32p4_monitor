@@ -340,6 +340,14 @@ void PhoneAppAudio::_start_recording(void)
     }
 
     /* Open file on SD card */
+    if (!PeripheralManager::instance().init_sdcard()) {
+        ESP_LOGE(TAG, "SD card not available, cannot start recording");
+        shine_close(_encoder);
+        _encoder = nullptr;
+        free(_pcm_buffer);
+        _pcm_buffer = nullptr;
+        return;
+    }
     char path[128];
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -455,6 +463,14 @@ void PhoneAppAudio::_scan_recordings(void)
     /* Clear list UI */
     if (_list_recordings) {
         lv_obj_clean(_list_recordings);
+    }
+
+    /* Ensure SD card is mounted */
+    if (!PeripheralManager::instance().init_sdcard()) {
+        ESP_LOGW(TAG, "SD card not available, cannot scan recordings");
+        if (_label_no_recs) lv_obj_remove_flag(_label_no_recs, LV_OBJ_FLAG_HIDDEN);
+        if (_list_recordings) lv_obj_add_flag(_list_recordings, LV_OBJ_FLAG_HIDDEN);
+        return;
     }
 
     struct dirent *entry;

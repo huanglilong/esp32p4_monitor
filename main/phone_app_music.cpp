@@ -299,6 +299,13 @@ bool PhoneAppMusic::close(void)
 
 void PhoneAppMusic::_scan_files(void)
 {
+    /* Ensure SD card is mounted */
+    if (!PeripheralManager::instance().init_sdcard()) {
+        ESP_LOGW(TAG, "SD card not available, cannot scan music files");
+        _track_count = 0;
+        return;
+    }
+
     struct dirent *entry;
     DIR *dir = opendir(MUSIC_DIR);
     if (!dir) {
