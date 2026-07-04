@@ -499,18 +499,22 @@ extern "C" void app_main(void)
 
     web_config_server_start();
 
-    /* ── ULog Logger initialization ── */
-    ulog_writer_t *ulog = ulog_writer_get();
-    ulog_writer_init(ulog, "/sdcard");
-    ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
-    ulog_writer_add_topic(ulog, ORB_ID(detection_result), 0); /* default 100ms */
-    ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */
-    ulog_writer_add_topic(ulog, ORB_ID(audio_level), 100);    /* same as UI refresh */
-    ulog_writer_add_topic(ulog, ORB_ID(camera_state), 0);     /* default 100ms */
-    ulog_writer_add_topic(ulog, ORB_ID(recording_state), 0);  /* default 100ms */
-    ulog_writer_add_topic(ulog, ORB_ID(volume_state), 0);     /* default 100ms */
-    ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
-    ESP_LOGI(TAG, "ULog writer initialized with %d topics", 8);
+    /* ── ULog Logger initialization (only if SD card is mounted) ── */
+    if (PeripheralManager::instance().sdcard_available()) {
+        ulog_writer_t *ulog = ulog_writer_get();
+        ulog_writer_init(ulog, "/sdcard");
+        ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
+        ulog_writer_add_topic(ulog, ORB_ID(detection_result), 0); /* default 100ms */
+        ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */
+        ulog_writer_add_topic(ulog, ORB_ID(audio_level), 100);    /* same as UI refresh */
+        ulog_writer_add_topic(ulog, ORB_ID(camera_state), 0);     /* default 100ms */
+        ulog_writer_add_topic(ulog, ORB_ID(recording_state), 0);  /* default 100ms */
+        ulog_writer_add_topic(ulog, ORB_ID(volume_state), 0);     /* default 100ms */
+        ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
+        ESP_LOGI(TAG, "ULog writer initialized with %d topics", 8);
+    } else {
+        ESP_LOGW(TAG, "SD card not available, skipping ULog writer init");
+    }
 
     /* All setup complete — delete this task to reclaim its stack/TCB.
      * The FreeRTOS idle task will clean up. All work continues in
