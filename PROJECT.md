@@ -577,7 +577,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | 编码器 | Shine 定点 MP3, 128kbps CBR, 48kHz Stereo |
 | 帧大小 | 1152 samples/channel (SHINE_MAX_SAMPLES) |
 | PCM 缓冲 | PSRAM, 2304 int16_t interleaved |
-| 录音任务 | `w_audio` (core 0, prio 1, 4KB stack) |
+| 录音任务 | `w_audio` (core 0, prio 1, **12KB** stack) |
 | 播放器 | `esp_audio_simple_player` → ES8311 DAC (`s_codec_handle`) |
 | 录音文件 | `/sdcard/rec_YYYYMMDD_HHMMSS.mp3` |
 | 懒加载 | SD 卡 + 音频首次访问时才初始化 (`__audio_init()`) |

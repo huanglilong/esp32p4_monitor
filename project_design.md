@@ -69,14 +69,18 @@ SD 卡和音频 I2S 不在 app_main() 中初始化，由 Audio/Music App 按需�
 
 | # | 任务名 | 优先级 | 栈 | 核心 | 创建者 | 生命周期 | 周期/触发 |
 |---|--------|--------|-----|------|--------|----------|-----------|
-| 1 | `main` | 1 (默认) | 10KB | 0 | ESP-IDF | 永久 | 60s 空闲 |
+| 1 | `main` | 1 (默认) | 10KB | 0 | ESP-IDF | **一次性** — setup 后 `vTaskDelete(NULL)` 回收 | — |
 | 2 | `taskLVGL` | 4 | 10KB | 1 | `esp_lvgl_port` | 永久 | 5ms timer |
 | 3 | `audio_echo` | 5 | 12KB | 0† | `PhoneAppAudio::run()` | App 打开→关闭 | 10ms 循环 |
 | 4 | `detect` | 2 | 16KB | **0** (固定) | `PhoneAppCamera::run()` | Camera App 打开→关闭 | 600ms |
 | 5 | `GMF task` | 5 | 4KB | 0 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
-| 6 | `wifi_scan` | 1 | 6KB | 0† | `Settings` (WiFi ON) / Boot | WiFi ON→OFF | 200ms 轮询 |
+| 6 | `wifi_scan` | 1 | 6KB | 0† | `Settings` (WiFi ON) / Boot | WiFi ON→OFF | **500ms** 轮询 |
 | 7 | `wifi_conn` | 4 | 4KB | 0† | `Settings` (连接点击) | 一次性 | 15s 超时 |
-| 8 | `httpd` | 默认 | 6KB | 0† | `CameraStream` | Stream 打开→关闭 | 事件驱动 |
+| 8 | `httpd:80` | 默认 | 6KB | 0† | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 |
+| 9 | `httpd:81` | 默认 | **6KB** | 0† | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 (MJPEG) |
+| 10 | `web_config` | 1 | 4KB | 0† | `web_config_server_start()` | 永久 | 1s 空闲 + HTTP 事件 |
+| 11 | `w_audio` | 1 | 12KB | **0** (固定) | `web_config_server` (录音时) | 录音→停止 | 100ms 循环 (I2S read) |
+| 12 | `model_load` | 1 | 8KB | 0† | `CameraStream::_init_detection()` | 一次性 | 模型加载后 `vTaskDelete(NULL)` |
 
 > † 使用 `xTaskCreate` (未指定核心), FreeRTOS 调度到 core 0 或 core 1
 
@@ -87,7 +91,7 @@ Priority 5: audio_echo, GMF task     (最高 — 实时音频)
 Priority 4: taskLVGL, wifi_conn      (UI 渲染 / WiFi 连接)
 Priority 3: (未使用)
 Priority 2: detect                   (NPU 检测)
-Priority 1: main, wifi_scan          (后台)
+Priority 1: main(一次性), wifi_scan, web_config, w_audio, model_load   (后台/辅助)
 ```
 
 **分析**:
@@ -95,19 +99,24 @@ Priority 1: main, wifi_scan          (后台)
 - `detect` (P2) 低于 LVGL (P4) — NPU 推理不是实时需求，不会抢占 UI 渲染。
 - `wifi_conn` (P4) 与 `taskLVGL` 同级 — 连接过程中可能短暂影响 UI 流畅度，但连接是一次性操作。
 - `wifi_scan` (P1) 最低 — WiFi 扫描是纯后台操作。
+- `web_config` (P1) 后台 HTTP 服务器 — 事件驱动，空闲时让出 CPU。
+- `w_audio` (P1) web 录音任务 — 12KB 栈，100ms I2S 读取循环，不抢占 UI。
+- `model_load` (P1) 后台模型加载 — 一次性任务，加载完成后自删除。
 
-**潜在风险**: `audio_echo` (P5) 持续高优先级运行，如果编码或 I2S 操作阻塞，可能饿死低优先级任务。4KB 栈对于 Shine 编码器可能偏小（113KB 内部状态表）。
+**潜在风险**: `audio_echo` (P5) 持续高优先级运行，如果编码或 I2S 操作阻塞，可能饿死低优先级任务。但 stack 已增至 12KB，溢出风险降低。
 
 ### 2.3 核心亲和性
 
 | 核心 | 任务 |
 |------|------|
-| **Core 0** | `main`, `audio_echo`, `detect`, `GMF task`, `wifi_scan/conn` |
+| **Core 0** | `main` (一次性), `audio_echo`, `detect`, `GMF task`, `wifi_scan/conn`, `httpd:80/81`, `web_config`, `w_audio` (固定), `model_load` |
 | **Core 1** | `taskLVGL` (固定) |
 
 - Core 1 专用于 LVGL 渲染，避免 UI 抖动。
-- Core 0 承载所有计算密集型任务 (NPU 推理, 音频编码, 协议栈)。
+- Core 0 承载所有计算密集型任务 (NPU 推理, 音频编码, 协议栈, HTTP 服务器)。
 - `detect` 通过 `xTaskCreatePinnedToCore(xxx, ..., 0)` 固定到 core 0。
+- `w_audio` 通过 `xTaskCreatePinnedToCore(xxx, ..., 0)` 固定到 core 0。
+- `main` 在 setup 完成后调用 `vTaskDelete(NULL)`，释放 ~4KB 栈和 TCB。
 
 ---
 
@@ -123,7 +132,8 @@ app_main()
 ├── monitor_init_display()       # MIPI DSI + LVGL port → taskLVGL
 ├── [NVS 亮度加载]               # 从 settings/brightness 读取并应用
 ├── monitor_init_brookesia()     # 6 个 App 安装 + clock timer
-└── while(1) { vTaskDelay(60s) } # 空闲循环
+├── ULog Logger (SD 卡可用时)     # 注册 uORB topics
+└── vTaskDelete(NULL)            # 回收 app_main 任务栈 (~4KB)
 ```
 SD/音频由 Audio/Music App 在 run() 中按需初始化 (monitor_init_sdcard / monitor_init_audio)，close() 中释放。使用引用计数确保多个 App 共享时不重复释放。
 
