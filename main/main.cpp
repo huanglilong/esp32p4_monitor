@@ -245,64 +245,74 @@ static void monitor_init_brookesia(lv_display_t *disp)
     bsp_display_lock(0);
 
     ESP_Brookesia_Phone *phone = new (std::nothrow) ESP_Brookesia_Phone(disp);
-    ESP_BROOKESIA_CHECK_NULL_EXIT(phone, "Create phone failed");
+    if (!phone) { ESP_LOGE(TAG, "Create phone failed"); goto cleanup; }
 
     ESP_Brookesia_PhoneStylesheet_t *stylesheet = nullptr;
     if ((BSP_LCD_H_RES == 1024) && (BSP_LCD_V_RES == 600)) {
         stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET());
-        ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     } else if ((BSP_LCD_H_RES == 800) && (BSP_LCD_V_RES == 480)) {
         stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_480_DARK_STYLESHEET());
-        ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     } else if ((BSP_LCD_H_RES == 480) && (BSP_LCD_V_RES == 480)) {
         stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_480_480_DARK_STYLESHEET());
-        ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     } else if ((BSP_LCD_H_RES == 800) && (BSP_LCD_V_RES == 1280)) {
         stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_1280_DARK_STYLESHEET());
-        ESP_BROOKESIA_CHECK_NULL_EXIT(stylesheet, "Create stylesheet failed");
     }
 
     if (stylesheet != nullptr) {
         ESP_LOGI(TAG, "Using stylesheet (%s)", stylesheet->core.name);
-        ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->addStylesheet(stylesheet), "Add stylesheet failed");
-        ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->activateStylesheet(stylesheet), "Activate stylesheet failed");
+        if (!phone->addStylesheet(stylesheet) || !phone->activateStylesheet(stylesheet)) {
+            ESP_LOGE(TAG, "Add/activate stylesheet failed");
+            delete stylesheet;
+            goto cleanup;
+        }
         delete stylesheet;
     } else {
         ESP_LOGW(TAG, "No matching stylesheet for %dx%d, using default", BSP_LCD_H_RES, BSP_LCD_V_RES);
     }
 
-    ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->setTouchDevice(bsp_display_get_input_dev()), "Set touch device failed");
+    if (!phone->setTouchDevice(bsp_display_get_input_dev())) { ESP_LOGE(TAG, "Set touch device failed"); goto cleanup; }
     phone->registerLvLockCallback((ESP_Brookesia_GUI_LockCallback_t)(bsp_display_lock), 0);
     phone->registerLvUnlockCallback((ESP_Brookesia_GUI_UnlockCallback_t)(bsp_display_unlock));
-    ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->begin(), "Begin failed");
+    if (!phone->begin()) { ESP_LOGE(TAG, "Begin failed"); goto cleanup; }
 
-    PhoneAppSquareline *app_squareline = PhoneAppSquareline::getInstance();
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_squareline, "Create app squareline failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_squareline) >= 0), "Install app squareline failed");
+    {
+        PhoneAppSquareline *app_squareline = PhoneAppSquareline::getInstance();
+        if (!app_squareline || phone->installApp(app_squareline) < 0) { ESP_LOGE(TAG, "Install app squareline failed"); goto cleanup; }
+    }
 
-    PhoneAppCamera *app_camera = new (std::nothrow) PhoneAppCamera(false, false);
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_camera, "Create camera app failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_camera) >= 0), "Install camera app failed");
+    {
+        PhoneAppCamera *app_camera = new (std::nothrow) PhoneAppCamera(false, false);
+        if (!app_camera || phone->installApp(app_camera) < 0) { ESP_LOGE(TAG, "Install camera app failed"); delete app_camera; goto cleanup; }
+    }
 
-    PhoneAppAudio *app_audio = new (std::nothrow) PhoneAppAudio(false, false);
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_audio, "Create audio app failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_audio) >= 0), "Install audio app failed");
+    {
+        PhoneAppAudio *app_audio = new (std::nothrow) PhoneAppAudio(false, false);
+        if (!app_audio || phone->installApp(app_audio) < 0) { ESP_LOGE(TAG, "Install audio app failed"); delete app_audio; goto cleanup; }
+    }
 
-    PhoneAppMusic *app_music = new (std::nothrow) PhoneAppMusic(false, false);
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_music, "Create music app failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_music) >= 0), "Install music app failed");
+    {
+        PhoneAppMusic *app_music = new (std::nothrow) PhoneAppMusic(false, false);
+        if (!app_music || phone->installApp(app_music) < 0) { ESP_LOGE(TAG, "Install music app failed"); delete app_music; goto cleanup; }
+    }
 
-    PhoneAppSettings *app_settings = new (std::nothrow) PhoneAppSettings(false, false);
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_settings, "Create settings app failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_settings) >= 0), "Install settings app failed");
+    {
+        PhoneAppSettings *app_settings = new (std::nothrow) PhoneAppSettings(false, false);
+        if (!app_settings || phone->installApp(app_settings) < 0) { ESP_LOGE(TAG, "Install settings app failed"); delete app_settings; goto cleanup; }
+    }
 
-    PhoneAppCameraStream *app_cam_stream = new (std::nothrow) PhoneAppCameraStream(false, false);
-    ESP_BROOKESIA_CHECK_NULL_EXIT(app_cam_stream, "Create camera stream app failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT((phone->installApp(app_cam_stream) >= 0), "Install camera stream app failed");
+    {
+        PhoneAppCameraStream *app_cam_stream = new (std::nothrow) PhoneAppCameraStream(false, false);
+        if (!app_cam_stream || phone->installApp(app_cam_stream) < 0) { ESP_LOGE(TAG, "Install camera stream app failed"); delete app_cam_stream; goto cleanup; }
+    }
 
     lv_timer_create(on_clock_update_timer_cb, 1000, phone);
     bsp_display_unlock();
     ESP_LOGI(TAG, "ESP-Brookesia Phone UI initialized");
+    return;
+
+cleanup:
+    bsp_display_unlock();
+    ESP_LOGE(TAG, "ESP-Brookesia Phone UI initialization failed");
 }
 
 static void on_clock_update_timer_cb(struct _lv_timer_t *t)
