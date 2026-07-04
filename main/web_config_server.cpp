@@ -909,7 +909,8 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
     vTaskDelay(pdMS_TO_TICKS(500));
 
     esp_restart();
-
+    /* Note: esp_restart() does not return. The return below is kept
+     * for compiler satisfaction but is never reached. */
     return ESP_OK;
 }
 
@@ -967,10 +968,18 @@ static bool __path_sanitize(const char *user_path, char *out, size_t out_len) {
         len = strlen(full);
     }
 
-    /* Reject paths containing ".." segment — simple but effective */
-    if (strstr(full, "..")) {
-        ESP_LOGW(TAG, "[FM] sanitize: rejected \"..\" in \"%s\"", full);
-        return false;
+    /* Reject ".." as a path segment (not just substring).
+     * Checks each segment: if segment equals ".." (not ".hidden" or "abc..def") */
+    {
+        const char *p = full;
+        while (*p) {
+            if (*p == '/') p++;
+            if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0')) {
+                ESP_LOGW(TAG, "[FM] sanitize: rejected \"..\" segment in \"%s\"", full);
+                return false;
+            }
+            while (*p && *p != '/') p++;
+        }
     }
 
     /* Ensure path starts with /sdcard/ or is exactly /sdcard */

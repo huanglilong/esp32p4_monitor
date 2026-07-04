@@ -110,7 +110,7 @@ PhoneAppSettings::~PhoneAppSettings()
 
     /* Delete WiFi reconnect timer (defensive) */
     if (_wifi_reconnect_timer) {
-        vTimerDelete(_wifi_reconnect_timer);
+        xTimerDelete(_wifi_reconnect_timer, 0);
         _wifi_reconnect_timer = nullptr;
     }
 
