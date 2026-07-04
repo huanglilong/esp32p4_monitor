@@ -535,8 +535,9 @@ class Esp32HttpService {
   /// GET /api/files/download?path=xxx — Download a file from SD card.
   Future<Uint8List> filesDownload(String path) async {
     final device = _connectedOrThrow;
+    Socket? socket;
     try {
-      final socket = await Socket.connect(
+      socket = await Socket.connect(
         device.host,
         8080,
         timeout: const Duration(seconds: 30),
@@ -552,10 +553,12 @@ class Esp32HttpService {
       final buf = BytesBuilder();
       int? contentLength;
       int bodyStart = -1;
+      int totalLen = 0; // Track byte count without O(n²) toBytes()
 
       socket.cast<List<int>>().listen(
         (chunk) {
           buf.add(chunk);
+          totalLen += chunk.length;
 
           // Parse Content-Length header from raw bytes (binary-safe)
           if (contentLength == null) {
@@ -580,9 +583,9 @@ class Esp32HttpService {
             }
           }
 
-          // Read until body bytes reached
+          // Read until body bytes reached (use counter, not toBytes().length)
           if (contentLength != null && bodyStart >= 0) {
-            final bodyBytes = buf.toBytes().length - bodyStart;
+            final bodyBytes = totalLen - bodyStart;
             if (bodyBytes >= contentLength!) {
               if (!completer.isCompleted) {
                 final all = buf.toBytes();
@@ -598,11 +601,12 @@ class Esp32HttpService {
       );
 
       final result = await completer.future.timeout(const Duration(seconds: 30));
-      socket.close();
       return result;
     } catch (e) {
       print('$TAG ❌ File download failed: $e');
       return Uint8List(0);
+    } finally {
+      socket?.close();
     }
   }
 
@@ -610,8 +614,9 @@ class Esp32HttpService {
   Future<Map<String, dynamic>> filesDelete(String path) async {
     final device = _connectedOrThrow;
     final body = jsonEncode({'path': path});
+    Socket? socket;
     try {
-      final socket = await Socket.connect(
+      socket = await Socket.connect(
         device.host,
         8080,
         timeout: const Duration(seconds: 5),
@@ -626,13 +631,14 @@ class Esp32HttpService {
       );
       await socket.flush();
       final resp = await _readHttpResponse(socket);
-      socket.close();
       final bodyStart = resp.indexOf('\r\n\r\n');
       if (bodyStart < 0) throw Exception('No response body');
       return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
     } catch (e) {
       print('$TAG ❌ File delete failed: $e');
       rethrow;
+    } finally {
+      socket?.close();
     }
   }
 

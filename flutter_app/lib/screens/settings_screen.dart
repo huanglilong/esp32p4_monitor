@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../main.dart';
 import '../providers/app_state.dart';
@@ -182,9 +184,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final data = await _http!.filesDownload(path);
       if (!mounted || data.isEmpty) return;
-      // Save via file_picker or share — for now just show success
+      // Save to app documents directory
+      final dir = await getApplicationDocumentsDirectory();
+      final localPath = '${dir.path}/$name';
+      await File(localPath).writeAsBytes(data);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Downloaded: $name (${_b(data.length)})')),
+        SnackBar(content: Text('Saved: $localPath')),
       );
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(

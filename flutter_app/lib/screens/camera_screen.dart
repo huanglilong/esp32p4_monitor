@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../main.dart';
 import '../providers/app_state.dart';
@@ -126,9 +127,9 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<String> _saveFile(Uint8List data, String prefix, String ext) async {
-    final dir = Directory.systemTemp;
+    final dir = await getApplicationDocumentsDirectory();
     final path =
-        '${dir.path}esp32_${prefix}_${DateTime.now().millisecondsSinceEpoch}.$ext';
+        '${dir.path}/esp32_${prefix}_${DateTime.now().millisecondsSinceEpoch}.$ext';
     await File(path).writeAsBytes(data);
     return path;
   }
