@@ -89,7 +89,56 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     _wifi_rssi = -100;
 }
 
-PhoneAppSettings::~PhoneAppSettings() {}
+PhoneAppSettings::~PhoneAppSettings()
+{
+    /* Flush pending NVS writes */
+    if (_nvs_save_timer) {
+        lv_timer_delete(_nvs_save_timer);
+        _nvs_save_timer = nullptr;
+    }
+    if (_nvs_dirty) {
+        _nvs_dirty = false;
+        setNvsParam(NVS_KEY_VOLUME, _nvs_param_map[NVS_KEY_VOLUME]);
+        setNvsParam(NVS_KEY_BRIGHTNESS, _nvs_param_map[NVS_KEY_BRIGHTNESS]);
+    }
+
+    /* Delete status refresh timer */
+    if (_status_timer) {
+        lv_timer_delete(_status_timer);
+        _status_timer = nullptr;
+    }
+
+    /* Delete WiFi reconnect timer (defensive) */
+    if (_wifi_reconnect_timer) {
+        vTimerDelete(_wifi_reconnect_timer);
+        _wifi_reconnect_timer = nullptr;
+    }
+
+    /* Unregister WiFi event handlers if they were registered */
+    if (_wifi_handler_inst) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, _wifi_handler_inst);
+        _wifi_handler_inst = nullptr;
+    }
+    if (_ip_handler_inst) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, _ip_handler_inst);
+        _ip_handler_inst = nullptr;
+    }
+
+    /* Stop WiFi scan task and delete event group if not connected */
+    bool wifi_connected = _wifi_event_group &&
+        (xEventGroupGetBits(_wifi_event_group) & WIFI_CONNECTED_BIT);
+    if (!wifi_connected) {
+        if (_wifi_scan_task) {
+            vTaskDelete(_wifi_scan_task);
+            _wifi_scan_task = nullptr;
+        }
+        if (_wifi_event_group) {
+            vEventGroupDelete(_wifi_event_group);
+            _wifi_event_group = nullptr;
+        }
+    }
+    _is_ui_del = true;
+}
 
 /*============================================================================
  * Boot-time WiFi Auto-Connect

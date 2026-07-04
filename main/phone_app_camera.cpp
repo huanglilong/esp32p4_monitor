@@ -52,6 +52,31 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
 
 PhoneAppCamera::~PhoneAppCamera()
 {
+    /* Signal detection task to stop (same as close()) */
+    _cam_running = false;
+
+    /* Wait for detection task to finish current inference and self-terminate.
+     * If close() was already called, the task should already be gone. */
+    if (_detect_task_handle) {
+        int timeout = 0;
+        while (timeout < 10) {
+            if (!_detect_task_handle) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+            timeout++;
+        }
+        if (_detect_task_handle) {
+            ESP_LOGW(TAG, "Detection task did not exit, force-killing");
+            vTaskDelete(_detect_task_handle);
+            _detect_task_handle = nullptr;
+        }
+    }
+
+    /* Deinit detection resources (defensive — close() normally does this) */
+    _deinit_detection();
+
+    /* Deinit camera hardware */
     _deinit_camera();
 }
 
@@ -332,6 +357,12 @@ bool PhoneAppCamera::_deinit_camera(void)
     if (_cam_buffer) {
         free(_cam_buffer);
         _cam_buffer = nullptr;
+    }
+
+    /* Delete refresh timer if still alive (prevents leak when close() not called) */
+    if (_refresh_timer) {
+        lv_timer_delete(_refresh_timer);
+        _refresh_timer = nullptr;
     }
 
     return true;

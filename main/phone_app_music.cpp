@@ -40,6 +40,38 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
 PhoneAppMusic::~PhoneAppMusic()
 {
     _stop();
+
+    /* Clean up timers (defensive — close() normally does this) */
+    if (_auto_next_timer) {
+        lv_timer_delete(_auto_next_timer);
+        _auto_next_timer = nullptr;
+    }
+    if (_vol_sync_timer) {
+        lv_timer_delete(_vol_sync_timer);
+        _vol_sync_timer = nullptr;
+    }
+    if (_nvs_save_timer) {
+        lv_timer_delete(_nvs_save_timer);
+        _nvs_save_timer = nullptr;
+    }
+
+    /* Unsubscribe from volume_state uORB */
+    if (_vol_sub >= 0) {
+        orb_unsubscribe(_vol_sub);
+        _vol_sub = ORB_ADVERT_INVALID;
+    }
+
+    /* Flush pending NVS write */
+    if (_nvs_dirty) {
+        _nvs_dirty = false;
+        nvs_handle_t nvs_h;
+        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, "volume", (int32_t)_volume);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
+    }
+
     /* Defensive cleanup: free file names if close() wasn't called */
     for (int i = 0; i < _track_count; i++) {
         if (_file_names[i]) { free(_file_names[i]); _file_names[i] = nullptr; }

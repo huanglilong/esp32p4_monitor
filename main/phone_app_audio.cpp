@@ -69,6 +69,11 @@ PhoneAppAudio::~PhoneAppAudio()
             _task_handle = nullptr;
         }
     }
+    /* Delete update timer (defensive — close() normally does this) */
+    if (_update_timer) {
+        lv_timer_delete(_update_timer);
+        _update_timer = nullptr;
+    }
     /* Free recording names (defensive — close() normally does this) */
     for (int i = 0; i < _recording_count; i++) {
         if (_recording_names[i]) { free(_recording_names[i]); _recording_names[i] = nullptr; }
