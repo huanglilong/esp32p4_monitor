@@ -91,15 +91,21 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
 
 PhoneAppSettings::~PhoneAppSettings()
 {
-    /* Flush pending NVS writes */
+    /* Flush pending NVS writes — use direct NVS access (safe in destructor,
+     * unlike setNvsParam() which may have side effects on member state) */
     if (_nvs_save_timer) {
         lv_timer_delete(_nvs_save_timer);
         _nvs_save_timer = nullptr;
     }
     if (_nvs_dirty) {
         _nvs_dirty = false;
-        setNvsParam(NVS_KEY_VOLUME, _nvs_param_map[NVS_KEY_VOLUME]);
-        setNvsParam(NVS_KEY_BRIGHTNESS, _nvs_param_map[NVS_KEY_BRIGHTNESS]);
+        nvs_handle_t nvs_h;
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, NVS_KEY_VOLUME, _nvs_param_map[NVS_KEY_VOLUME]);
+            nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, _nvs_param_map[NVS_KEY_BRIGHTNESS]);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
     }
 
     /* Delete status refresh timer */
@@ -124,18 +130,18 @@ PhoneAppSettings::~PhoneAppSettings()
         _ip_handler_inst = nullptr;
     }
 
-    /* Stop WiFi scan task and delete event group if not connected */
-    bool wifi_connected = _wifi_event_group &&
-        (xEventGroupGetBits(_wifi_event_group) & WIFI_CONNECTED_BIT);
-    if (!wifi_connected) {
-        if (_wifi_scan_task) {
-            vTaskDelete(_wifi_scan_task);
-            _wifi_scan_task = nullptr;
-        }
-        if (_wifi_event_group) {
-            vEventGroupDelete(_wifi_event_group);
-            _wifi_event_group = nullptr;
-        }
+    /* Stop WiFi scan task and delete event group.
+     * Note: close() intentionally keeps WiFi alive when connected (persistent
+     * connection), but in the destructor we must clean up everything — the
+     * event handlers are already unregistered above, so callbacks would crash
+     * with a dangling app pointer. Disconnect first, then free resources. */
+    if (_wifi_scan_task) {
+        vTaskDelete(_wifi_scan_task);
+        _wifi_scan_task = nullptr;
+    }
+    if (_wifi_event_group) {
+        vEventGroupDelete(_wifi_event_group);
+        _wifi_event_group = nullptr;
     }
     _is_ui_del = true;
 }
