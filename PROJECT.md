@@ -210,15 +210,17 @@ PeripheralManager (thin facade)
 
 ### SDMMC/SDSPI — 真实 GPIO 引脚
 
-> **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5)。SDMMC_HOST_SLOT_0 被 ESP32-C6 WiFi (SDIO) 占用, 本项目实际使用 SDSPI 模式 (详见 `main/main.cpp:163`)。
+> **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5)。
 > **重要**: MIPI CSI (物理引脚 42-48) 与 SD 卡 (物理引脚 80-86) 是完全不同的物理引脚, 不存在引脚冲突!
 >
-> **SDSPI 1-bit 模式原因**:
+> **SDSPI 1-bit 模式** (两板统一):
 > - ESP32-P4 有 2 个 SDMMC Slot: Slot 0 和 Slot 1
 > - **Slot 1**: 被 C6 WiFi 占用 (SDIO 4-bit, 40MHz)
-> - **Slot 0 → SD 卡**: 只能用 `SDSPI_HOST_DEFAULT()` → GP-SPI2 (`SPI2_HOST`) → **1-bit 模式, 20MHz** (`SDMMC_FREQ_DEFAULT`)
-> - SPI 协议本身只有 1 根数据线, 无法使用 4-bit 模式
-> - 如果改为 SDMMC 4-bit 原生模式, 需要释放 Slot 0 或 Slot 1, 但这与 C6 WiFi SDIO 冲突
+> - **Slot 0**: BSP SDMMC 原生模式与 C6 SDIO 共享 host controller，初始化冲突。**两板统一使用 SDSPI** (`SPI2_HOST`)
+> - **LCD-4B**: SDSPI (GPIO 39/42/43/44), LDO4 由 BSP display init 上电
+> - **WIFI6**: SDSPI (GPIO 39/42/43/44), LDO4 由 `sd_pwr_ctrl` API 管理
+> - **SD 常驻挂载**: boot 时挂载后永不下电，`SDCardDriver::init()` 幂等, `deinit()` no-op
+> - VFS 表扩容: `CONFIG_VFS_MAX_COUNT=8→16`，SD 常驻 + camera ISP/CSI 需要更多槽位
 
 | 信号 | GPIO | 物理引脚 | 说明 |
 |------|------|----------|------|
@@ -263,31 +265,35 @@ app_main()
   │      → ST7703 720×720 LCD + GT911 Touch
   │      → LVGL taskLVGL 创建
   │
-  ├─ 2. SD 卡挂载 (boot时挂载, 永不下电)
-  │      → LCD-4B: bsp_sdcard_mount() (BSP SDMMC, LDO由BSP管理)
-  │      → WIFI6:  SDCardDriver::init() (SDSPI, LDO power-cycle)
+  ├─ 2. SD 卡挂载 (boot时挂载, 永不下电, WiFi之前)
+  │      → LCD-4B: SDSPI (LDO4由BSP display init上电)
+  │      → WIFI6:  SDSPI (sd_pwr_ctrl API管理LDO4)
   │      → 读取 wifi.txt (首次配置fallback)
   │      → **SD 卡保持挂载, 不再 unmount**
   │
-  ├─ 3. ESP-Brookesia Phone UI (6 apps installed)
+  ├─ 3. WiFi 自动连接 (SD之后 — C6 SDIO争用SDMMC host ctrl)
+  │
+  ├─ 4. ESP-Brookesia Phone UI (6 apps installed)
   │      → PhoneAppSquareline
   │      → PhoneAppCamera        (CSI camera: run→init, close→deinit)
-  │      → PhoneAppAudio         (音频+SD: run→init, close→deinit audio only)
-  │      → PhoneAppMusic         (音频+SD: run→init, close→deinit audio only)
+  │      → PhoneAppAudio         (音频+SD: run→init SD, close→deinit audio only)
+  │      → PhoneAppMusic         (音频+SD: run→init SD, close→deinit audio only)
   │      → PhoneAppSettings      (WiFi: run→init)
   │      → PhoneAppCameraStream  (CSI camera + mDNS + HTTP: run→init, close→deinit)
   │
-  ├─ 4. (音频 deferred to Audio & Music apps)
+  ├─ 5. Web Config Server (HTTP :8080)
   │
-  └─ 5. Memory Monitor Loop (每 60s)
+  └─ 6. Memory Monitor Loop (每 60s)
 ```
 
-> **注意**: SD 卡在 `boot_sdcard_wifi_config()` 中挂载后**永不卸载**。
->   - LCD-4B: BSP 管理 LDO4 + SDMMC, `bsp_sdcard_mount()` 挂载后不再调用 `bsp_sdcard_unmount()`
->   - WIFI6: `SDCardDriver::init()` 执行 LDO power-cycle + SDSPI 挂载, `deinit()` 为 no-op
->   - `SDCardDriver::init()` 支持幂等调用: 已初始化则直接返回 true, LCD-4B 上通过 `stat("/sdcard")` 检测 BSP 挂载
->   - `PeripheralManager::init_sdcard()` 和 `deinit_sdcard()` 保持 API 兼容, deinit 为 no-op
+> **注意**: SD 卡在 `app_main()` 中挂载后**永不卸载**。
+>   - 两板统一使用 SDSPI：BSP SDMMC 原生模式与 C6 SDIO 共享 host controller，LCD-4B 无法同时使用
+>   - LCD-4B: BSP display init 已上电 LDO4，SDCardDriver 跳过 LDO 管理，直接用 SDSPI
+>   - WIFI6: `SDCardDriver::init()` 通过 `sd_pwr_ctrl` API 管理 LDO4 + SDSPI, `deinit()` 为 no-op
+>   - `SDCardDriver::init()` 支持幂等调用, `_has_lcd` flag 区分板型
+>   - `PeripheralManager::init_sdcard()` / `deinit_sdcard()` 保持 API 兼容
 >   - **音频 I2S** 仍由 Audio/Music App 在 `run()` 中按需初始化, `close()` 中释放 (引用计数)
+>   - **VFS_MAX_COUNT=16**: SD 常驻 + camera ISP/CSI 需要更多 VFS 槽位 (原 8 不够)
 
 
 ## 关键修改和问题解决
@@ -691,6 +697,11 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] Settings App LVGL 线程安全 (wifiConnectTaskHandler 加 bsp_display_lock)
 - [x] **字体裁剪**: 仅保留实际使用的 8 种字体 (10/12/14/18/20/22/24/28), 回收 ~560KB Flash
 - [x] **SD LDO 句柄泄漏**: monitor_init_sdcard() 中 LDO handle 改为静态变量, deinit 时释放
+- [x] **SD 常驻挂载**: boot 时挂载后永不下电, SDCardDriver init-once + idempotent, deinit no-op
+- [x] **SD 两板统一 SDSPI**: LCD-4B 改用 SDSPI (BSP SDMMC 与 C6 SDIO host ctrl 冲突), LDO4 由 BSP 管理
+- [x] **VFS_MAX_COUNT=16**: SD 常驻占用 1 VFS 槽位, camera ISP+CSI 需要 2 槽位, 原 8 不够
+- [x] **Camera ISP init retry**: 同时清理 /dev/video0 + /dev/video20, 增加诊断日志
+- [x] **Camera Stream stop 修复**: _running=false 移到 httpd_stop 之前, stream handler 先退出循环
 - [x] **CORS 预检**: Web Config Server 添加 OPTIONS 处理器, 修复浏览器跨域 POST 请求
 - [x] **WiFi 扫描优化**: 扫描任务空闲轮询从 200ms 降到 500ms
 - [x] **Web 音频录制/播放**: web_config_server 增加录音 (Start/End, Shine MP3 → SD) 和播放 (esp_audio_simple_player) 功能, Camera Stream 未运行时可用

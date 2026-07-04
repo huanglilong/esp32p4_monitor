@@ -42,7 +42,8 @@
 | # | 需求 | 说明 | 状态 |
 |---|------|------|:----:|
 | S1 | **esp_hosted 稳定性** | 固定 v2.12.7 + RX_STREAMING + Q_SIZE=20 + PSRAM mempool | ✅ |
-| S2 | **SD/音频延迟初始化** | 按需 init/deinit + 引用计数，减少空闲 DMA 负载 | ✅ |
+| S2 | **SD init-once + SDSPI 统一** | boot 时挂载永不下电, 两板统一 SDSPI, sd_pwr_ctrl + _has_lcd 区分, VFS_MAX_COUNT=16 | ✅ |
+| S2b | **SD 防御检查** | Audio/Music App SD 文件操作前调用 init_sdcard() 确保挂载 | ✅ |
 | S3 | **LVGL 线程安全** | Music (GMF cb + lvgl_port_lock), Settings (wifi task + bsp_display_lock) | ✅ |
 | S4 | **检测框坐标修复** | COCODetect 内部缩放 → 移除手动 SCALE，修正双重缩放 | ✅ |
 | S5 | **I2S MCLK 匹配** | 384×→256×，与 ES8311/ES7210 codec 一致 | ✅ |
@@ -121,9 +122,10 @@
 | S78 | **cJSON_Print NULL 检查** | CameraStream 两个 JSON handler 添加 `cJSON_Print` 返回 NULL 检查，防止 `httpd_resp_sendstr(NULL)` 崩溃 | ✅ |
 | S79 | **AudioDriver volume 线程安全** | `_volume = volume` 移入 `_codec_mutex` 保护区间内，消除跨核读写竞态 | ✅ |
 | S80 | **CameraStream detector atomic** | `_detector` 从 `volatile COCODetect*` 改为 `std::atomic<COCODetect*>`，`_model_ready` 改为 `std::atomic<bool>`，提供正确的内存序保证 | ✅ |
-| S81 | **example_video_init VFS 泄漏修复** | `esp_video_init()` 失败时强制调用 `esp_video_deinit()` 清理部分注册的 VFS 设备（如 video20），防止后续 `example_video_init()` 永远失败 | ✅ |
+| S81 | **example_video_init VFS 泄漏修复** | `esp_video_init()` 失败时强制调用 `esp_video_deinit()` + 双重清理 `/dev/video0`(CSI) + `/dev/video20`(ISP1) + 诊断日志 + 100ms 延迟重试 | ✅ |
 | S82 | **main.cpp nothrow 分配** | 所有 `new` 分配改为 `new(std::nothrow)` 防止 OOM 时 `std::bad_alloc` 崩溃（ESP-IDF 禁用 C++ 异常） | ✅ |
-| S83 | **example_video_init VFS 强制清理重试** | `esp_video_init()` 失败时用 `esp_vfs_unregister()` 强制注销残留 `video20`，然后重试一次，修复因前次会话残留导致的永久失败 | ✅ |
+| S83 | **Camera Stream stop 死锁修复** | `_running=false` 移到 `httpd_stop()` 之前，MJPEG stream handler 先退出 `while(isRunning())` 循环，避免 `httpd_stop()` 永久等待活跃连接 | ✅ |
+| S84 | **VFS_MAX_COUNT 扩容** | 8→16 (sdkconfig.defaults)，SD 常驻挂载占用 1 槽位 + Camera ISP/CSI 需要 2 槽位，原 8 不足 | ✅ |
 | S84 | **Flutter 设备列表排序** | 新扫描设备排在前面，历史（已保存）设备排在后面，分区显示 "Scanned Devices" / "History" 标题 | ✅ |
 | S85 | **Flutter 设备可达性状态** | 设备卡片显示状态徽章：Connected(绿) / Reachable(蓝) / Offline(橙) / History(灰)，TCP 端口 80/8080 探测 | ✅ |
 | R18 | **Web File Manager** | web_config_server 新增 SD 卡文件管理器：递归浏览目录、Download 文件到浏览器、Delete 文件/空目录；与 Audio Recorder 互斥（模式切换），路径穿越防护 | ✅ |
