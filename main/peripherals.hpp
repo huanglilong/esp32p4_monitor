@@ -6,7 +6,7 @@
  * Architecture:
  *   PeripheralManager (facade)
  *     ├── AudioDriver      — I2S + codec lifecycle, volume, uORB
- *     ├── SDCardDriver     — SD mount/unmount, LDO power-cycle
+ *     ├── SDCardDriver     — SD init-once (mounts at boot, never unmounts)
  *     └── CameraDriver     — camera_state pub/sub, claim/release
  *
  * This facade preserves the existing API so app modules need no changes.
@@ -33,9 +33,9 @@ public:
     bool has_lcd(void) const { return _has_lcd; }
     void set_has_lcd(bool v);
 
-    /* ---- SD Card (delegates to SDCardDriver) ---- */
+    /* ---- SD Card (delegates to SDCardDriver, init-once) ---- */
     bool init_sdcard(void);
-    void deinit_sdcard(void);
+    void deinit_sdcard(void);  /* no-op, SD stays mounted */
     bool sdcard_available(void) const { return SDCardDriver::instance().available(); }
 
     /* ---- Audio (delegates to AudioDriver) ---- */

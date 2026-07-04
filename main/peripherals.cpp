@@ -8,8 +8,6 @@
 #include "peripherals.hpp"
 #include "esp_log.h"
 
-static const char *TAG = "PeriphMgr";
-
 /*============================================================================
  * Singleton
  *============================================================================*/
@@ -30,12 +28,13 @@ PeripheralManager::PeripheralManager() :
 void PeripheralManager::set_has_lcd(bool v)
 {
     _has_lcd = v;
-    /* Propagate board type to AudioDriver for codec configuration */
+    /* Propagate board type to drivers */
     AudioDriver::instance().set_has_lcd(v);
+    SDCardDriver::instance().set_has_lcd(v);
 }
 
 /*============================================================================
- * SD Card — delegates to SDCardDriver
+ * SD Card — delegates to SDCardDriver (init-once, never unmount)
  *============================================================================*/
 bool PeripheralManager::init_sdcard(void)
 {
@@ -44,6 +43,7 @@ bool PeripheralManager::init_sdcard(void)
 
 void PeripheralManager::deinit_sdcard(void)
 {
+    /* No-op: SD card stays mounted permanently after boot */
     SDCardDriver::instance().deinit();
 }
 

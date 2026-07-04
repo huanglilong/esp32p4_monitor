@@ -212,9 +212,8 @@ bool PhoneAppAudio::close(void)
         if (_recording_names[i]) { free(_recording_names[i]); _recording_names[i] = nullptr; }
     }
 
-    /* Deinit audio and SD card — release DMA/PSRAM resources */
+    /* Deinit audio — release DMA/PSRAM resources. SD card stays mounted. */
     PeripheralManager::instance().deinit_audio();
-    PeripheralManager::instance().deinit_sdcard();
 
     ESP_LOGI(TAG, "Audio app closed");
     return true;

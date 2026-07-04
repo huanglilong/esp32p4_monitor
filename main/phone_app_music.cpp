@@ -286,9 +286,8 @@ bool PhoneAppMusic::close(void)
         _asp_handle = nullptr;
     }
 
-    /* Deinit audio and SD card — release DMA/PSRAM resources */
+    /* Deinit audio — release DMA/PSRAM resources. SD card stays mounted. */
     PeripheralManager::instance().deinit_audio();
-    PeripheralManager::instance().deinit_sdcard();
 
     ESP_LOGI(TAG, "Music app closed");
     return true;

@@ -172,7 +172,7 @@ PeripheralManager (thin facade)
 | Driver | 目录 | 职责 | 线程安全 |
 |--------|------|------|----------|
 | AudioDriver | `drivers/audio/` | I2S channel + ES8311/ES7210 codec init/deinit, volume/mic_gain/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
-| SDCardDriver | `drivers/sdcard/` | SDSPI mount/unmount, LDO VO4 power-cycle, refcount | lifecycle_mutex |
+| SDCardDriver | `drivers/sdcard/` | SDSPI init-once (LDO VO4 power-cycle), never unmount | _init_mutex |
 | CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API | uORB pub/sub |
 
 **设计要点**:
@@ -254,7 +254,7 @@ PeripheralManager (thin facade)
 | OV5647 Camera | (auto-detect) |
 
 
-## 外设初始化流程 (按需初始化, App 退出时释放)
+## 外设初始化流程 (SD 卡启动挂载, 音频按需初始化)
 
 ```
 app_main()
@@ -263,24 +263,31 @@ app_main()
   │      → ST7703 720×720 LCD + GT911 Touch
   │      → LVGL taskLVGL 创建
   │
-  ├─ 2. ESP-Brookesia Phone UI (6 apps installed)
+  ├─ 2. SD 卡挂载 (boot时挂载, 永不下电)
+  │      → LCD-4B: bsp_sdcard_mount() (BSP SDMMC, LDO由BSP管理)
+  │      → WIFI6:  SDCardDriver::init() (SDSPI, LDO power-cycle)
+  │      → 读取 wifi.txt (首次配置fallback)
+  │      → **SD 卡保持挂载, 不再 unmount**
+  │
+  ├─ 3. ESP-Brookesia Phone UI (6 apps installed)
   │      → PhoneAppSquareline
   │      → PhoneAppCamera        (CSI camera: run→init, close→deinit)
-  │      → PhoneAppAudio         (I2S+ES8311+ES7210 + SD卡: run→init, close→deinit)
-  │      → PhoneAppMusic         (I2S+ES8311 + SD卡: run→init, close→deinit)
+  │      → PhoneAppAudio         (音频+SD: run→init, close→deinit audio only)
+  │      → PhoneAppMusic         (音频+SD: run→init, close→deinit audio only)
   │      → PhoneAppSettings      (WiFi: run→init)
   │      → PhoneAppCameraStream  (CSI camera + mDNS + HTTP: run→init, close→deinit)
   │
-  ├─ 3. (SD/Audio deferred to Audio & Music apps)
+  ├─ 4. (音频 deferred to Audio & Music apps)
   │
-  └─ 4. Memory Monitor Loop (每 5s)
+  └─ 5. Memory Monitor Loop (每 60s)
 ```
 
-> **注意**: SD 卡和音频 I2S 不再在 `app_main()` 中初始化, 而是由 Audio/Music App 在 `run()` 中按需初始化,
->   在 `close()` 中释放。这减少了空闲时的 DMA 对 PSRAM 的占用, 降低因负载导致 crash 的风险。
->   **引用计数**: `PeripheralManager::init_sdcard()` / `init_audio()` 委托给 `SDCardDriver` / `AudioDriver`，使用引用计数保证多次调用安全。
->   每次打开 App 引用计数 +1, 退出 -1, 只有计数归零才真正释放硬件资源。
->   **Camera 互斥**: `CameraDriver::claim()/release()` 通过 uORB `camera_state` topic 实现跨模块互斥。
+> **注意**: SD 卡在 `boot_sdcard_wifi_config()` 中挂载后**永不卸载**。
+>   - LCD-4B: BSP 管理 LDO4 + SDMMC, `bsp_sdcard_mount()` 挂载后不再调用 `bsp_sdcard_unmount()`
+>   - WIFI6: `SDCardDriver::init()` 执行 LDO power-cycle + SDSPI 挂载, `deinit()` 为 no-op
+>   - `SDCardDriver::init()` 支持幂等调用: 已初始化则直接返回 true, LCD-4B 上通过 `stat("/sdcard")` 检测 BSP 挂载
+>   - `PeripheralManager::init_sdcard()` 和 `deinit_sdcard()` 保持 API 兼容, deinit 为 no-op
+>   - **音频 I2S** 仍由 Audio/Music App 在 `run()` 中按需初始化, `close()` 中释放 (引用计数)
 
 
 ## 关键修改和问题解决

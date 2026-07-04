@@ -1749,7 +1749,7 @@ void web_config_server_stop(void)
     if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
     s_playing = false;
     if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
-    if (s_audio_inited) { PeripheralManager::instance().deinit_audio(); PeripheralManager::instance().deinit_sdcard(); s_audio_inited=false; }
+    if (s_audio_inited) { PeripheralManager::instance().deinit_audio(); s_audio_inited=false; }
     audio_unlock();
 
     /* Signal task to exit its idle loop — it will clean up HTTP server
