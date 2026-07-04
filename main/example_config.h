@@ -54,11 +54,14 @@ extern "C" {
 
 /* Shared mDNS initialization guard with reference counting.
  * Both CameraStream and web_config_server use mDNS.
+ * - shared_mdns_mutex_init() must be called once from app_main before
+ *   any task that uses mDNS (eliminates lazy-init TOCTOU race).
  * - shared_mdns_ensure() increments ref count; first caller inits mDNS.
  * - shared_mdns_release() decrements ref count; last caller deinits mDNS.
  * MUST be called after WiFi is connected (delegated hostname needs IP).
  * Individual modules should only add/remove their own services,
  * never call mdns_free() directly. */
+void shared_mdns_mutex_init(void);
 bool shared_mdns_ensure(void);
 void shared_mdns_release(void);
 void shared_mdns_update_delegate_ip(void);

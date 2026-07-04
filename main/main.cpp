@@ -83,11 +83,16 @@ static SemaphoreHandle_t s_mdns_mutex = NULL;
 static int  s_mdns_refcount = 0;
 static bool s_mdns_initialized = false;
 
-static SemaphoreHandle_t _mdns_mutex_get(void)
+/* Must be called once from app_main before any task that uses mDNS. */
+void shared_mdns_mutex_init(void)
 {
     if (!s_mdns_mutex) {
         s_mdns_mutex = xSemaphoreCreateMutex();
     }
+}
+
+static SemaphoreHandle_t _mdns_mutex_get(void)
+{
     return s_mdns_mutex;
 }
 
@@ -419,6 +424,9 @@ static bool detect_lcd_via_i2c(void)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== ESP32-P4 Monitor Starting ===");
+
+    /* 0a. mDNS mutex init — must happen before any task uses shared_mdns_ensure/release */
+    shared_mdns_mutex_init();
 
     /* 0. NVS init */
     esp_err_t nvs_err = nvs_flash_init();
