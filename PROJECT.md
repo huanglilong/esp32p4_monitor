@@ -260,6 +260,7 @@ PeripheralManager (thin facade)
 
 ```
 app_main()
+  ├─ 0a. mDNS mutex init (shared_mdns_mutex_init — 提前创建, 消除懒初始化竞态)
   ├─ 0. NVS Flash (nvs_flash_init + 亮度加载)
   ├─ 1. MIPI DSI Display (bsp_display_start_with_config)
   │      → ST7703 720×720 LCD + GT911 Touch
@@ -283,7 +284,9 @@ app_main()
   │
   ├─ 5. Web Config Server (HTTP :8080)
   │
-  └─ 6. Memory Monitor Loop (每 60s)
+  ├─ 6. ULog Logger (仅当 SD 卡成功挂载时初始化)
+  │
+  └─ 7. vTaskDelete(NULL) — 回收 app_main 任务栈
 ```
 
 > **注意**: SD 卡在 `app_main()` 中挂载后**永不卸载**。
@@ -550,7 +553,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | GT911 响应 | LCD-4B | ✅ Phone UI | ES8311(0x30)+ES7210(0x80) | ✅ 8080 |
 | 无响应 | WIFI6 基板 | ❌ 无屏幕 | ES8311(0x30) 单芯片 | ✅ 8080 |
 
-全局变量 `g_has_lcd` 在 `main.cpp` 中设置，`web_config_server.cpp` 通过 `extern` 引用。
+全局变量 `g_has_lcd`（`volatile bool`）在 `main.cpp` 中设置，`web_config_server.cpp` 通过 `extern volatile` 引用。
 无需任何编译期配置，单一固件自动适配。
 
 ### 17. Web 配置服务器 (web_config_server)

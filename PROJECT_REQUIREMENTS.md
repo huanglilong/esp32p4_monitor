@@ -130,6 +130,16 @@
 | S85 | **Flutter 设备可达性状态** | 设备卡片显示状态徽章：Connected(绿) / Reachable(蓝) / Offline(橙) / History(灰)，TCP 端口 80/8080 探测 | ✅ |
 | R18 | **Web File Manager** | web_config_server 新增 SD 卡文件管理器：递归浏览目录、Download 文件到浏览器、Delete 文件/空目录；与 Audio Recorder 互斥（模式切换），路径穿越防护 | ✅ |
 | R19 | **Flutter File Manager** | Flutter App Settings 页新增文件管理：目录浏览/导航、下载、删除，含确认弹窗 | ✅ |
+| S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
+| S87 | **AudioDriver deinit mutex 删除竞态** | `deinit()` 先置空 codec handles + yield 让 in-flight 操作退出，再安全删除 `_codec_mutex`；同时重置 `_vol_pub` 防止重启用 stale handle | ✅ |
+| S88 | **AudioDriver set_volume stale publish** | codec mutex 超时时跳过 uORB publish，避免发布未实际应用的音量值 | ✅ |
+| S89 | **AudioDriver set_mic_gain WIFI6** | `_codec_mic_handle` 为 NULL 时回退到 `_codec_handle`，WIFI6 板 mic gain 不再静默失效 | ✅ |
+| S90 | **mDNS mutex TOCTOU 修复** | `_mdns_mutex_get()` 懒创建改为 `shared_mdns_mutex_init()` 在 app_main 中提前创建，消除并发双重创建竞态 | ✅ |
+| S91 | **monitor_init_brookesia 显示锁死锁** | `ESP_BROOKESIA_CHECK_*_EXIT` 改为 if/goto-cleanup 模式，所有退出路径均调用 `bsp_display_unlock()`；installApp 失败时 delete 已分配的 app 对象 | ✅ |
+| S92 | **g_has_lcd volatile** | `g_has_lcd` 改为 `volatile bool`，确保跨核写入对其他 task 可见 | ✅ |
+| S93 | **app_main 任务回收** | idle loop 改为 `vTaskDelete(NULL)`，回收 ~4KB 栈和 TCB | ✅ |
+| S94 | **ULog SD 卡检查** | 仅在 SD 卡成功挂载时初始化 ULog writer，防止写入不存在的挂载点 | ✅ |
+| S95 | **web uORB wifi_state 订阅泄漏** | `web_config_server_stop()` 和 task 退出路径添加 `orb_unsubscribe(s_wifi_state_sub)` | ✅ |
 
 ---
 
@@ -250,6 +260,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-04 | +S86~S95 Bug 与性能修复: web audio_unlock 泄漏(S86), AudioDriver deinit 竞态(S87), set_volume stale publish(S88), set_mic_gain WIFI6(S89), mDNS mutex TOCTOU(S90), 显示锁死锁(S91), g_has_lcd volatile(S92), app_main 任务回收(S93), ULog SD 检查(S94), web uORB 订阅泄漏(S95) |
 | 2026-07-04 | +R18 Web File Manager: SD 卡文件浏览器 (list/download/delete)，与 Audio Recorder 模式互斥，路径穿越防护 |
 | 2026-07-04 | +S84 S85 Flutter 设备列表排序 (新扫描优先/历史在后) + 设备可达性状态徽章 (Connected/Reachable/Offline/History) |
 | 2026-07-03 | +S68 mDNS 双主机名: 保留 `esp-web` 便捷名 + 新增 `esp-web-XXXXXX` 委托主机名（MAC后3字节），单设备零配置 + 多设备精确定位 |
