@@ -203,21 +203,16 @@ void CameraStream::stop(void)
 {
     if (!_running) return;
 
-    /* Keep _running=true until all resources are torn down.
-     * This prevents concurrent access to partially-freed resources
-     * (e.g., HTTP handler reading _v4l2_bufs while we munmap them).
-     * The HTTP server stop ensures no new requests arrive. */
+    /* Signal stream handler to exit loop BEFORE stopping HTTP server.
+     * httpd_stop() waits for active connections to close — if the MJPEG
+     * stream loop never exits, httpd_stop() blocks indefinitely. */
+    _running = false;
 
-    /* Release camera hardware via CameraDriver */
     CameraDriver::instance().release();
-
     _stop_http_server();
     _deinit_mdns();
     _deinit_detection();
     _deinit_video();
-
-    /* Now safe to clear _running — all resources are freed */
-    _running = false;
 
     ESP_LOGI(TAG, "Stream stopped");
 }
