@@ -512,8 +512,8 @@ extern "C" void app_main(void)
     ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
     ESP_LOGI(TAG, "ULog writer initialized with %d topics", 8);
 
-    /* Idle loop */
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(60000));
-    }
+    /* All setup complete — delete this task to reclaim its stack/TCB.
+     * The FreeRTOS idle task will clean up. All work continues in
+     * dedicated tasks (LVGL, WiFi, httpd, ULog, etc.). */
+    vTaskDelete(NULL);
 }
