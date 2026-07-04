@@ -99,7 +99,7 @@ bool SDCardDriver::init(void)
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files = 5,
+        .max_files = 3,
         .allocation_unit_size = 16 * 1024
     };
     const char mount_point[] = SDMMC_MOUNT_POINT;
