@@ -251,10 +251,20 @@ void AudioDriver::deinit(void)
 
     gpio_set_level((gpio_num_t)53, 0);
 
+    /* Nullify codec handles first so any in-flight codec operation
+     * (set_volume / set_mic_gain / codec_write) will skip the
+     * xSemaphoreTake(_codec_mutex, ...) path and exit quickly.
+     * Then yield to let any such operation finish before we delete
+     * the mutex — deleting a semaphore with waiters is UB. */
     if (_codec_mutex) {
+        xSemaphoreGive(_lifecycle_mutex);   /* let other tasks run */
+        vTaskDelay(pdMS_TO_TICKS(10));      /* wait for in-flight ops to exit */
+        xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
         vSemaphoreDelete(_codec_mutex);
         _codec_mutex = nullptr;
     }
+
+    _vol_pub = ORB_ADVERT_INVALID;
 
     ESP_LOGI(TAG, "Audio deinitialized");
     xSemaphoreGive(_lifecycle_mutex);
