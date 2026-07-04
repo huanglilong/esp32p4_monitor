@@ -244,12 +244,14 @@ static void monitor_init_display(lv_display_t **disp)
 
 static void monitor_init_brookesia(lv_display_t *disp)
 {
+    ESP_Brookesia_Phone *phone = nullptr;
+    ESP_Brookesia_PhoneStylesheet_t *stylesheet = nullptr;
+
     bsp_display_lock(0);
 
-    ESP_Brookesia_Phone *phone = new (std::nothrow) ESP_Brookesia_Phone(disp);
+    phone = new (std::nothrow) ESP_Brookesia_Phone(disp);
     if (!phone) { ESP_LOGE(TAG, "Create phone failed"); goto cleanup; }
 
-    ESP_Brookesia_PhoneStylesheet_t *stylesheet = nullptr;
     if ((BSP_LCD_H_RES == 1024) && (BSP_LCD_V_RES == 600)) {
         stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET());
     } else if ((BSP_LCD_H_RES == 800) && (BSP_LCD_V_RES == 480)) {
