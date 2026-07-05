@@ -115,8 +115,8 @@ CameraStream& CameraStream::instance(void)
 CameraStream::CameraStream() :
     _video_fd(-1),
     _cam_width(0), _cam_height(0), _cam_pixel_format(0),
-    _v4l2_bufs{nullptr, nullptr},
-    _v4l2_buf_len{0, 0},
+    _v4l2_bufs{nullptr, nullptr, nullptr},
+    _v4l2_buf_len{0, 0, 0},
     _v4l2_buf_count(0),
     _encoder_handle(nullptr),
     _jpeg_out_buf(nullptr), _jpeg_out_size(0),
@@ -273,7 +273,7 @@ bool CameraStream::_init_video(void)
 
         /* Step 4: REQBUFS */
         req = {};
-        req.count = 2;
+        req.count = 3;  // Triple buffer: pipeline capture→encode→send
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_MMAP;
         ESP_LOGI(TAG, "V4L2 REQBUFS: count=%" PRIu32, req.count);

@@ -619,9 +619,10 @@ static bool wifi_sta_is_connected(void)
             return ws.connected;
         }
     }
-    /* Fallback: direct WiFi check */
-    wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) return false;
+    /* Fallback: direct netif IP check.
+     * esp_wifi_sta_get_ap_info() is NOT used here because it can return
+     * stale AP info even after disconnection — the IP address is the
+     * definitive connectivity indicator. */
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (!sta) return false;
     esp_netif_ip_info_t ip;

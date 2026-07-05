@@ -84,10 +84,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) { if (mounted) setState(() => _settingsLoading = false); }
   }
 
-  void _saveSettings() => _state!.updateSettings(
-    wifiEnabled: _wifiEnabled, ssid: _ssidController.text,
-    password: _passwordController.text, volume: _volume.round(),
-  );
+  Future<void> _saveSettings() async {
+    await _state!.updateSettings(
+      wifiEnabled: _wifiEnabled, ssid: _ssidController.text,
+      password: _passwordController.text, volume: _volume.round(),
+    );
+    if (mounted) _loadSettings();
+  }
 
   void _confirmFactoryReset() {
     showDialog(context: context, builder: (ctx) => AlertDialog(

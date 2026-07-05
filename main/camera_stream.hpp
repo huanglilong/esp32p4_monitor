@@ -61,8 +61,8 @@ public:
     uint32_t               _cam_width;
     uint32_t               _cam_height;
     uint32_t               _cam_pixel_format;
-    uint8_t               *_v4l2_bufs[2];
-    uint32_t               _v4l2_buf_len[2];
+    uint8_t               *_v4l2_bufs[3];
+    uint32_t               _v4l2_buf_len[3];
     uint32_t               _v4l2_buf_count;
     void                  *_encoder_handle;
     uint8_t               *_jpeg_out_buf;

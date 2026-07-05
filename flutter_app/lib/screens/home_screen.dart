@@ -132,9 +132,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _connectToDeviceWeb(Esp32Device device) async {
-    print('[HomeScreen] 🔗 Web connecting to ${device.host}:8080...');
+    debugPrint('[HomeScreen] 🔗 Web connecting to ${device.host}:8080...');
     await _state.connectToDeviceWeb(device);
-    print('[HomeScreen] connectToDeviceWeb done, isConnected=${_state.isConnected}, mounted=$mounted');
+    debugPrint('[HomeScreen] connectToDeviceWeb done, isConnected=${_state.isConnected}, mounted=$mounted');
     if (_state.isConnected && mounted) {
       print('[HomeScreen] 🎤 Navigating to SettingsScreen');
       Navigator.of(context).push(
