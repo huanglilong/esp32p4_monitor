@@ -48,7 +48,7 @@ static const char *TAG = "ULog";
 #define MAX_PATH    ULOG_MAX_PATH
 
 /** Log root directory under the SD card mount point. */
-#define LOG_DIR_NAME "log"
+#define LOG_DIR_NAME "data"
 
 /** PX4-compatible file extension. */
 #define ULOG_FILE_EXT ".ulg"
@@ -1142,8 +1142,8 @@ static uint16_t find_next_session_number(const char *log_root)
 /**
  * Create the log directory and file path.
  *
- * Date mode (SNTP synced):  /sdcard/log/YYYY-MM-DD/HH_MM_SS.ulg
- * Session mode (no RTC):    /sdcard/log/sessNNN/logNNN.ulg
+ * Date mode (SNTP synced):  /sdcard/data/YYYY-MM-DD/HH_MM_SS.ulg
+ * Session mode (no RTC):    /sdcard/data/sessNNN/logNNN.ulg
  *
  * @return ESP_OK on success
  */

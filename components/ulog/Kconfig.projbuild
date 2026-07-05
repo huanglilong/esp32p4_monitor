@@ -5,7 +5,7 @@ menu "ULog Logger Configuration"
         default n
         help
             Enable writing uORB topics to SD card in ULog format.
-            Logs are written to /sdcard/log/data_*_*.ulog.
+            Logs are written to /sdcard/data/ (date or session based).
 
     if ULOG_ENABLE
 
