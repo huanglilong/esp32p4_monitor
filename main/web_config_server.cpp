@@ -252,7 +252,7 @@ static int32_t nvs_get_i32_def(const char *key, int32_t def)
     return val;
 }
 
-static void nvs_set_i32(const char *key, int32_t value)
+static void nvs_write_i32(const char *key, int32_t value)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
@@ -723,7 +723,7 @@ static esp_err_t settings_handler(httpd_req_t *req)
         int32_t vol = j_volume->valueint;
         if (vol < VOLUME_MIN) vol = VOLUME_MIN;
         if (vol > VOLUME_MAX) vol = VOLUME_MAX;
-        nvs_set_i32(NVS_KEY_VOLUME, vol);
+        nvs_write_i32(NVS_KEY_VOLUME, vol);
         /* Apply to codec immediately (thread-safe via PeripheralManager) */
         PeripheralManager::instance().set_volume((int)vol);
     }
@@ -793,7 +793,7 @@ static esp_err_t settings_handler(httpd_req_t *req)
 
         if (wifi_connected) {
             ESP_LOGI(TAG, "WiFi connected to %s — saving to NVS", target_ssid);
-            nvs_set_i32(NVS_KEY_WIFI_EN, 1);
+            nvs_write_i32(NVS_KEY_WIFI_EN, 1);
             nvs_set_str_def(NVS_KEY_WIFI_SSID, target_ssid);
             if (target_pass && strlen(target_pass) > 0)
                 nvs_set_str_def(NVS_KEY_WIFI_PASS, target_pass);
@@ -817,7 +817,7 @@ static esp_err_t settings_handler(httpd_req_t *req)
             }
         }
     } else if (j_wifi_en && !skip_wifi) {
-        nvs_set_i32(NVS_KEY_WIFI_EN, j_wifi_en->valueint);
+        nvs_write_i32(NVS_KEY_WIFI_EN, j_wifi_en->valueint);
         if (j_wifi_en->valueint == 0) {
             /* WiFi OFF: disconnect and stop WiFi hardware immediately */
             ESP_LOGI(TAG, "WiFi OFF requested — stopping WiFi");
@@ -893,7 +893,7 @@ static esp_err_t camera_stream_handler(httpd_req_t *req)
     }
 
     /* Persist intent to NVS */
-    nvs_set_i32(NVS_KEY_CAM_STREAM, enable ? 1 : 0);
+    nvs_write_i32(NVS_KEY_CAM_STREAM, enable ? 1 : 0);
 
     cJSON_Delete(root);
 
