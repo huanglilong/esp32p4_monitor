@@ -306,11 +306,10 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path)
 
     /* Load session counter from NVS (incremented each boot) */
     writer->session_counter = load_session_counter();
-    if (writer->session_counter > 0) {
-        writer->session_counter++;
-    } else {
-        writer->session_counter = 1;
+    if (writer->session_counter > 60000) {
+        writer->session_counter = 0; /* reset on overflow threshold */
     }
+    writer->session_counter++;
     save_session_counter(writer->session_counter);
 
     /* Check wall-clock time availability */
