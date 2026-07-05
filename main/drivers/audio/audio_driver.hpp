@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 /*
  * AudioDriver — manages audio I2S + codec lifecycle.
  *
@@ -72,5 +74,5 @@ private:
     i2s_chan_handle_t        _rx_handle;
     i2s_chan_handle_t        _tx_handle;
 
-    orb_advert_t            _vol_pub;    /* uORB volume_state publisher handle */
+    std::atomic<orb_advert_t>   _vol_pub;    /* uORB volume_state publisher handle */
 };

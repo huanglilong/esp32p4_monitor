@@ -399,9 +399,9 @@ void AudioDriver::set_volume(int volume)
     }
 
     /* Publish volume_state via uORB for cross-module notification */
-    if (_vol_pub < 0) {
-        _vol_pub = orb_advertise(ORB_ID(volume_state));
-    }
+    orb_advert_t expected = ORB_ADVERT_INVALID;
+    _vol_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(volume_state)),
+            std::memory_order_acq_rel, std::memory_order_acquire);
     if (_vol_pub >= 0) {
         struct volume_state_s vs = {};
         vs.timestamp = esp_timer_get_time();
