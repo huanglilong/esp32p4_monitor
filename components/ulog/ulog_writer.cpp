@@ -34,6 +34,10 @@
 #include "esp_idf_version.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_sntp.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <inttypes.h>
 
 static const char *TAG = "ULog";
@@ -48,13 +52,30 @@ static const char *TAG = "ULog";
 /** Maximum characters in a file path. */
 #define MAX_PATH    ULOG_MAX_PATH
 
-/** Log subdirectory under the SD card mount point. */
+/** Log root directory under the SD card mount point. */
 #define LOG_DIR_NAME "log"
 
-/** File name format: data_<uptime_us>_<idx>.ulog
- *  date = esp_timer_get_time() (µs since boot, monotonic)
- *  idx  = sequential counter, resets when date changes */
-#define FILE_NAME_FMT "data_%010llu_%03u.ulog"
+/** PX4-compatible file extension. */
+#define ULOG_FILE_EXT ".ulg"
+
+/** Maximum single log file size before rotation (bytes).
+ *  Default 100 MB. When exceeded, current file is closed and
+ *  a new one is created in the same directory. */
+#ifndef ULOG_MAX_FILE_SIZE
+#ifdef CONFIG_ULOG_MAX_FILE_SIZE
+#define ULOG_MAX_FILE_SIZE  CONFIG_ULOG_MAX_FILE_SIZE
+#else
+#define ULOG_MAX_FILE_SIZE  (100 * 1024 * 1024)
+#endif
+#endif
+
+/** Wall-clock time threshold: dates before 2020-01-01 indicate
+ *  SNTP has not synced yet, so use session-based naming. */
+#define RTC_THRESHOLD_EPOCH 1577836800ULL
+
+/** NVS namespace and key for session counter persistence. */
+#define ULOG_NVS_NAMESPACE "ulog"
+#define ULOG_NVS_SESSION_KEY "session"
 
 /** Default max ULog storage as percentage of SD card capacity. */
 #ifndef ULOG_MAX_CAPACITY_PCT
@@ -190,14 +211,15 @@ typedef struct {
 
 typedef struct ulog_writer {
     /* Configuration */
-    char sd_mount_path[MAX_PATH];
+    char sd_mount_path[ULOG_MAX_PATH];
 
     /* State */
     ulog_state_t state;
 
     /* File I/O */
     int          fd;                /**< Current log file descriptor, -1 if none */
-    char         filepath[MAX_PATH]; /**< Current log file path */
+    char         filepath[ULOG_MAX_PATH + 64]; /**< Current log file path */
+    char         log_dir[ULOG_MAX_PATH + 32];  /**< Current log directory (date or session) */
     size_t       bytes_written;     /**< Total bytes written to current file */
 
     /* Topics */
@@ -218,9 +240,16 @@ typedef struct ulog_writer {
     uint64_t      last_fsync_us;
     uint64_t      start_time_us;    /**< When logging started (esp_timer) */
 
+    /* Naming mode */
+    bool          has_wall_clock;   /**< True if SNTP has synced */
+    uint16_t      session_counter;  /**< Boot session number (from NVS) */
+    uint16_t      file_counter;     /**< File counter within current session/date dir */
+
     /* Info fields */
     char          sys_name[32];     /**< System name, e.g. "esp32p4_monitor" */
     char          ver_sw[32];       /**< Software version string */
+    char          ver_hw[32];       /**< Hardware board name */
+    char          sys_uuid[24];     /**< MAC-based unique ID */
 } ulog_writer_t;
 
 /* ------------------------------------------------------------------ */
@@ -234,9 +263,12 @@ static esp_err_t write_info_messages(ulog_writer_t *writer);
 static esp_err_t write_format_messages(ulog_writer_t *writer);
 static esp_err_t write_subscription_messages(ulog_writer_t *writer);
 static void ensure_log_dir(const char *dir);
-static void cleanup_and_get_next_name(const char *dir,
-                                      uint64_t *out_date, uint32_t *out_idx,
-                                      size_t *out_total, size_t size_limit);
+static bool has_wall_clock_time(void);
+static uint16_t load_session_counter(void);
+static void save_session_counter(uint16_t counter);
+static esp_err_t create_log_path(ulog_writer_t *writer);
+static void cleanup_old_logs(const char *log_root, size_t size_limit);
+static esp_err_t rotate_log_file(ulog_writer_t *writer);
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
@@ -259,14 +291,38 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path)
     snprintf(writer->sys_name, sizeof(writer->sys_name), "esp32p4_monitor");
     snprintf(writer->ver_sw, sizeof(writer->ver_sw), "IDF %s", esp_get_idf_version());
 
+    /* Detect hardware board type */
+    extern volatile bool g_has_lcd;
+    snprintf(writer->ver_hw, sizeof(writer->ver_hw), "%s",
+             g_has_lcd ? "ESP32-P4-WIFI6-LCD-4B" : "ESP32-P4-WIFI6");
+
+    /* Generate sys_uuid from base MAC */
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BASE);
+    snprintf(writer->sys_uuid, sizeof(writer->sys_uuid),
+             "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    /* Load session counter from NVS (incremented each boot) */
+    writer->session_counter = load_session_counter();
+    if (writer->session_counter > 0) {
+        writer->session_counter++;
+    } else {
+        writer->session_counter = 1;
+    }
+    save_session_counter(writer->session_counter);
+
+    /* Check wall-clock time availability */
+    writer->has_wall_clock = has_wall_clock_time();
+
     if (!ringbuf_init(&writer->ringbuf, ULOG_RINGBUF_SIZE)) {
         ESP_LOGE(TAG, "Failed to allocate ring buffer");
         writer->state = ULOG_STATE_ERROR;
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Initialized (SD: %s, ringbuf: %u bytes)",
-             sd_mount_path, ULOG_RINGBUF_SIZE);
+    ESP_LOGI(TAG, "Initialized (SD: %s, ringbuf: %u bytes, session: %u, RTC: %s)",
+             sd_mount_path, ULOG_RINGBUF_SIZE, writer->session_counter,
+             writer->has_wall_clock ? "yes" : "no");
     return ESP_OK;
 }
 
@@ -309,10 +365,13 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Ensure log directory exists, cleanup old files by capacity */
-    char log_dir[MAX_PATH + 8];
-    snprintf(log_dir, sizeof(log_dir), "%s/%s", writer->sd_mount_path, LOG_DIR_NAME);
-    ensure_log_dir(log_dir);
+    /* Re-check wall-clock time (SNTP may have synced since init) */
+    writer->has_wall_clock = has_wall_clock_time();
+
+    /* Ensure log root directory exists */
+    char log_root[MAX_PATH + 8];
+    snprintf(log_root, sizeof(log_root), "%s/%s", writer->sd_mount_path, LOG_DIR_NAME);
+    ensure_log_dir(log_root);
 
     /* Compute ULog storage limit from SD card total capacity */
     size_t size_limit = 512 * 1024;  /* fallback: 512 KB */
@@ -324,19 +383,15 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
         }
     }
 
-    size_t total_size = 0;
-    uint64_t file_date;
-    uint32_t file_idx;
-    cleanup_and_get_next_name(log_dir, &file_date, &file_idx, &total_size, size_limit);
+    /* Cleanup old logs if over capacity */
+    cleanup_old_logs(log_root, size_limit);
 
-    char full_path[MAX_PATH + 40];
-    snprintf(full_path, sizeof(full_path), "%s/" FILE_NAME_FMT,
-             log_dir, (unsigned long long)file_date, (unsigned int)file_idx);
-    strlcpy(writer->filepath, full_path, sizeof(writer->filepath));
-
-    ESP_LOGI(TAG, "ULog storage: %u KB / %u KB limit (%d%% of SD)",
-             (unsigned)(total_size / 1024), (unsigned)(size_limit / 1024),
-             ULOG_MAX_CAPACITY_PCT);
+    /* Create log directory and file path (date-based or session-based) */
+    esp_err_t err = create_log_path(writer);
+    if (err != ESP_OK) {
+        writer->state = ULOG_STATE_ERROR;
+        return err;
+    }
 
     /* Open the file */
     writer->fd = open(writer->filepath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -362,8 +417,6 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
     writer->last_fsync_us = writer->start_time_us;
 
     /* Write file header + definition section */
-    esp_err_t err;
-
     err = write_file_header(writer);
     if (err != ESP_OK) { close(writer->fd); writer->fd = -1; writer->state = ULOG_STATE_ERROR; return err; }
 
@@ -400,7 +453,9 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
     }
 
     writer->state = ULOG_STATE_RUNNING;
-    ESP_LOGI(TAG, "Logging started: %s (%d topics)", writer->filepath, writer->num_topics);
+    ESP_LOGI(TAG, "Logging started: %s (%d topics, %s mode)",
+             writer->filepath, writer->num_topics,
+             writer->has_wall_clock ? "date" : "session");
     return ESP_OK;
 }
 
@@ -604,6 +659,15 @@ static void writer_task_func(void *arg)
                 fsync(writer->fd);
             }
 
+            /* File size rotation check */
+            if (writer->bytes_written >= ULOG_MAX_FILE_SIZE) {
+                esp_err_t rot_err = rotate_log_file(writer);
+                if (rot_err != ESP_OK) {
+                    ESP_LOGE(TAG, "File rotation failed, stopping logger");
+                    break;
+                }
+            }
+
             if (total_flushed > 0) {
                 ESP_LOGV(TAG, "Flushed %u bytes to %s",
                          (unsigned)total_flushed, writer->filepath);
@@ -649,9 +713,19 @@ static esp_err_t write_file_header(ulog_writer_t *writer)
 {
     ulog_file_header_s hdr;
     memcpy(hdr.magic, ULOG_MAGIC, ULOG_MAGIC_LEN);
-    hdr.timestamp = esp_timer_get_time() + (uint64_t)1700000000ULL * 1000000ULL;
-    /* ^ Rough Unix epoch: esp_timer is relative to boot, add 1700000000 = ~Oct 2023
-     * for approximate wall clock. Users can correct with a utc_offset topic if needed. */
+
+    if (writer->has_wall_clock) {
+        /* Use real UTC time from SNTP */
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+            hdr.timestamp = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+        } else {
+            hdr.timestamp = esp_timer_get_time() + (uint64_t)1700000000ULL * 1000000ULL;
+        }
+    } else {
+        /* No RTC — approximate with hardcoded epoch offset */
+        hdr.timestamp = esp_timer_get_time() + (uint64_t)1700000000ULL * 1000000ULL;
+    }
     return write_all(writer, &hdr, sizeof(hdr));
 }
 
@@ -666,7 +740,7 @@ static esp_err_t write_flag_bits(ulog_writer_t *writer)
     return write_all(writer, &msg, sizeof(msg));
 }
 
-/** Write info messages: sys_name, version, etc. */
+/** Write info messages: sys_name, version, hardware, etc. (PX4 convention) */
 static esp_err_t write_info_messages(ulog_writer_t *writer)
 {
     /* Helper to write one info key-value.
@@ -691,16 +765,106 @@ static esp_err_t write_info_messages(ulog_writer_t *writer)
         return write_all(writer, msg, pos);
     };
 
+    /* Helper to write a uint32_t info value */
+    auto write_info_uint32 = [writer](const char *key, uint32_t value) -> esp_err_t {
+        char buf[64];
+        int n = snprintf(buf, sizeof(buf), "uint32_t %s %" PRIu32, key, value);
+        if (n < 0 || (size_t)n >= sizeof(buf)) return ESP_ERR_INVALID_SIZE;
+
+        uint8_t key_len = (uint8_t)strlen(key);
+        uint16_t total = (uint16_t)(ULOG_MSG_HEADER_LEN + 1 + (uint16_t)n + 1);
+
+        uint8_t msg[256];
+        size_t pos = 0;
+        msg[pos++] = (uint8_t)((total - ULOG_MSG_HEADER_LEN) & 0xFF);
+        msg[pos++] = (uint8_t)(((total - ULOG_MSG_HEADER_LEN) >> 8) & 0xFF);
+        msg[pos++] = ULOG_MSG_TYPE_INFO;
+        msg[pos++] = key_len;
+        memcpy(msg + pos, buf, (size_t)n + 1);
+        pos += (size_t)n + 1;
+
+        return write_all(writer, msg, pos);
+    };
+
+    /* Helper to write a int32_t info value */
+    auto write_info_int32 = [writer](const char *key, int32_t value) -> esp_err_t {
+        char buf[64];
+        int n = snprintf(buf, sizeof(buf), "int32_t %s %" PRId32, key, value);
+        if (n < 0 || (size_t)n >= sizeof(buf)) return ESP_ERR_INVALID_SIZE;
+
+        uint8_t key_len = (uint8_t)strlen(key);
+        uint16_t total = (uint16_t)(ULOG_MSG_HEADER_LEN + 1 + (uint16_t)n + 1);
+
+        uint8_t msg[256];
+        size_t pos = 0;
+        msg[pos++] = (uint8_t)((total - ULOG_MSG_HEADER_LEN) & 0xFF);
+        msg[pos++] = (uint8_t)(((total - ULOG_MSG_HEADER_LEN) >> 8) & 0xFF);
+        msg[pos++] = ULOG_MSG_TYPE_INFO;
+        msg[pos++] = key_len;
+        memcpy(msg + pos, buf, (size_t)n + 1);
+        pos += (size_t)n + 1;
+
+        return write_all(writer, msg, pos);
+    };
+
     esp_err_t err;
 
+    /* PX4 standard Info keys */
     err = write_info("char[%d]", "sys_name", writer->sys_name);
     if (err != ESP_OK) return err;
 
     err = write_info("char[%d]", "ver_sw", writer->ver_sw);
     if (err != ESP_OK) return err;
 
+    err = write_info("char[%d]", "ver_hw", writer->ver_hw);
+    if (err != ESP_OK) return err;
+
+    err = write_info("char[%d]", "sys_os_name", "FreeRTOS");
+    if (err != ESP_OK) return err;
+
+    err = write_info("char[%d]", "sys_os_ver", esp_get_idf_version());
+    if (err != ESP_OK) return err;
+
+    err = write_info("char[%d]", "sys_mcu", "ESP32-P4NRW32");
+    if (err != ESP_OK) return err;
+
+    err = write_info("char[%d]", "sys_uuid", writer->sys_uuid);
+    if (err != ESP_OK) return err;
+
     err = write_info("char[%d]", "arch", "esp32p4");
     if (err != ESP_OK) return err;
+
+    /* ULog data format version (PX4 uses 2) */
+    err = write_info_uint32("ver_data_format", 2);
+    if (err != ESP_OK) return err;
+
+    /* Boot time in UTC µs (if available) */
+    if (writer->has_wall_clock) {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+            uint64_t boot_utc_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+            boot_utc_us -= esp_timer_get_time(); /* subtract uptime to get boot time */
+            char buf[64];
+            snprintf(buf, sizeof(buf), "uint64_t boot_time_utc_us %llu",
+                     (unsigned long long)boot_utc_us);
+            uint8_t key_len = (uint8_t)strlen("boot_time_utc_us");
+            uint16_t total = (uint16_t)(ULOG_MSG_HEADER_LEN + 1 + (uint16_t)strlen(buf) + 1);
+            uint8_t msg[256];
+            size_t pos = 0;
+            msg[pos++] = (uint8_t)((total - ULOG_MSG_HEADER_LEN) & 0xFF);
+            msg[pos++] = (uint8_t)(((total - ULOG_MSG_HEADER_LEN) >> 8) & 0xFF);
+            msg[pos++] = ULOG_MSG_TYPE_INFO;
+            msg[pos++] = key_len;
+            memcpy(msg + pos, buf, strlen(buf) + 1);
+            pos += strlen(buf) + 1;
+            err = write_all(writer, msg, pos);
+            if (err != ESP_OK) return err;
+        }
+
+        /* UTC offset (0 for now, could be from SNTP config) */
+        err = write_info_int32("time_ref_utc", 0);
+        if (err != ESP_OK) return err;
+    }
 
     return ESP_OK;
 }
@@ -758,7 +922,43 @@ static esp_err_t write_subscription_messages(ulog_writer_t *writer)
 }
 
 /* ------------------------------------------------------------------ */
-/*  File system helpers                                                */
+/*  Time source detection                                               */
+/* ------------------------------------------------------------------ */
+
+/** Check if wall-clock time is available (SNTP synced).
+ *  Returns true if CLOCK_REALTIME > 2020-01-01. */
+static bool has_wall_clock_time(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return false;
+    return (uint64_t)ts.tv_sec > RTC_THRESHOLD_EPOCH;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Session counter persistence (NVS)                                   */
+/* ------------------------------------------------------------------ */
+
+static uint16_t load_session_counter(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(ULOG_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return 0;
+    uint16_t val = 0;
+    nvs_get_u16(h, ULOG_NVS_SESSION_KEY, &val);
+    nvs_close(h);
+    return val;
+}
+
+static void save_session_counter(uint16_t counter)
+{
+    nvs_handle_t h;
+    if (nvs_open(ULOG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u16(h, ULOG_NVS_SESSION_KEY, counter);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* ------------------------------------------------------------------ */
+/*  File system helpers                                                 */
 /* ------------------------------------------------------------------ */
 
 static void ensure_log_dir(const char *dir)
@@ -770,105 +970,359 @@ static void ensure_log_dir(const char *dir)
     }
 }
 
-/** File entry for cleanup sorting.
- *  Sorted by (date, idx) — both extracted from filename. */
-struct ulog_file_entry {
-    char     path[MAX_PATH + 40];
-    uint64_t date;   /**< From filename: esp_timer_get_time() at creation */
-    uint32_t idx;    /**< From filename: sequential counter */
-    off_t    size;   /**< File size (bytes) */
+/** Recursively get total size of a directory. */
+static size_t dir_total_size(const char *path)
+{
+    size_t total = 0;
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char full[MAX_PATH + 64];
+        snprintf(full, sizeof(full), "%s/%s", path, ent->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            total += dir_total_size(full);
+        } else {
+            total += (size_t)st.st_size;
+        }
+    }
+    closedir(d);
+    return total;
+}
+
+/** Count .ulg files recursively in a directory. */
+static int count_ulg_files(const char *path)
+{
+    int count = 0;
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char full[MAX_PATH + 64];
+        snprintf(full, sizeof(full), "%s/%s", path, ent->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            count += count_ulg_files(full);
+        } else {
+            size_t nl = strlen(ent->d_name);
+            if (nl >= 4 && strcmp(ent->d_name + nl - 4, ".ulg") == 0) {
+                count++;
+            }
+        }
+    }
+    closedir(d);
+    return count;
+}
+
+/** Recursively remove a directory and all its contents. */
+static void rmtree(const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d) return;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char full[MAX_PATH + 64];
+        snprintf(full, sizeof(full), "%s/%s", path, ent->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            rmtree(full);
+        } else {
+            unlink(full);
+        }
+    }
+    closedir(d);
+    rmdir(path);
+}
+
+/** Directory entry for cleanup sorting. */
+struct dir_entry {
+    char     path[MAX_PATH + 64];
+    time_t   mtime;   /**< Directory modification time */
+    size_t   size;    /**< Total size of .ulg files inside */
 };
 
-/**
- * Comparator for sorting files by (date, idx) — oldest first.
- */
-static int cmp_mtime(const void *a, const void *b)
+/** Comparator for sorting directories oldest-first. */
+static int cmp_dir_mtime(const void *a, const void *b)
 {
-    const auto *fa = (const ulog_file_entry *)a;
-    const auto *fb = (const ulog_file_entry *)b;
-    if (fa->date < fb->date) return -1;
-    if (fa->date > fb->date) return  1;
-    /* Same date: lower idx is older */
-    if (fa->idx < fb->idx) return -1;
-    if (fa->idx > fb->idx) return  1;
+    const dir_entry *da = (const dir_entry *)a;
+    const dir_entry *db = (const dir_entry *)b;
+    if (da->mtime < db->mtime) return -1;
+    if (da->mtime > db->mtime) return  1;
     return 0;
 }
 
 /**
- * Scan .ulog files, parse (date, idx) from filename "data_<date>_<idx>.ulog",
- * sort oldest-first by (date, idx), and delete oldest until total size ≤ limit.
- *
- * @param out_date   Next file's date (esp_timer_get_time() / 1000000)
- * @param out_idx    Next file's idx = max(existing idxs) + 1, or 0 if none
- * @param out_total  Total size after cleanup
- * @param size_limit Max allowed total size in bytes (computed from SD capacity)
+ * Cleanup old log directories if total size exceeds limit.
+ * Scans date (YYYY-MM-DD) and session (sessNNN) subdirectories,
+ * sorts oldest-first, and deletes directories until under capacity.
+ * Respects ULOG_MIN_KEEP_FILES as a floor.
  */
-static void cleanup_and_get_next_name(const char *dir,
-                                      uint64_t *out_date, uint32_t *out_idx,
-                                      size_t *out_total, size_t size_limit)
+static void cleanup_old_logs(const char *log_root, size_t size_limit)
 {
-    ulog_file_entry files[256];
-    int count = 0;
-    size_t total = 0;
-    uint32_t max_idx = 0;
+    dir_entry dirs[128];
+    int dir_count = 0;
+    size_t total_size = 0;
 
-    uint64_t now_date = (uint64_t)(esp_timer_get_time() / 1000000ULL);
+    DIR *d = opendir(log_root);
+    if (!d) return;
 
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL && dir_count < 128) {
+        if (ent->d_name[0] == '.') continue;
+
+        snprintf(dirs[dir_count].path, sizeof(dirs[dir_count].path),
+                 "%s/%s", log_root, ent->d_name);
+
+        struct stat st;
+        if (stat(dirs[dir_count].path, &st) != 0) continue;
+        if (!S_ISDIR(st.st_mode)) continue;
+
+        dirs[dir_count].mtime = st.st_mtime;
+        dirs[dir_count].size = dir_total_size(dirs[dir_count].path);
+        total_size += dirs[dir_count].size;
+        dir_count++;
+    }
+    closedir(d);
+
+    if (dir_count == 0) return;
+
+    /* Sort oldest first */
+    qsort(dirs, (size_t)dir_count, sizeof(dirs[0]), cmp_dir_mtime);
+
+    /* Delete oldest directories until under capacity, respecting file floor */
+    for (int i = 0; i < dir_count && total_size > size_limit; i++) {
+        int file_count = count_ulg_files(log_root);
+        if (file_count <= (int)ULOG_MIN_KEEP_FILES) break;
+
+        ESP_LOGI(TAG, "Cleanup: removing %s (%u KB)",
+                 dirs[i].path, (unsigned)(dirs[i].size / 1024));
+        rmtree(dirs[i].path);
+        total_size -= dirs[i].size;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Log path creation (dual-mode naming)                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Find the next available file number in a directory.
+ * PX4 starts at 100. Scans existing logNNN.ulg files.
+ */
+static uint16_t find_next_file_number(const char *dir)
+{
+    uint16_t max_num = 99;  /* PX4 starts at 100 */
     DIR *d = opendir(dir);
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL && count < 256) {
-            const char *name = ent->d_name;
-            size_t nl = strlen(name);
-            if (nl < 6) continue;
-            if (strcmp(name + nl - 5, ".ulog") != 0) continue;
-            snprintf(files[count].path, sizeof(files[count].path),
-                     "%s/%s", dir, name);
+    if (!d) return 100;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        unsigned int num;
+        if (sscanf(ent->d_name, "log%u.ulg", &num) == 1) {
+            if (num > max_num) max_num = num;
+        }
+    }
+    closedir(d);
+    return max_num + 1;
+}
 
-            /* Parse (date, idx) from "data_<date>_<idx>.ulog" */
-            unsigned long long parsed_date;
-            unsigned int parsed_idx;
-            if (sscanf(name, "data_%llu_%u.ulog", &parsed_date, &parsed_idx) == 2) {
-                files[count].date = (uint64_t)parsed_date;
-                files[count].idx  = (uint32_t)parsed_idx;
-            } else {
-                files[count].date = 0;
-                files[count].idx  = 0;
+/**
+ * Find the next available session directory number.
+ * Scans existing sessNNN directories.
+ */
+static uint16_t find_next_session_number(const char *log_root)
+{
+    uint16_t max_sess = 0;
+    DIR *d = opendir(log_root);
+    if (!d) return 1;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        unsigned int num;
+        if (sscanf(ent->d_name, "sess%u", &num) == 1) {
+            if (num > max_sess) max_sess = num;
+        }
+    }
+    closedir(d);
+    return max_sess + 1;
+}
+
+/**
+ * Create the log directory and file path.
+ *
+ * Date mode (SNTP synced):  /sdcard/log/YYYY-MM-DD/HH_MM_SS.ulg
+ * Session mode (no RTC):    /sdcard/log/sessNNN/logNNN.ulg
+ *
+ * @return ESP_OK on success
+ */
+static esp_err_t create_log_path(ulog_writer_t *writer)
+{
+    char log_root[ULOG_MAX_PATH + 8];
+    snprintf(log_root, sizeof(log_root), "%s/%s",
+             writer->sd_mount_path, LOG_DIR_NAME);
+    ensure_log_dir(log_root);
+
+    /* Use a large local buffer for path construction to avoid truncation warnings */
+    char full_path[ULOG_MAX_PATH + 64];
+
+    if (writer->has_wall_clock) {
+        /* ── Date-based naming ── */
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+            ESP_LOGE(TAG, "clock_gettime failed despite RTC available");
+            return ESP_FAIL;
+        }
+        struct tm tm_buf;
+        localtime_r(&ts.tv_sec, &tm_buf);
+
+        /* Create date directory: YYYY-MM-DD */
+        char date_dir[16];
+        strftime(date_dir, sizeof(date_dir), "%Y-%m-%d", &tm_buf);
+
+        snprintf(writer->log_dir, sizeof(writer->log_dir), "%s/%s",
+                 log_root, date_dir);
+        ensure_log_dir(writer->log_dir);
+
+        /* Create filename: HH_MM_SS.ulg */
+        char filename[16];
+        strftime(filename, sizeof(filename), "%H_%M_%S" ULOG_FILE_EXT, &tm_buf);
+
+        snprintf(full_path, sizeof(full_path), "%s/%s",
+                 writer->log_dir, filename);
+
+        /* If file already exists (same second), append _2, _3, etc. */
+        struct stat st;
+        if (stat(full_path, &st) == 0) {
+            for (int suffix = 2; suffix < 100; suffix++) {
+                char base[16];
+                strftime(base, sizeof(base), "%H_%M_%S", &tm_buf);
+                char suffixed[24];
+                snprintf(suffixed, sizeof(suffixed), "%s_%d" ULOG_FILE_EXT,
+                         base, suffix);
+                snprintf(full_path, sizeof(full_path), "%s/%s",
+                         writer->log_dir, suffixed);
+                if (stat(full_path, &st) != 0) break;
             }
+        }
+    } else {
+        /* ── Session-based naming ── */
+        uint16_t sess_num = find_next_session_number(log_root);
+        /* Prefer the NVS session counter if higher */
+        if (writer->session_counter > sess_num) {
+            sess_num = writer->session_counter;
+        }
 
+        snprintf(writer->log_dir, sizeof(writer->log_dir), "%s/sess%03u",
+                 log_root, (unsigned)sess_num);
+        ensure_log_dir(writer->log_dir);
+
+        /* PX4 convention: files start at log100.ulg */
+        writer->file_counter = find_next_file_number(writer->log_dir);
+
+        snprintf(full_path, sizeof(full_path), "%s/log%03u" ULOG_FILE_EXT,
+                 writer->log_dir, (unsigned)writer->file_counter);
+    }
+
+    strlcpy(writer->filepath, full_path, sizeof(writer->filepath));
+    return ESP_OK;
+}
+
+/**
+ * Rotate to the next file when current file exceeds size limit.
+ * Creates a new file in the same directory, writes headers, and
+ * continues logging without stopping the task.
+ */
+static esp_err_t rotate_log_file(ulog_writer_t *writer)
+{
+    /* Drain remaining ring buffer data to current file */
+    uint8_t buf[512];
+    size_t n;
+    while ((n = ringbuf_read(&writer->ringbuf, buf, sizeof(buf))) > 0) {
+        write(writer->fd, buf, n);
+        writer->bytes_written += n;
+    }
+
+    /* Close current file */
+    if (writer->fd >= 0) {
+        fsync(writer->fd);
+        close(writer->fd);
+        writer->fd = -1;
+    }
+
+    ESP_LOGI(TAG, "Rotating log file (size: %u KB)",
+             (unsigned)(writer->bytes_written / 1024));
+
+    /* Determine next filename */
+    char full_path[ULOG_MAX_PATH + 64];
+    if (writer->has_wall_clock) {
+        /* Date mode: use current time with suffix for uniqueness */
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+            struct tm tm_buf;
+            localtime_r(&ts.tv_sec, &tm_buf);
+            char base[16];
+            strftime(base, sizeof(base), "%H_%M_%S", &tm_buf);
+            /* Find a non-existing filename with _N suffix */
+            writer->file_counter++;
+            snprintf(full_path, sizeof(full_path), "%s/%s_%u" ULOG_FILE_EXT,
+                     writer->log_dir, base, (unsigned)writer->file_counter);
             struct stat st;
-            if (stat(files[count].path, &st) == 0) {
-                files[count].size = st.st_size;
-                total += (size_t)st.st_size;
-
-                if (files[count].idx >= max_idx) {
-                    max_idx = files[count].idx + 1;
+            if (stat(full_path, &st) == 0) {
+                /* Fallback: scan for next available suffix */
+                for (unsigned i = writer->file_counter + 1; i < 1000; i++) {
+                    snprintf(full_path, sizeof(full_path), "%s/%s_%u" ULOG_FILE_EXT,
+                             writer->log_dir, base, i);
+                    if (stat(full_path, &st) != 0) {
+                        writer->file_counter = (uint16_t)i;
+                        break;
+                    }
                 }
             }
-            count++;
+        } else {
+            /* Fallback: use uptime-based name */
+            snprintf(full_path, sizeof(full_path), "%s/%llu" ULOG_FILE_EXT,
+                     writer->log_dir, (unsigned long long)(esp_timer_get_time() / 1000ULL));
         }
-        closedir(d);
+    } else {
+        /* Session mode: increment log file number (PX4 convention) */
+        writer->file_counter++;
+        snprintf(full_path, sizeof(full_path), "%s/log%03u" ULOG_FILE_EXT,
+                 writer->log_dir, (unsigned)writer->file_counter);
+    }
+    strlcpy(writer->filepath, full_path, sizeof(writer->filepath));
+
+    /* Open new file */
+    writer->fd = open(writer->filepath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (writer->fd < 0) {
+        ESP_LOGE(TAG, "Failed to create rotated file %s", writer->filepath);
+        writer->state = ULOG_STATE_ERROR;
+        return ESP_FAIL;
     }
 
-    *out_total = total;
-    *out_date = now_date;
-    *out_idx  = max_idx;
+    writer->bytes_written = 0;
 
-    /* Nothing to clean up? */
-    if (count <= (int)ULOG_MIN_KEEP_FILES) return;
+    /* Re-write headers for the new file */
+    esp_err_t err;
+    err = write_file_header(writer);
+    if (err != ESP_OK) { close(writer->fd); writer->fd = -1; return err; }
 
-    /* Sort oldest first by (date, idx) */
-    qsort(files, (size_t)count, sizeof(files[0]), cmp_mtime);
+    err = write_flag_bits(writer);
+    if (err != ESP_OK) { close(writer->fd); writer->fd = -1; return err; }
 
-    /* Delete oldest until under capacity, respecting floor */
-    int floor = (int)ULOG_MIN_KEEP_FILES;
-    struct stat st;
-    for (int i = 0; i < count - floor && total > size_limit; i++) {
-        if (stat(files[i].path, &st) != 0) continue;
-        if (unlink(files[i].path) == 0) {
-            total -= (size_t)st.st_size;
-            ESP_LOGI(TAG, "ULog cleanup: removed %s (%d KB)",
-                     files[i].path, (int)(st.st_size / 1024));
-        }
-    }
+    err = write_info_messages(writer);
+    if (err != ESP_OK) { close(writer->fd); writer->fd = -1; return err; }
+
+    err = write_format_messages(writer);
+    if (err != ESP_OK) { close(writer->fd); writer->fd = -1; return err; }
+
+    err = write_subscription_messages(writer);
+    if (err != ESP_OK) { close(writer->fd); writer->fd = -1; return err; }
+
+    ESP_LOGI(TAG, "Rotated to new file: %s", writer->filepath);
+    return ESP_OK;
 }

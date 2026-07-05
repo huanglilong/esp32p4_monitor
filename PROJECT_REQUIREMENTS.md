@@ -140,6 +140,12 @@
 | S93 | **app_main 任务回收** | idle loop 改为 `vTaskDelete(NULL)`，回收 ~4KB 栈和 TCB | ✅ |
 | S94 | **ULog SD 卡检查** | 仅在 SD 卡成功挂载时初始化 ULog writer，防止写入不存在的挂载点 | ✅ |
 | S95 | **web uORB wifi_state 订阅泄漏** | `web_config_server_stop()` 和 task 退出路径添加 `orb_unsubscribe(s_wifi_state_sub)` | ✅ |
+| S96 | **ULog PX4 双模式命名** | 参考 PX4 ULog 规范：有 SNTP 时用日期目录 `YYYY-MM-DD/HH_MM_SS.ulg`，无 RTC 时用 session 目录 `sessNNN/logNNN.ulg`；扩展名改为 `.ulg`；NVS 持久化 session 计数器 | ✅ |
+| S97 | **ULog Info 消息扩展** | 添加 PX4 标准 Info keys: `ver_hw`, `sys_uuid` (MAC), `sys_os_name`, `sys_os_ver`, `sys_mcu`, `ver_data_format`, `boot_time_utc_us`, `time_ref_utc` | ✅ |
+| S98 | **ULog 文件轮转** | 单文件超过 `ULOG_MAX_FILE_SIZE` (默认 100MB) 时自动关闭并创建新文件，同目录递增编号 | ✅ |
+| S99 | **ULog 目录级清理** | 清理策略改为按子目录 (日期/session) 整体删除，替代 flat 文件扫描；自动迁移旧格式 `.ulog` flat 文件 | ✅ |
+| S100 | **SNTP 时间同步** | WiFi 获取 IP 后自动启动 SNTP (`pool.ntp.org`)，为 ULog 日期命名提供 wall-clock 时间 | ✅ |
+| S101 | **ULog RTC 时间戳** | 文件头和 `boot_time_utc_us` 在 SNTP 同步后使用真实 UTC 时间，无 SNTP 时回退近似值 | ✅ |
 
 ---
 

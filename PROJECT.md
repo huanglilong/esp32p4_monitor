@@ -115,7 +115,7 @@ esp32p4_monitor/
 | `espressif/gmf_audio` | ^1.0 | (间接依赖, 自动拉入) |
 | `espressif/gmf_io` | ^1.0 | (间接依赖, 自动拉入) |
 | `uorb` (自定义) | 1.0.0 | 本地组件 `components/uorb/` — uORB for FreeRTOS |
-| `ulog` (自定义) | 1.0.0 | 本地组件 `components/ulog/` — ULog 日志写入 (SD 卡) |
+| `ulog` (自定义) | 1.0.0 | 本地组件 `components/ulog/` — ULog 日志写入 (SD 卡, PX4 双模式命名) |
 
 ## 兼容补丁
 

@@ -75,6 +75,16 @@ menu "ULog Logger Configuration"
                 to .ulog files.  Oldest files are deleted to stay under
                 this limit.  70% on a 16 GB card = ~11 GB for logs.
 
+        config ULOG_MAX_FILE_SIZE
+            int "Max single log file size (bytes)"
+            default 104857600
+            range 1048576 1073741824
+            help
+                Maximum size of a single .ulg file before rotation.
+                When the current file reaches this size, it is closed
+                and a new file is created in the same directory.
+                Default: 100 MB (104857600 bytes).
+
         config ULOG_MIN_KEEP_FILES
             int "Minimum retained session files"
             default 200

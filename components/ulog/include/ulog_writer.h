@@ -40,7 +40,7 @@ extern "C" {
 #define ULOG_MAX_TOPICS 16
 
 /** Maximum log file path length. */
-#define ULOG_MAX_PATH 128
+#define ULOG_MAX_PATH 256
 
 /** Ring buffer size (bytes). */
 #define ULOG_RINGBUF_SIZE (16 * 1024)
@@ -53,6 +53,16 @@ extern "C" {
 
 /** How often to fsync the file (ms). */
 #define ULOG_FSYNC_INTERVAL_MS 1000
+
+/** Maximum single log file size before rotation (bytes).
+ *  Default 100 MB. */
+#ifndef ULOG_MAX_FILE_SIZE
+#ifdef CONFIG_ULOG_MAX_FILE_SIZE
+#define ULOG_MAX_FILE_SIZE  CONFIG_ULOG_MAX_FILE_SIZE
+#else
+#define ULOG_MAX_FILE_SIZE  (100 * 1024 * 1024)
+#endif
+#endif
 
 /** ULog writer states. */
 typedef enum {
