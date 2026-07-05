@@ -1404,12 +1404,29 @@ static esp_err_t h_files_download(httpd_req_t *req) {
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    /* Extract filename from path for Content-Disposition */
+    /* Extract filename from path for Content-Disposition.
+     * Sanitize double-quotes and backslashes to prevent HTTP header injection. */
     const char *fname = strrchr(fpath, '/');
     fname = fname ? fname + 1 : fpath;
 
+    char safe_fname[256];
+    {
+        const char *src = fname;
+        char *dst = safe_fname;
+        const char *end = safe_fname + sizeof(safe_fname) - 1;
+        while (*src && dst < end) {
+            if (*src == '"' || *src == '\\') {
+                /* Skip dangerous characters for HTTP header safety */
+                src++;
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+    }
+
     char disp[384];
-    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", fname);
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", safe_fname);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
     httpd_resp_set_type(req, "application/octet-stream");
 
