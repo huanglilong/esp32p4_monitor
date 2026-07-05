@@ -92,6 +92,17 @@ PhoneAppMusic::~PhoneAppMusic()
     }
 }
 
+void PhoneAppMusic::_destroy_player_handle(void)
+{
+    if (!_asp_handle) {
+        return;
+    }
+
+    esp_audio_simple_player_stop(_asp_handle);
+    esp_audio_simple_player_destroy(_asp_handle);
+    _asp_handle = nullptr;
+}
+
 bool PhoneAppMusic::run(void)
 {
     ESP_LOGI(TAG, "Music app starting...");
@@ -439,11 +450,7 @@ void PhoneAppMusic::_play(int index)
      * Recreate fresh ASP handle each play to prevent GMF state residue crashes.
      * destroy() internally calls stop() and waits for GMF task STOPPED via
      * xEventGroupWaitBits, so no need for external polling. */
-    if (_asp_handle) {
-        esp_audio_simple_player_stop(_asp_handle);
-        esp_audio_simple_player_destroy(_asp_handle);
-        _asp_handle = nullptr;
-    }
+    _destroy_player_handle();
     _is_playing = false;
     _current_track = -1;
 
@@ -474,6 +481,11 @@ void PhoneAppMusic::_play(int index)
     if (ret != ESP_GMF_ERR_OK) {
         ESP_LOGE(TAG, "Failed to play %s: %d", uri, ret);
         lv_label_set_text(_label_status, "Play failed");
+        _destroy_player_handle();
+        _is_playing = false;
+        _current_track = -1;
+        lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);
+        lv_label_set_text(btn, LV_SYMBOL_PLAY);
         return;
     }
     _is_playing = true;
@@ -508,9 +520,7 @@ void PhoneAppMusic::_pause_resume(void)
 void PhoneAppMusic::_stop(void)
 {
     if (_asp_handle) {
-        esp_audio_simple_player_stop(_asp_handle);
-        esp_audio_simple_player_destroy(_asp_handle);
-        _asp_handle = nullptr;
+        _destroy_player_handle();
         _is_playing = false;
         _current_track = -1;
         lv_obj_t *btn = lv_obj_get_child(_btn_play, 0);

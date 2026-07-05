@@ -24,6 +24,7 @@ private:
     static void _rec_check_timer_cb(lv_timer_t *timer);
 
     void _scan_files(void);
+    void _destroy_player_handle(void);
     void _play(int index);
     void _pause_resume(void);
     void _stop(void);
