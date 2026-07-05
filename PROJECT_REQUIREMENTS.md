@@ -147,6 +147,21 @@
 | S100 | **SNTP 时间同步** | WiFi 获取 IP 后自动启动 SNTP (`pool.ntp.org`)，为 ULog 日期命名提供 wall-clock 时间 | ✅ |
 | S101 | **ULog RTC 时间戳** | 文件头和 `boot_time_utc_us` 在 SNTP 同步后使用真实 UTC 时间，无 SNTP 时回退近似值 | ✅ |
 | S102 | **JPEG 编码器 OOM 修复 (LCD-4B)** | HW JPEG 编码器 DMA 描述符需内部 SRAM，LCD-4B 因 LVGL 绘制缓冲占用 ~72KB 内部 SRAM 导致分配失败。修复: ① LVGL 绘制缓冲改用 PSRAM (`buff_spiram=true`, P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 3 次重试+退避) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` | ✅ |
+| S103 | **Settings close() 事件组 use-after-free** | `close()` 删除 `_wifi_event_group` 但事件处理器仍注册 → 处理器访问已释放句柄崩溃。修复: `close()` 在删除事件组之前先注销事件处理器，匹配析构函数已有的安全模式 | ✅ |
+| S104 | **Camera 检测任务 mutex 删除竞态** | `_detect_task_handle = nullptr` 在 `vTaskDelete(NULL)` 之前设置，`close()` 可能在任务仍持有 mutex 时删除它。修复: 任务句柄为空后加 50ms yield 等待 idle task 回收 TCB | ✅ |
+| S105 | **CameraStream FPS 追踪非功能** | `_fps_frame_count` 和 `_fps_total_bytes` 在 stream_handler 中从未更新，FPS 始终为 0.0f。修复: 每帧递增计数器，每 FPS_LOG_INTERVAL_S (2s) 计算并发布实际 FPS | ✅ |
+| S106 | **V4L2 DQBUF 失败队列饥饿** | DQBUF 持续失败时两个缓冲区保持 dequeued → 队列饥饿 → 流永久挂起。修复: 加连续失败计数器，达 100 次后退出循环 | ✅ |
+| S107 | **AudioDriver assert() 崩溃** | `init()` 中多个 `assert()` 在 codec 接口创建失败时调用 `abort()` 崩溃设备。修复: 替换为 null 检查 + `init_ok` 标志 + 分阶段 rollback，设备继续运行但不提供音频 | ✅ |
+| S108 | **s_fps_pub uORB 发布者生命周期** | `s_fps_pub` 是 stream_handler 中的 static 局部变量，stop/start 周期后旧句柄残留。修复: 移至 `CameraStream` 类成员 `_fps_pub`，`stop()` 中重置为 `ORB_ADVERT_INVALID` | ✅ |
+| S109 | **s_wifi_pub 懒初始化竞态** | `s_wifi_pub` 在 `publish_wifi_state()` 中懒初始化，WiFi 事件并发触发可双重 `orb_advertise()`。修复: 改为 `std::atomic<orb_advert_t>` + `compare_exchange_strong()` | ✅ |
+| S110 | **Camera 检测帧撕裂** | 检测任务释放 mutex 后推理读取 `_cam_buffer`，LVGL timer 可在预处理器复制前写入新帧。修复: 分配私有 `_detect_in_buf`，mutex 内 memcpy 后释放 mutex 再推理 | ✅ |
+| S111 | **V4L2 buf.index 越界** | `VIDIOC_DQBUF` 返回的 `buf.index` 未校验直接索引 `_v4l2_bufs[]`。修复: 加 `buf.index >= _v4l2_buf_count` 防御检查，越界时 requeue 并跳过 | ✅ |
+| S112 | **h_list 不必要的音频初始化** | `/api/audio/list` 调用 `__audio_init()` 初始化 I2S codec，但仅需 SD 卡文件列表。修复: 改用 `__sd_ensure()` 避免 I2S 资源冲突 | ✅ |
+| S113 | **Content-Disposition 头注入** | SD 卡文件名含 `"` 或 `\` 可破坏 HTTP 头格式。修复: 过滤危险字符后再嵌入 header | ✅ |
+| S114 | **s_detect_pub 清理** | `s_detect_pub` 在 `_deinit_detection()` 中未重置，跨 App 开关周期残留。修复: deinit 时重置为 `ORB_ADVERT_INVALID` | ✅ |
+| S115 | **s_audio_task 跨核可见性** | 音频任务在 core 0 设置 `s_audio_task = NULL`，httpd 在其他核心读取。修复: 清除前加 `__sync_synchronize()` 内存屏障 | ✅ |
+| S116 | **h_rec_status 数据竞态** | 读取 `s_rec_bytes`/`s_rec_start_ms` 未持 mutex，录音任务并发更新可读不一致值。修复: 加 `audio_lock()/audio_unlock()` 获取一致性快照 | ✅ |
+| S117 | **std::map 堆分配优化** | `_nvs_param_map` 使用 `std::map<std::string, int32_t>` 每次 lookup 产生堆分配。修复: 替换为包含 3 个 int32_t 字段的扁平 struct `_nvs` | ✅ |
 
 ---
 
@@ -272,6 +287,7 @@
 | 2026-07-04 | +S84 S85 Flutter 设备列表排序 (新扫描优先/历史在后) + 设备可达性状态徽章 (Connected/Reachable/Offline/History) |
 | 2026-07-03 | +S68 mDNS 双主机名: 保留 `esp-web` 便捷名 + 新增 `esp-web-XXXXXX` 委托主机名（MAC后3字节），单设备零配置 + 多设备精确定位 |
 | 2026-07-03 | +S50~S56 线程安全与性能修复: CameraStream 竞态, CameraDriver 互斥, uORB publish 锁优化, AudioDriver publisher 线程安全, PhoneAppCamera 帧缓冲同步, CameraStream 检测结果互斥, Web 音频操作互斥 |
+| 2026-07-05 | +S103~S117 代码审计修复: Settings 事件组 use-after-free (S103), Camera mutex 删除竞态 (S104), FPS 追踪非功能 (S105), V4L2 DQBUF 队列饥饿 (S106), AudioDriver assert 崩溃 (S107), uORB 发布者生命周期 (S108/S109/S114), 检测帧撕裂 (S110), V4L2 越界 (S111), h_list I2S 冲突 (S112), HTTP 头注入 (S113), 跨核可见性 (S115), h_rec_status 竞态 (S116), std::map 堆分配 (S117) |
 | 2026-07-03 | +S57 **CameraStream VFS 设备泄漏修复**: `_deinit_video()` 未调用 `example_video_deinit()` 导致 "video20" 设备未注销；`_init_video()` 早返 / fail 路径同样缺少；`goto fail` 跨初始化编译错误已修复 |
 | 2026-07-03 | +S49 Driver 模块拆分: PeripheralManager→thin facade + AudioDriver + SDCardDriver + CameraDriver (claim/release API) |
 | 2026-07-03 | +S44~S48 Bug 修复 (gettimeofday overflow, Music _stop ASP 泄漏, SD LDO 检查, web task 干净退出) +PeripheralManager facade 模块化重构 (消除 extern 全局变量) |
