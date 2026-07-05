@@ -1203,6 +1203,8 @@ static esp_err_t h_play(httpd_req_t *req) {
     esp_gmf_err_t ret = esp_audio_simple_player_run(s_asp, uri, NULL);
     if (ret != ESP_GMF_ERR_OK) {
         ESP_LOGE(TAG, "Play failed: %d, uri=%s", ret, uri);
+        esp_audio_simple_player_destroy(s_asp);
+        s_asp = NULL;
         audio_unlock();
         httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK;
     }
