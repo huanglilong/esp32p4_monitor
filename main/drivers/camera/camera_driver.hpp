@@ -46,7 +46,7 @@ private:
     bool _available_locked(void) const;
 
     orb_advert_t    _pub;       /* uORB publisher handle */
-    orb_sub_t       _sub;       /* uORB subscriber handle (for available check) */
+    mutable orb_sub_t _sub;     /* uORB subscriber handle (lazy-init in const available check) */
     bool            _claimed;   /* Local claim state for fast-path check */
     SemaphoreHandle_t _mutex;   /* Protects _claimed, _sub, _pub lazy-init */
 };

@@ -63,8 +63,7 @@ bool CameraDriver::_available_locked(void) const
 
     /* Lazy-subscribe on first call */
     if (_sub < 0) {
-        const_cast<CameraDriver*>(this)->_sub =
-            orb_subscribe(ORB_ID(camera_state));
+        _sub = orb_subscribe(ORB_ID(camera_state));
     }
     if (_sub >= 0) {
         bool updated = false;
