@@ -1039,10 +1039,18 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     s_rec_bytes = 0; s_rec_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_is_recording = true;
 
-    /* Stop any active web playback — recording and playback share I2S hardware */
+    /* Stop any active web playback — recording and playback share I2S hardware.
+     * Wait for GMF STOPPED state before destroy to prevent crash. */
     if (s_asp && s_playing) {
         esp_audio_simple_player_stop(s_asp);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_asp_state_t state = ESP_ASP_STATE_NONE;
+        for (int i = 0; i < 10; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (esp_audio_simple_player_get_state(s_asp, &state) == ESP_GMF_ERR_OK
+                && state == ESP_ASP_STATE_STOPPED) {
+                break;
+            }
+        }
         esp_audio_simple_player_destroy(s_asp);
         s_asp = NULL;
         s_playing = false;
@@ -1206,10 +1214,19 @@ static esp_err_t h_play(httpd_req_t *req) {
     if (s_fm_busy) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     /* Refuse playback while web recording is active — recording and playback share I2S hardware */
     if (s_is_recording) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Recording in progress\"}"); return ESP_OK; }
-    /* Stop + destroy previous player for clean state (matching Music App lifecycle) */
+    /* Stop + destroy previous player for clean state (matching Music App lifecycle).
+     * Wait for GMF STOPPED state before destroy to prevent crash when
+     * rapidly switching tracks. */
     if (s_asp) {
         esp_audio_simple_player_stop(s_asp);
-        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_asp_state_t state = ESP_ASP_STATE_NONE;
+        for (int i = 0; i < 20; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (esp_audio_simple_player_get_state(s_asp, &state) == ESP_GMF_ERR_OK
+                && state == ESP_ASP_STATE_STOPPED) {
+                break;
+            }
+        }
         esp_audio_simple_player_destroy(s_asp);
         s_asp = NULL;
     }
@@ -1836,7 +1853,19 @@ void web_config_server_stop(void)
     if (s_rec_file) { fclose(s_rec_file); s_rec_file=NULL; }
     if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
     s_playing = false;
-    if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
+    if (s_asp) {
+        esp_audio_simple_player_stop(s_asp);
+        esp_asp_state_t state = ESP_ASP_STATE_NONE;
+        for (int i = 0; i < 10; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (esp_audio_simple_player_get_state(s_asp, &state) == ESP_GMF_ERR_OK
+                && state == ESP_ASP_STATE_STOPPED) {
+                break;
+            }
+        }
+        esp_audio_simple_player_destroy(s_asp);
+        s_asp = NULL;
+    }
     if (s_audio_inited) { PeripheralManager::instance().deinit_audio(); s_audio_inited=false; }
     audio_unlock();
 
