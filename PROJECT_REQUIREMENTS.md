@@ -173,6 +173,7 @@
 | S126 | **AudioDriver _volume 隐式原子加载** | `_volume` 为 `std::atomic<int>`，但 init() 中用隐式 `operator int()` 而非显式 `.load()`。修复: 统一使用 `_volume.load(std::memory_order_relaxed)` (写均在 mutex 内) | ✅ |
 | S127 | **CameraDriver owner-tracked claim/release** | `claim()` 不区分重入（同模块）和争用（不同模块），CameraStream 运行时 Camera App `claim()` 返回 true → V4L2 操作冲突 → WDT 崩溃。修复: `claim(caller_id)/release(caller_id)` 支持 owner tracking，同 caller_id 可重入，不同 caller_id 互斥。PhoneAppCamera close() 中 `example_video_deinit()` 仅在 `_video_initialized` 时调用 | ✅ |
 | S128 | **Music 播放失败清理** | `PhoneAppMusic::_play()` 在 `esp_audio_simple_player_run()` 失败时销毁半初始化的 ASP handle，并把播放状态/UI 复位，避免 GMF handle 泄漏和按钮状态残留 | ✅ |
+| S129 | **Brookesia 初始化失败清理** | `monitor_init_brookesia()` 在任一步骤失败时删除临时 `ESP_Brookesia_Phone` 对象，避免部分安装成功的 App 在失败退出路径中泄漏 | ✅ |
 
 ---
 

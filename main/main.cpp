@@ -321,6 +321,10 @@ static void monitor_init_brookesia(lv_display_t *disp)
     return;
 
 cleanup:
+    if (phone) {
+        delete phone;
+        phone = nullptr;
+    }
     bsp_display_unlock();
     ESP_LOGE(TAG, "ESP-Brookesia Phone UI initialization failed");
 }
