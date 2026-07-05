@@ -303,28 +303,59 @@ static int _logger_vprintf(const char *format, va_list args)
 
 static void _logger_push(const char *data, int len)
 {
-    if (!s_log.buf_mutex) return;
+    if (!s_log.buf_mutex || len <= 0) return;
 
-    xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
+    int written = 0;
+    while (written < len) {
+        xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
 
-    for (int i = 0; i < len; i++) {
-        int wait_ms = 0;
-        while ((s_log.head + 1) % s_log.buf_size == s_log.tail) {
+        /* Available space = buf_size - 1 (keep one slot empty to distinguish full/empty) */
+        size_t avail = (s_log.buf_size - 1) - 
+                       ((s_log.head + s_log.buf_size - s_log.tail) % s_log.buf_size);
+
+        if (avail >= (size_t)(len - written)) {
+            /* Fast path: enough space for the entire remaining data */
+            size_t remaining = (size_t)(len - written);
+            for (size_t i = 0; i < remaining; i++) {
+                s_log.buf[s_log.head] = (uint8_t)data[written++];
+                s_log.head = (s_log.head + 1) % s_log.buf_size;
+            }
             xSemaphoreGive(s_log.buf_mutex);
+            xSemaphoreGive(s_log.data_sem);
+            break;
+        } else if (avail > 0) {
+            /* Partial write: fill available space, then retry for the rest */
+            for (size_t i = 0; i < avail; i++) {
+                s_log.buf[s_log.head] = (uint8_t)data[written++];
+                s_log.head = (s_log.head + 1) % s_log.buf_size;
+            }
+            xSemaphoreGive(s_log.buf_mutex);
+            xSemaphoreGive(s_log.data_sem);
+        } else {
+            /* Buffer completely full — yield and retry */
+            xSemaphoreGive(s_log.buf_mutex);
+        }
+
+        if (written < len) {
+            /* Buffer was full (or became full during partial write).
+             * Yield briefly to let the writer drain, up to 100ms total. */
+            int wait_ms = 0;
+            while (wait_ms < 100 && written < len) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+                wait_ms++;
+                /* Check if writer freed some space: peek without locking first */
+                xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
+                size_t check = (s_log.buf_size - 1) -
+                               ((s_log.head + s_log.buf_size - s_log.tail) % s_log.buf_size);
+                xSemaphoreGive(s_log.buf_mutex);
+                if (check > 0) break;
+            }
             if (wait_ms >= 100) {
                 /* Buffer full for 100ms — drop the rest of this line */
-                return;
+                break;
             }
-            vTaskDelay(1);
-            wait_ms++;
-            xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
         }
-        s_log.buf[s_log.head] = (uint8_t)data[i];
-        s_log.head = (s_log.head + 1) % s_log.buf_size;
     }
-
-    xSemaphoreGive(s_log.buf_mutex);
-    xSemaphoreGive(s_log.data_sem);
 }
 
 /* ── Writer task ────────────────────────────────────────────────── */

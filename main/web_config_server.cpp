@@ -203,9 +203,9 @@ static void audio_task(void *arg)
  * This avoids ~1ms flash access per nvs_get_i32_def() call.
  *============================================================================*/
 
-/** Cached NVS integer entry. */
+/** Cached NVS integer entry — key is copied into the fixed buffer. */
 typedef struct {
-    const char *key;
+    char        key[16];  /* All known NVS keys are < 16 bytes */
     int32_t     value;
     bool        valid;    /* true after first read from NVS */
 } nvs_cache_entry_t;
@@ -222,7 +222,7 @@ static int nvs_cache_find(const char *key)
     }
     if (s_nvs_cache_count < NVS_CACHE_MAX) {
         int i = s_nvs_cache_count++;
-        s_nvs_cache[i].key   = key;
+        strlcpy(s_nvs_cache[i].key, key, sizeof(s_nvs_cache[i].key));
         s_nvs_cache[i].valid = false;
         return i;
     }
