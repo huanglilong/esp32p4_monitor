@@ -485,7 +485,10 @@ class AppState extends ChangeNotifier {
       _addLog('Camera stream ${enable ? "started" : "stopped"}');
     } catch (e) {
       _addLog('Toggle camera stream failed: $e');
+      // Revert UI state since server rejected the toggle
+      _camStreamEnabled = !enable;
     }
+    _notifySafe();
   }
 
   // ── Message Handling ──

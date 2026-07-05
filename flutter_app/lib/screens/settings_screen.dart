@@ -100,7 +100,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final r = await _http!.audioRecordStart();
       if (!mounted) return;
       if (r['ok'] == 1) {
-        setState(() { _isRecording = true; _recordingSeconds = 0; _recordingBytes = 0; });
+        // Server stops any active playback when recording starts — sync local state
+        setState(() { _isRecording = true; _recordingSeconds = 0; _recordingBytes = 0; _playingFile = null; });
         _timerCounter = Timer.periodic(const Duration(seconds: 1), (_) { if (mounted) setState(() => _recordingSeconds++); });
         _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
           try {
@@ -108,18 +109,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
             if (mounted && s['ok'] == 1) setState(() { _recordingSeconds = s['seconds'] ?? _recordingSeconds; _recordingBytes = s['bytes'] ?? _recordingBytes; });
           } catch (_) {}
         });
+      } else {
+        _showError(r['error'] as String? ?? 'Record failed');
       }
-    } catch (_) {}
+    } catch (e) { _showError('Record: $e'); }
   }
 
   Future<void> _stopRecording() async {
     _timerCounter?.cancel(); _statusTimer?.cancel();
-    try { await _http!.audioRecordStop(); } catch (_) {}
+    try {
+      final r = await _http!.audioRecordStop();
+      if (mounted && r['ok'] != 1) _showError(r['error'] as String? ?? 'Stop failed');
+    } catch (e) { _showError('Stop: $e'); }
     if (mounted) { setState(() => _isRecording = false); _fmLoad(); }
   }
 
   Future<void> _playFile(String f) async {
-    try { final r = await _http!.audioPlay(f); if (mounted) setState(() => _playingFile = r['ok'] == 1 ? f : null); } catch (_) {}
+    try {
+      final r = await _http!.audioPlay(f);
+      if (!mounted) return;
+      if (r['ok'] == 1) {
+        setState(() => _playingFile = f);
+      } else {
+        _showError(r['error'] as String? ?? 'Play failed');
+      }
+    } catch (e) { _showError('Play: $e'); }
+  }
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.red, duration: const Duration(seconds: 3)),
+    );
   }
 
   Future<void> _stopPlayback() async {

@@ -448,6 +448,7 @@ class Esp32HttpService {
   }
 
   /// Toggle camera stream via POST /api/camera_stream.
+  /// Throws on failure (e.g. WiFi not connected).
   Future<void> toggleCameraStream(bool enable) async {
     final device = _connectedOrThrow;
     final body = jsonEncode({'enable': enable ? 1 : 0});
@@ -469,13 +470,13 @@ class Esp32HttpService {
       await socket.flush();
       final resp = await _readHttpResponse(socket);
       socket.close();
-      if (resp.contains('200 OK')) {
-        print('$TAG ✅ Camera stream ${enable ? "started" : "stopped"}');
-      } else {
-        print('$TAG ⚠️ Response:\n$resp');
-      }
+      final bodyStart = resp.indexOf('\r\n\r\n');
+      if (bodyStart < 0) throw Exception('No response body');
+      final json = jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      if (json['ok'] != 1) throw Exception(json['error'] ?? 'Toggle failed');
+      print('$TAG ✅ Camera stream ${enable ? "started" : "stopped"}');
     } catch (e) {
-      print('$TAG ⚠️ Failed: $e');
+      print('$TAG ⚠️ Camera stream toggle failed: $e');
       rethrow;
     }
   }
