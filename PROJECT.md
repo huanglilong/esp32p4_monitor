@@ -287,7 +287,10 @@ app_main()
   │
   ├─ 5. Web Config Server (HTTP :8080)
   │
-  ├─ 6. ULog Logger (仅当 SD 卡成功挂载时初始化)
+  ├─ 6. ULog Logger (仅当 SD 卡成功挂载时初始化, 需通过 Web UI 或 Flutter 手动 Start)
+  │    - Web: `POST /api/ulog/start` / `POST /api/ulog/stop` / `GET /api/ulog/status`
+  │    - Web UI: 设置页 "ULog Recording" 卡片, Start/Stop 按钮 + 状态显示
+  │    - Flutter: SettingsScreen "ULog Logger" 卡片, Start/Stop 按钮 + 字节/文件路径
   │
   └─ 7. vTaskDelete(NULL) — 回收 app_main 任务栈
 ```
@@ -735,3 +738,15 @@ idf.py -p /dev/ttyUSB0 flash monitor
     - `h_play`: 检查 `s_is_recording`, 录制中拒绝播放
     - `phone_app_audio.cpp`: `~PhoneAppAudio()` 和 `close()` 中重置 `_rec_pub`
     - `phone_app_music.cpp`: `~PhoneAppMusic()` 中清理 `_rec_sub` 和 `_rec_check_timer` (防御性)
+- [x] **ULog Writer NUL 终止符修复** (v2.1):
+  - **问题**: ULog Writer 在 Format、Subscription (ADD_LOGGED_MSG)、Info、Logging 消息中错误地包含了 C 字符串的 NUL 终止符 (`\0`)。ULog 规范明确规定 "Strings (`char[length]`) do not contain the termination NULL character `'\0'` at the end"。pyulog 解析时 `parse_string()` 保留 NUL 字节,导致 Subscription 消息的 `message_name` 变为 `'fps_stats\x00'`,而 Format 消息的 `name` 为 `'fps_stats'`(NUL 在冒号后的字段末尾被 split 隔离),造成 `KeyError: 'fps_stats\x00'`。
+  - **修复**: 移除所有 ULog 字符串字段中的 NUL 终止符,与 PX4 参考实现 (PX4-Autopilot logger module) 保持一致:
+    - `write_format_messages()`: `msg_total = fmt_len` (原 `fmt_len + 1`)
+    - `write_subscription_messages()`: `payload_size = 1 + 2 + name_len` (原 `+1` for NUL), `memcpy` 不含 NUL
+    - `write_info_str()`: `payload = 1 + key_len + val_len` (原 `+1`), `char[N]` 中 N 改为 val_len(不含 NUL), `memcpy` 不含 NUL
+    - `ulog_writer_write_message()`: `total_size = ULOG_MSG_HEADER_LEN + 9 + msg_len` (原 `+1`)
+  - **参考**: PX4 ULog File Format Spec — https://docs.px4.io/main/en/dev_log/ulog_file_format.html
+- [x] **ULog Info Git 版本信息** (v2.1):
+  - 新增 `ulog_git_info_t` 结构体和 `ulog_writer_set_git_info()` API, 将 git branch/commit/author/date/message 从应用层传入 ULog 组件
+  - ULog Info 消息新增 5 个键: `ver_sw_branch` (PX4 标准键), `ver_sw_commit`, `ver_sw_author`, `ver_sw_date`, `ver_sw_msg`
+  - `main.cpp` 在 `ulog_writer_init()` 后调用 `ulog_writer_set_git_info()` 传入 `git_info.h` 中的宏

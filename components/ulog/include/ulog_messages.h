@@ -72,18 +72,18 @@ typedef struct {
 
 /** Format message — describes a topic's schema. */
 typedef struct {
-    uint16_t msg_size;   /**< = strlen(format) + 1 (NUL) */
+    uint16_t msg_size;   /**< = strlen(format) (no NUL per ULog spec) */
     uint8_t  msg_type;   /**< ULOG_MSG_TYPE_FORMAT */
-    char     format[1600]; /**< "topic_name:type0 field0;type1 field1;..." NUL-terminated */
+    char     format[1600]; /**< "topic_name:type0 field0;type1 field1;..." (no NUL terminator) */
 } ulog_message_format_s;
 
 /** Add logged subscription — maps msg_id to topic name. */
 typedef struct {
-    uint16_t msg_size;     /**< = 3 + strlen(message_name) + 1 (NUL) */
+    uint16_t msg_size;     /**< = 3 + strlen(message_name) (no NUL per ULog spec) */
     uint8_t  msg_type;     /**< ULOG_MSG_TYPE_ADD_LOGGED_MSG */
     uint8_t  multi_id;     /**< Multi-instance ID (0 for single-instance) */
     uint16_t msg_id;       /**< Logger-internal message ID */
-    char     message_name[255]; /**< Topic name, NUL-terminated */
+    char     message_name[255]; /**< Topic name (no NUL terminator per ULog spec) */
 } ulog_message_add_logged_s;
 
 /** Remove logged subscription. */
@@ -119,10 +119,10 @@ typedef struct {
 
 /** Info message — key-value metadata. */
 typedef struct {
-    uint16_t msg_size;        /**< = 1 + strlen(key_value_str) + 1 (NUL) */
+    uint16_t msg_size;        /**< = 1 + key_len + value_len (no NUL per ULog spec) */
     uint8_t  msg_type;        /**< ULOG_MSG_TYPE_INFO */
     uint8_t  key_len;         /**< Length of the key */
-    char     key_value_str[255]; /**< "type key_name value" or "key_name" */
+    char     key_value_str[255]; /**< "type key_name" followed by binary value (no NUL) */
 } ulog_message_info_s;
 
 /** Flag bits message — compatibility flags. */
@@ -136,11 +136,11 @@ typedef struct {
 
 /** Logged string message. */
 typedef struct {
-    uint16_t msg_size;   /**< = 9 + strlen(message) + 1 (NUL) */
+    uint16_t msg_size;   /**< = 9 + strlen(message) (no NUL per ULog spec) */
     uint8_t  msg_type;   /**< ULOG_MSG_TYPE_LOGGING */
     uint8_t  log_level;  /**< Same as Linux kernel log levels */
     uint64_t timestamp;
-    char     message[128];
+    char     message[128]; /**< Log text (no NUL terminator per ULog spec) */
 } ulog_message_logging_s;
 
 /** Tagged log message. */

@@ -165,6 +165,8 @@
 | S118 | **Music 切歌崩溃** | `_play()` 切歌时 `stop()` + `vTaskDelay(200ms)` + `destroy()`，但 GMF 任务可能仍在处理。`destroy()` 释放管道资源时 GMF 任务仍在执行回调 → 崩溃。修复: 轮询 `esp_audio_simple_player_get_state()` 等待 STOPPED 状态后再 destroy()。同时修复 web_config_server 的 `h_play()`/`h_rec_start()`/`web_config_server_stop()` 中的相同问题 | ✅ |
 | S119 | **FPS 发布每帧执行** | `camera_stream.cpp` FPS 追踪代码花括号错位，`orb_publish()` 在 `if (elapsed >= FPS_LOG_INTERVAL_S)` 块外 → 每帧执行而非每 2s。修复: 修正花括号缩进 | ✅ |
 | S120 | **AudioDriver codec close 未打开句柄** | codec open 失败 rollback 时对未 open 的 handle 调用 `esp_codec_dev_close()`。修复: 跟踪 `codec_dac_opened`/`codec_mic_opened` 标志，仅 close 已打开的 handle | ✅ |
+| S121 | **ULog Writer NUL 终止符修复** | ULog 字符串字段不应包含 NUL 终止符（ULog 规范: "Strings do not contain the termination NULL character"）。Format/Subscription/Info/Logging 消息均错误包含 `\0`，导致 pyulog `KeyError: 'fps_stats\x00'`。修复: 移除所有字符串字段 NUL 终止符，与 PX4 参考实现一致 | ✅ |
+| S122 | **ULog Git 版本信息** | 新增 `ulog_git_info_t` + `ulog_writer_set_git_info()` API，ULog Info 消息写入 `ver_sw_branch`（PX4 标准键）、`ver_sw_commit`、`ver_sw_author`、`ver_sw_date`、`ver_sw_msg`，从 `git_info.h` 编译时宏获取 | ✅ |
 
 ---
 

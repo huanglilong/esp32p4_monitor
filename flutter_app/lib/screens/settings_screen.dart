@@ -34,6 +34,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Timer? _timerCounter;
   String? _playingFile;
 
+  // ULog state
+  bool _ulogRunning = false;
+  int _ulogBytes = 0;
+  String _ulogFilepath = '';
+  Timer? _ulogTimer;
+
   // File Manager state (replaces old audio-only _files / _loadingFiles)
   String _fmDir = '/';
   List<Map<String, dynamic>> _fmEntries = [];
@@ -52,14 +58,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!_initialized) {
       _initialized = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) { _loadSettings(); _fmLoad(); }
+        if (mounted) { _loadSettings(); _loadUlogStatus(); _fmLoad(); }
       });
     }
   }
 
   @override
   void dispose() {
-    _statusTimer?.cancel(); _timerCounter?.cancel();
+    _statusTimer?.cancel(); _timerCounter?.cancel(); _ulogTimer?.cancel();
     _ssidController.dispose(); _passwordController.dispose();
     super.dispose();
   }
@@ -146,6 +152,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _stopPlayback() async {
     try { await _http!.audioStop(); } catch (_) {}
     if (mounted) setState(() => _playingFile = null);
+  }
+
+  // ==================== ULog methods ====================
+
+  Future<void> _loadUlogStatus() async {
+    try {
+      final r = await _http!.ulogStatus();
+      if (!mounted) return;
+      setState(() {
+        _ulogRunning = r['running'] == true;
+        _ulogBytes = (r['bytes_written'] as num?)?.toInt() ?? 0;
+        _ulogFilepath = r['filepath'] as String? ?? '';
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _ulogStart() async {
+    try {
+      final r = await _http!.ulogStart();
+      if (!mounted) return;
+      if (r['ok'] == 1) {
+        setState(() => _ulogRunning = true);
+        _loadUlogStatus();
+        _ulogTimer = Timer.periodic(const Duration(seconds: 2), (_) => _loadUlogStatus());
+      } else {
+        _showError(r['error'] as String? ?? 'ULog start failed');
+      }
+    } catch (e) { _showError('ULog start: $e'); }
+  }
+
+  Future<void> _ulogStop() async {
+    _ulogTimer?.cancel();
+    try {
+      final r = await _http!.ulogStop();
+      if (!mounted) return;
+      if (r['ok'] == 1) {
+        setState(() => _ulogRunning = false);
+        _loadUlogStatus();
+      } else {
+        _showError(r['error'] as String? ?? 'ULog stop failed');
+      }
+    } catch (e) { _showError('ULog stop: $e'); }
   }
 
   // === File Manager methods ===
@@ -290,6 +338,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ? FilledButton.icon(onPressed: _stopRecording, icon: const Icon(Icons.stop, size: 18), label: const Text('Stop'))
               : FilledButton.icon(onPressed: _startRecording, icon: const Icon(Icons.fiber_manual_record, size: 18), label: const Text('Record'),
                   style: FilledButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white)),
+        ]))),
+        const SizedBox(height: 8),
+        // === ULog Recording ===
+        Card(child: Padding(padding: const EdgeInsets.all(12), child: Row(children: [
+          Icon(_ulogRunning ? Icons.fiber_manual_record : Icons.article, color: _ulogRunning ? Colors.green : null), const SizedBox(width: 8),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(_ulogRunning ? 'ULog Recording' : 'ULog Logger', style: tt.titleSmall),
+            if (_ulogRunning) Text('${_b(_ulogBytes)}', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+            if (_ulogRunning && _ulogFilepath.isNotEmpty) Text(_ulogFilepath, style: TextStyle(color: Colors.grey[500], fontSize: 10), overflow: TextOverflow.ellipsis),
+          ])),
+          const SizedBox(width: 8),
+          _ulogRunning
+              ? FilledButton.icon(onPressed: _ulogStop, icon: const Icon(Icons.stop, size: 18), label: const Text('Stop'))
+              : FilledButton.icon(onPressed: _ulogStart, icon: const Icon(Icons.play_arrow, size: 18), label: const Text('Start'),
+                  style: FilledButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white)),
         ]))),
         const SizedBox(height: 8),
         // === SD Card Files (directory browser + play/download/delete) ===

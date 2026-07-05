@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <ctime>
 #include <cerrno>
+#include <cstdlib>
 
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -250,6 +251,7 @@ typedef struct ulog_writer {
     char          ver_sw[32];       /**< Software version string */
     char          ver_hw[32];       /**< Hardware board name */
     char          sys_uuid[24];     /**< MAC-based unique ID */
+    ulog_git_info_t git_info;       /**< Git version info (from app) */
 } ulog_writer_t;
 
 /* ------------------------------------------------------------------ */
@@ -324,6 +326,12 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path)
              sd_mount_path, ULOG_RINGBUF_SIZE, writer->session_counter,
              writer->has_wall_clock ? "yes" : "no");
     return ESP_OK;
+}
+
+void ulog_writer_set_git_info(ulog_writer_t *writer, const ulog_git_info_t *git_info)
+{
+    if (!writer || !git_info) return;
+    writer->git_info = *git_info;
 }
 
 esp_err_t ulog_writer_add_topic(ulog_writer_t *writer, orb_id_t meta,
@@ -466,16 +474,10 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
         return ESP_OK;
     }
 
-    /* Stop the writer task: signal and wait for it to drain */
+    /* Stop the writer task: signal and force-delete */
     writer->task_should_run = false;
     if (writer->task_handle) {
-        /* Wait for the task to process its last iteration and drain data */
-        TickType_t timeout = pdMS_TO_TICKS(100);
-        uint32_t notify;
-        if (xTaskNotifyWait(0, 0, &notify, timeout) != pdTRUE) {
-            /* Task didn't notify within timeout, force delete */
-            vTaskDelete(writer->task_handle);
-        }
+        vTaskDelete(writer->task_handle);
         writer->task_handle = NULL;
     }
 
@@ -542,16 +544,15 @@ esp_err_t ulog_writer_write_message(ulog_writer_t *writer, uint8_t level,
     if (msg_len > 127) msg_len = 127;
 
     ulog_message_logging_s msg;
-    size_t total_size = ULOG_MSG_HEADER_LEN + 9 + msg_len + 1; /* msg_size field value */
+    size_t total_size = ULOG_MSG_HEADER_LEN + 9 + msg_len; /* no NUL terminator per ULog spec */
     msg.msg_size = (uint16_t)(total_size - ULOG_MSG_HEADER_LEN);
     msg.msg_type = ULOG_MSG_TYPE_LOGGING;
     msg.log_level = level;
     msg.timestamp = esp_timer_get_time();
-    memcpy(msg.message, message, msg_len);
-    msg.message[msg_len] = '\0';
+    memcpy(msg.message, message, msg_len); /* no NUL terminator per ULog spec */
 
     if (!ringbuf_write(&writer->ringbuf, (const uint8_t *)&msg,
-                       ULOG_MSG_HEADER_LEN + 9 + msg_len + 1)) {
+                       ULOG_MSG_HEADER_LEN + 9 + msg_len)) {
         ESP_LOGW(TAG, "Ring buffer full, dropping log message");
         return ESP_ERR_NO_MEM;
     }
@@ -678,11 +679,7 @@ static void writer_task_func(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    /* Task self-delete — notify the parent first */
-    if (writer->task_handle) {
-        xTaskNotifyGive(writer->task_handle); /* unused, but signals readiness */
-    }
-    writer->task_handle = NULL;
+    /* Task self-delete */
     vTaskDelete(NULL);
 }
 
@@ -743,126 +740,157 @@ static esp_err_t write_flag_bits(ulog_writer_t *writer)
 /** Write info messages: sys_name, version, hardware, etc. (PX4 convention) */
 static esp_err_t write_info_messages(ulog_writer_t *writer)
 {
-    /* Helper to write one info key-value.
-     * Format: "type key_name value" or just "char[%d] key_name%s" for strings. */
-    auto write_info = [writer](const char *type, const char *key, const char *value) -> esp_err_t {
-        char buf[256];
-        int n = snprintf(buf, sizeof(buf), "%s %s %s", type, key, value);
-        if (n < 0 || (size_t)n >= sizeof(buf)) return ESP_ERR_INVALID_SIZE;
-
-        uint8_t key_len = (uint8_t)strlen(key);
-        uint16_t total = (uint16_t)(ULOG_MSG_HEADER_LEN + 1 + (uint16_t)n + 1);
-
-        uint8_t msg[512];
-        size_t pos = 0;
-        msg[pos++] = (uint8_t)((total - ULOG_MSG_HEADER_LEN) & 0xFF);
-        msg[pos++] = (uint8_t)(((total - ULOG_MSG_HEADER_LEN) >> 8) & 0xFF);
-        msg[pos++] = ULOG_MSG_TYPE_INFO;
-        msg[pos++] = key_len;
-        memcpy(msg + pos, buf, (size_t)n + 1); /* include NUL */
-        pos += (size_t)n + 1;
-
-        return write_all(writer, msg, pos);
-    };
-
-    /* Helper to write a uint32_t info value */
-    auto write_info_uint32 = [writer](const char *key, uint32_t value) -> esp_err_t {
-        char buf[64];
-        int n = snprintf(buf, sizeof(buf), "uint32_t %s %" PRIu32, key, value);
-        if (n < 0 || (size_t)n >= sizeof(buf)) return ESP_ERR_INVALID_SIZE;
-
-        uint8_t key_len = (uint8_t)strlen(key);
-        uint16_t total = (uint16_t)(ULOG_MSG_HEADER_LEN + 1 + (uint16_t)n + 1);
-
-        uint8_t msg[256];
-        size_t pos = 0;
-        msg[pos++] = (uint8_t)((total - ULOG_MSG_HEADER_LEN) & 0xFF);
-        msg[pos++] = (uint8_t)(((total - ULOG_MSG_HEADER_LEN) >> 8) & 0xFF);
-        msg[pos++] = ULOG_MSG_TYPE_INFO;
-        msg[pos++] = key_len;
-        memcpy(msg + pos, buf, (size_t)n + 1);
-        pos += (size_t)n + 1;
-
-        return write_all(writer, msg, pos);
-    };
-
-    /* Helper to write a int32_t info value */
-    auto write_info_int32 = [writer](const char *key, int32_t value) -> esp_err_t {
-        char buf[64];
-        int n = snprintf(buf, sizeof(buf), "int32_t %s %" PRId32, key, value);
-        if (n < 0 || (size_t)n >= sizeof(buf)) return ESP_ERR_INVALID_SIZE;
-
-        uint8_t key_len = (uint8_t)strlen(key);
-        uint16_t total = (uint16_t)(ULOG_MSG_HEADER_LEN + 1 + (uint16_t)n + 1);
-
-        uint8_t msg[256];
-        size_t pos = 0;
-        msg[pos++] = (uint8_t)((total - ULOG_MSG_HEADER_LEN) & 0xFF);
-        msg[pos++] = (uint8_t)(((total - ULOG_MSG_HEADER_LEN) >> 8) & 0xFF);
-        msg[pos++] = ULOG_MSG_TYPE_INFO;
-        msg[pos++] = key_len;
-        memcpy(msg + pos, buf, (size_t)n + 1);
-        pos += (size_t)n + 1;
-
-        return write_all(writer, msg, pos);
-    };
+    /* Per PX4 ULog spec, INFO ('I') message format:
+     *   [msg_size(2)] [msg_type='I'(1)] [key_len(1)] [key(type+name, key_len bytes)] [binary_value]
+     * key = "type key_name" (no NUL), e.g. "uint32_t ver_data_format"
+     * value = binary LE matching the type, e.g. uint32_t → 4 bytes LE
+     * For strings: key = "char[N] key_name", value = string bytes (NUL-terminated) */
 
     esp_err_t err;
 
+    /* ── char[N] string values ── */
+    auto write_info_str = [writer](const char *key, const char *value) -> esp_err_t {
+        size_t val_len = strlen(value);
+        char key_buf[256];
+        int key_n = snprintf(key_buf, sizeof(key_buf), "char[%d] %s", (int)val_len, key);
+        if (key_n < 0 || (size_t)key_n >= sizeof(key_buf)) return ESP_ERR_INVALID_SIZE;
+        uint8_t key_len = (uint8_t)key_n;
+
+        uint16_t payload = (uint16_t)(1 + key_len + (uint16_t)val_len); /* no NUL in value per ULog spec */
+        uint8_t msg[512];
+        size_t pos = 0;
+        msg[pos++] = (uint8_t)(payload & 0xFF);
+        msg[pos++] = (uint8_t)((payload >> 8) & 0xFF);
+        msg[pos++] = ULOG_MSG_TYPE_INFO;
+        msg[pos++] = key_len;
+        memcpy(msg + pos, key_buf, (size_t)key_n);
+        pos += (size_t)key_n;
+        memcpy(msg + pos, value, val_len); /* no NUL terminator per ULog spec */
+        pos += val_len;
+        return write_all(writer, msg, pos);
+    };
+
+    /* ── uint32_t values (4 bytes LE) ── */
+    auto write_info_u32 = [writer](const char *key, uint32_t value) -> esp_err_t {
+        char key_buf[256];
+        int key_n = snprintf(key_buf, sizeof(key_buf), "uint32_t %s", key);
+        if (key_n < 0 || (size_t)key_n >= sizeof(key_buf)) return ESP_ERR_INVALID_SIZE;
+        uint8_t key_len = (uint8_t)key_n;
+
+        uint16_t payload = (uint16_t)(1 + key_len + 4);
+        uint8_t msg[256];
+        size_t pos = 0;
+        msg[pos++] = (uint8_t)(payload & 0xFF);
+        msg[pos++] = (uint8_t)((payload >> 8) & 0xFF);
+        msg[pos++] = ULOG_MSG_TYPE_INFO;
+        msg[pos++] = key_len;
+        memcpy(msg + pos, key_buf, (size_t)key_n);
+        pos += (size_t)key_n;
+        msg[pos++] = (uint8_t)(value & 0xFF);
+        msg[pos++] = (uint8_t)((value >> 8) & 0xFF);
+        msg[pos++] = (uint8_t)((value >> 16) & 0xFF);
+        msg[pos++] = (uint8_t)((value >> 24) & 0xFF);
+        return write_all(writer, msg, pos);
+    };
+
+    /* ── int32_t values (4 bytes LE) ── */
+    auto write_info_i32 = [writer](const char *key, int32_t value) -> esp_err_t {
+        char key_buf[256];
+        int key_n = snprintf(key_buf, sizeof(key_buf), "int32_t %s", key);
+        if (key_n < 0 || (size_t)key_n >= sizeof(key_buf)) return ESP_ERR_INVALID_SIZE;
+        uint8_t key_len = (uint8_t)key_n;
+
+        uint16_t payload = (uint16_t)(1 + key_len + 4);
+        uint8_t msg[256];
+        size_t pos = 0;
+        msg[pos++] = (uint8_t)(payload & 0xFF);
+        msg[pos++] = (uint8_t)((payload >> 8) & 0xFF);
+        msg[pos++] = ULOG_MSG_TYPE_INFO;
+        msg[pos++] = key_len;
+        memcpy(msg + pos, key_buf, (size_t)key_n);
+        pos += (size_t)key_n;
+        uint32_t uv = (uint32_t)value;
+        msg[pos++] = (uint8_t)(uv & 0xFF);
+        msg[pos++] = (uint8_t)((uv >> 8) & 0xFF);
+        msg[pos++] = (uint8_t)((uv >> 16) & 0xFF);
+        msg[pos++] = (uint8_t)((uv >> 24) & 0xFF);
+        return write_all(writer, msg, pos);
+    };
+
     /* PX4 standard Info keys */
-    err = write_info("char[%d]", "sys_name", writer->sys_name);
+    err = write_info_str("sys_name", writer->sys_name);
+    if (err != ESP_OK) return err;
+    err = write_info_str("ver_sw", writer->ver_sw);
+    if (err != ESP_OK) return err;
+    err = write_info_str("ver_hw", writer->ver_hw);
+    if (err != ESP_OK) return err;
+    err = write_info_str("sys_os_name", "FreeRTOS");
+    if (err != ESP_OK) return err;
+    err = write_info_str("sys_os_ver", esp_get_idf_version());
+    if (err != ESP_OK) return err;
+    err = write_info_str("sys_mcu", "ESP32-P4NRW32");
+    if (err != ESP_OK) return err;
+    err = write_info_str("sys_uuid", writer->sys_uuid);
+    if (err != ESP_OK) return err;
+    err = write_info_str("arch", "esp32p4");
     if (err != ESP_OK) return err;
 
-    err = write_info("char[%d]", "ver_sw", writer->ver_sw);
-    if (err != ESP_OK) return err;
-
-    err = write_info("char[%d]", "ver_hw", writer->ver_hw);
-    if (err != ESP_OK) return err;
-
-    err = write_info("char[%d]", "sys_os_name", "FreeRTOS");
-    if (err != ESP_OK) return err;
-
-    err = write_info("char[%d]", "sys_os_ver", esp_get_idf_version());
-    if (err != ESP_OK) return err;
-
-    err = write_info("char[%d]", "sys_mcu", "ESP32-P4NRW32");
-    if (err != ESP_OK) return err;
-
-    err = write_info("char[%d]", "sys_uuid", writer->sys_uuid);
-    if (err != ESP_OK) return err;
-
-    err = write_info("char[%d]", "arch", "esp32p4");
-    if (err != ESP_OK) return err;
+    /* Git version info */
+    if (writer->git_info.branch[0] != '\0') {
+        err = write_info_str("ver_sw_branch", writer->git_info.branch);
+        if (err != ESP_OK) return err;
+    }
+    if (writer->git_info.commit[0] != '\0') {
+        err = write_info_str("ver_sw_commit", writer->git_info.commit);
+        if (err != ESP_OK) return err;
+    }
+    if (writer->git_info.author[0] != '\0') {
+        err = write_info_str("ver_sw_author", writer->git_info.author);
+        if (err != ESP_OK) return err;
+    }
+    if (writer->git_info.date[0] != '\0') {
+        err = write_info_str("ver_sw_date", writer->git_info.date);
+        if (err != ESP_OK) return err;
+    }
+    if (writer->git_info.message[0] != '\0') {
+        err = write_info_str("ver_sw_msg", writer->git_info.message);
+        if (err != ESP_OK) return err;
+    }
 
     /* ULog data format version (PX4 uses 2) */
-    err = write_info_uint32("ver_data_format", 2);
+    err = write_info_u32("ver_data_format", 2);
     if (err != ESP_OK) return err;
 
-    /* Boot time in UTC µs (if available) */
+    /* Boot time in UTC µs + time_ref_utc (only if wall clock is synced) */
     if (writer->has_wall_clock) {
         struct timespec ts;
         if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
-            uint64_t boot_utc_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-            boot_utc_us -= esp_timer_get_time(); /* subtract uptime to get boot time */
-            char buf[64];
-            snprintf(buf, sizeof(buf), "uint64_t boot_time_utc_us %llu",
-                     (unsigned long long)boot_utc_us);
-            uint8_t key_len = (uint8_t)strlen("boot_time_utc_us");
-            uint16_t total = (uint16_t)(ULOG_MSG_HEADER_LEN + 1 + (uint16_t)strlen(buf) + 1);
-            uint8_t msg[256];
+            uint64_t boot_utc_us = (uint64_t)ts.tv_sec * 1000000ULL +
+                                   (uint64_t)ts.tv_nsec / 1000ULL;
+            boot_utc_us -= esp_timer_get_time();
+
+            char key_buf[64];
+            int key_n = snprintf(key_buf, sizeof(key_buf), "uint64_t %s", "boot_time_utc_us");
+            uint8_t key_len = (uint8_t)key_n;
+            uint16_t payload = (uint16_t)(1 + key_len + 8);
+            uint8_t msg[128];
             size_t pos = 0;
-            msg[pos++] = (uint8_t)((total - ULOG_MSG_HEADER_LEN) & 0xFF);
-            msg[pos++] = (uint8_t)(((total - ULOG_MSG_HEADER_LEN) >> 8) & 0xFF);
+            msg[pos++] = (uint8_t)(payload & 0xFF);
+            msg[pos++] = (uint8_t)((payload >> 8) & 0xFF);
             msg[pos++] = ULOG_MSG_TYPE_INFO;
             msg[pos++] = key_len;
-            memcpy(msg + pos, buf, strlen(buf) + 1);
-            pos += strlen(buf) + 1;
+            memcpy(msg + pos, key_buf, (size_t)key_n);
+            pos += (size_t)key_n;
+            /* uint64_t LE */
+            for (int i = 0; i < 8; i++) {
+                msg[pos++] = (uint8_t)((boot_utc_us >> (i * 8)) & 0xFF);
+            }
             err = write_all(writer, msg, pos);
             if (err != ESP_OK) return err;
         }
 
-        /* UTC offset (0 for now, could be from SNTP config) */
-        err = write_info_int32("time_ref_utc", 0);
+        /* UTC offset (0 for now) */
+        err = write_info_i32("time_ref_utc", 0);
         if (err != ESP_OK) return err;
     }
 
@@ -878,7 +906,7 @@ static esp_err_t write_format_messages(ulog_writer_t *writer)
         size_t fmt_len = strlen(fmt);
         if (fmt_len == 0) continue;
 
-        uint16_t msg_total = (uint16_t)(fmt_len + 1); /* +1 for NUL */
+        uint16_t msg_total = (uint16_t)(fmt_len); /* no NUL terminator per ULog spec */
         uint8_t header[ULOG_MSG_HEADER_LEN];
         header[0] = (uint8_t)(msg_total & 0xFF);
         header[1] = (uint8_t)((msg_total >> 8) & 0xFF);
@@ -886,7 +914,7 @@ static esp_err_t write_format_messages(ulog_writer_t *writer)
 
         esp_err_t err = write_all(writer, header, sizeof(header));
         if (err != ESP_OK) return err;
-        err = write_all(writer, fmt, fmt_len + 1);
+        err = write_all(writer, fmt, fmt_len); /* no NUL terminator per ULog spec */
         if (err != ESP_OK) return err;
     }
     return ESP_OK;
@@ -900,7 +928,7 @@ static esp_err_t write_subscription_messages(ulog_writer_t *writer)
         const char *name = entry->meta->o_name;
         size_t name_len = strlen(name);
 
-        uint16_t payload_size = (uint16_t)(1 + 2 + name_len + 1); /* multi_id + msg_id + name + NUL */
+        uint16_t payload_size = (uint16_t)(1 + 2 + name_len); /* multi_id + msg_id + name (no NUL per ULog spec) */
         uint8_t header[ULOG_MSG_HEADER_LEN];
         header[0] = (uint8_t)(payload_size & 0xFF);
         header[1] = (uint8_t)((payload_size >> 8) & 0xFF);
@@ -913,7 +941,7 @@ static esp_err_t write_subscription_messages(ulog_writer_t *writer)
         body[0] = 0; /* multi_id = 0 */
         body[1] = (uint8_t)(entry->msg_id & 0xFF);
         body[2] = (uint8_t)((entry->msg_id >> 8) & 0xFF);
-        memcpy(body + 3, name, name_len + 1);
+        memcpy(body + 3, name, name_len); /* no NUL terminator per ULog spec */
 
         err = write_all(writer, body, payload_size);
         if (err != ESP_OK) return err;
@@ -1043,7 +1071,7 @@ static void rmtree(const char *path)
 
 /** Directory entry for cleanup sorting. */
 struct dir_entry {
-    char     path[MAX_PATH + 64];
+    char     path[ULOG_MAX_PATH + ULOG_MAX_PATH + 16]; /**< log_root + "/" + d_name, max ~520 */
     time_t   mtime;   /**< Directory modification time */
     size_t   size;    /**< Total size of .ulg files inside */
 };
@@ -1066,15 +1094,20 @@ static int cmp_dir_mtime(const void *a, const void *b)
  */
 static void cleanup_old_logs(const char *log_root, size_t size_limit)
 {
-    dir_entry dirs[128];
+    /* Allocate on heap — this function is called from httpd task which has a small stack.
+     * dir_entry has a 320-byte path, and even 32 entries = ~10KB, too large for 4KB stack. */
+    const int max_dirs = 32;
+    dir_entry *dirs = (dir_entry *)calloc((size_t)max_dirs, sizeof(dir_entry));
+    if (!dirs) return;
+
     int dir_count = 0;
     size_t total_size = 0;
 
     DIR *d = opendir(log_root);
-    if (!d) return;
+    if (!d) { free(dirs); return; }
 
     struct dirent *ent;
-    while ((ent = readdir(d)) != NULL && dir_count < 128) {
+    while ((ent = readdir(d)) != NULL && dir_count < max_dirs) {
         if (ent->d_name[0] == '.') continue;
 
         snprintf(dirs[dir_count].path, sizeof(dirs[dir_count].path),
@@ -1091,7 +1124,7 @@ static void cleanup_old_logs(const char *log_root, size_t size_limit)
     }
     closedir(d);
 
-    if (dir_count == 0) return;
+    if (dir_count == 0) { free(dirs); return; }
 
     /* Sort oldest first */
     qsort(dirs, (size_t)dir_count, sizeof(dirs[0]), cmp_dir_mtime);
@@ -1106,6 +1139,8 @@ static void cleanup_old_logs(const char *log_root, size_t size_limit)
         rmtree(dirs[i].path);
         total_size -= dirs[i].size;
     }
+
+    free(dirs);
 }
 
 /* ------------------------------------------------------------------ */

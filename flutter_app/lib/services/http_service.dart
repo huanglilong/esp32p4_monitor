@@ -527,6 +527,47 @@ class Esp32HttpService {
   /// GET /api/audio/stop — Stop playback.
   Future<Map<String, dynamic>> audioStop() => _audioGet('/api/audio/stop');
 
+  // ==================== ULog API (port 8080) ====================
+
+  /// GET /api/ulog/status — Get ULog recording status.
+  Future<Map<String, dynamic>> ulogStatus() => _audioGet('/api/ulog/status');
+
+  /// POST /api/ulog/start — Start ULog recording to SD card.
+  Future<Map<String, dynamic>> ulogStart() async {
+    final device = _connectedOrThrow;
+    try {
+      final socket = await Socket.connect(device.host, 8080, timeout: const Duration(seconds: 5));
+      socket.write('POST /api/ulog/start HTTP/1.0\r\nHost: ${device.host}:8080\r\n\r\n');
+      await socket.flush();
+      final resp = await _readHttpResponse(socket);
+      socket.close();
+      final bodyStart = resp.indexOf('\r\n\r\n');
+      if (bodyStart < 0) throw Exception('No response body');
+      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+    } catch (e) {
+      print('$TAG ❌ ULog start failed: $e');
+      rethrow;
+    }
+  }
+
+  /// POST /api/ulog/stop — Stop ULog recording.
+  Future<Map<String, dynamic>> ulogStop() async {
+    final device = _connectedOrThrow;
+    try {
+      final socket = await Socket.connect(device.host, 8080, timeout: const Duration(seconds: 5));
+      socket.write('POST /api/ulog/stop HTTP/1.0\r\nHost: ${device.host}:8080\r\n\r\n');
+      await socket.flush();
+      final resp = await _readHttpResponse(socket);
+      socket.close();
+      final bodyStart = resp.indexOf('\r\n\r\n');
+      if (bodyStart < 0) throw Exception('No response body');
+      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+    } catch (e) {
+      print('$TAG ❌ ULog stop failed: $e');
+      rethrow;
+    }
+  }
+
   // ==================== File Manager API (port 8080) ====================
 
   /// GET /api/files/list?dir=/ — List files/directories on SD card.

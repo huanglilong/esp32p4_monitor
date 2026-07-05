@@ -525,6 +525,16 @@ extern "C" void app_main(void)
     if (PeripheralManager::instance().sdcard_available()) {
         ulog_writer_t *ulog = ulog_writer_get();
         ulog_writer_init(ulog, "/sdcard");
+
+        /* Pass git version info for ULog Info messages */
+        ulog_git_info_t git = {};
+        strlcpy(git.branch, GIT_BRANCH, sizeof(git.branch));
+        strlcpy(git.commit, GIT_COMMIT, sizeof(git.commit));
+        strlcpy(git.author, GIT_AUTHOR, sizeof(git.author));
+        strlcpy(git.date, GIT_DATE, sizeof(git.date));
+        strlcpy(git.message, GIT_MSG, sizeof(git.message));
+        ulog_writer_set_git_info(ulog, &git);
+
         ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
         ulog_writer_add_topic(ulog, ORB_ID(detection_result), 0); /* default 100ms */
         ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */

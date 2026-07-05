@@ -64,6 +64,15 @@ extern "C" {
 #endif
 #endif
 
+/** Git version info — passed from the application at init time. */
+typedef struct {
+    char branch[64];     /**< Git branch name, e.g. "main" */
+    char commit[16];     /**< Git short commit hash, e.g. "a1b2c3d" */
+    char author[64];     /**< Git commit author, e.g. "User <user@example.com>" */
+    char date[64];       /**< Git commit date, e.g. "2026-07-05 18:00:00 +0800" */
+    char message[128];   /**< Git commit message (first line) */
+} ulog_git_info_t;
+
 /** ULog writer states. */
 typedef enum {
     ULOG_STATE_UNINIT = 0,
@@ -85,10 +94,20 @@ ulog_writer_t *ulog_writer_get(void);
 /**
  * Initialize the ULogWriter.
  *
+ * @param writer         ULogWriter instance
  * @param sd_mount_path  SD card mount path, e.g. "/sdcard"
  * @return ESP_OK on success
  */
 esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path);
+
+/**
+ * Set git version info for ULog Info messages.
+ * Must be called after init(), before start().
+ *
+ * @param writer   ULogWriter instance
+ * @param git_info Pointer to git info struct (contents are copied)
+ */
+void ulog_writer_set_git_info(ulog_writer_t *writer, const ulog_git_info_t *git_info);
 
 /**
  * Register a topic for logging.
