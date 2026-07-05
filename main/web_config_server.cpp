@@ -96,7 +96,7 @@ static bool           s_mdns_running = false;
 #define PCM_BUF_SAMPLES      (ENC_SAMPLES_PER_CH * 2)
 
 static bool           s_audio_inited = false;
-static TaskHandle_t   s_audio_task = NULL;
+static volatile TaskHandle_t   s_audio_task = NULL;
 static volatile bool  s_audio_running = false;
 static volatile bool  s_is_recording = false;
 static shine_t        s_shine = NULL;
