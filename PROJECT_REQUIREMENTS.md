@@ -297,6 +297,16 @@
 | 2026-07-03 | +S49 Driver 模块拆分: PeripheralManager→thin facade + AudioDriver + SDCardDriver + CameraDriver (claim/release API) |
 | 2026-07-03 | +S44~S48 Bug 修复 (gettimeofday overflow, Music _stop ASP 泄漏, SD LDO 检查, web task 干净退出) +PeripheralManager facade 模块化重构 (消除 extern 全局变量) |
 | 2026-07-03 | +S42 uORB 消息总线（FreeRTOS Queue 实现） +S43 .msg 自动生成 pipeline +P11 IPC 迁移计划 |
+| 2026-07-06 | +S123 JPEG encoder init race fix: two-phase init with _encoder_init_in_progress flag prevents null handle dereference |
+| 2026-07-06 | +S124 uORB orb_init(): eager mutex creation at boot eliminates dual-create race in lock() |
+| 2026-07-06 | +S125 uORB subscriber ABA protection: generation counter prevents message delivery to wrong subscriber after slot reuse |
+| 2026-07-06 | +S126 Settings bool atomic migration: _wifi_scanning/_wifi_connecting/_is_ui_del → std::atomic for cross-task safety |
+| 2026-07-06 | +S127 AudioDriver _vol_pub atomic: single-advertise via compare_exchange_strong prevents double uORB publisher |
+| 2026-07-06 | +S128 CameraStream _frame_count/_fps_total_bytes volatile→atomic: proper cross-core memory ordering |
+| 2026-07-06 | +S129 SDCardDriver _initialized atomic: available() reads without mutex now thread-safe |
+| 2026-07-06 | +S130 AudioDriver _volume atomic: volume() read without lock now thread-safe |
+| 2026-07-06 | +S131 CameraDriver mutable _sub: removes const_cast, preserves const-correctness |
+| 2026-07-06 | +K5~K7 Code duplication in stream_handler (LOW), logger reentrancy (LOW), web s_audio_running race (LOW) — deferred |
 | 2026-07-02 | 初始创建，汇总 PROJECT.md + project_design.md 中所有需求和问题 |
 | 2026-07-02 | +R15 R16 R17 Web 音频录制/播放 + Camera Stream 互斥需求 |
 | 2026-07-02 | +S28~S34 Web 音频稳定性修复 (懒加载、URL解码、JS修复、ASP生命周期等) |
