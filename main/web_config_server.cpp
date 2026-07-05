@@ -1117,10 +1117,28 @@ static esp_err_t h_rec_status(httpd_req_t *req) {
 /* GET /api/audio/list */
 static esp_err_t h_list(httpd_req_t *req) {
     (void)__audio_init(); /* Lazy-mount SD card so file list works even before first record */
-    DIR *d=opendir(REC_DIR); cJSON *root=cJSON_CreateObject(),*arr=cJSON_CreateArray();
-    cJSON_AddItemToObject(root,"files",arr);
+    DIR *d = opendir(REC_DIR);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_CreateArray();
+    if (!root || !arr) {
+        if (d) closedir(d);
+        if (arr) cJSON_Delete(arr);
+        if (root) cJSON_Delete(root);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    cJSON_AddItemToObject(root, "files", arr);
     if(d){ struct dirent *e; while((e=readdir(d))){ if(e->d_name[0]=='.') continue; char *x=strrchr(e->d_name,'.'); if(x&&strcasecmp(x,".mp3")==0) cJSON_AddItemToArray(arr,cJSON_CreateString(e->d_name)); } closedir(d); }
-    char *j=cJSON_PrintUnformatted(root); httpd_resp_set_type(req,"application/json"); httpd_resp_send(req,j,strlen(j)); free(j); cJSON_Delete(root);
+    char *j = cJSON_PrintUnformatted(root);
+    if (!j) {
+        cJSON_Delete(root);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, j, strlen(j));
+    free(j);
+    cJSON_Delete(root);
     return ESP_OK;
 }
 
