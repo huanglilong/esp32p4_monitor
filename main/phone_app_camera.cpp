@@ -435,6 +435,9 @@ void PhoneAppCamera::_deinit_detection(void)
      * Just clean up resources here. */
     _detect_task_handle = nullptr;
 
+    /* Reset uORB publisher handle for clean re-init lifecycle */
+    s_detect_pub = ORB_ADVERT_INVALID;
+
     /* Delete detector */
     if (_detector) {
         delete _detector;
