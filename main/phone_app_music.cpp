@@ -33,6 +33,7 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     _vol_sync_timer(nullptr),
     _vol_sub(ORB_ADVERT_INVALID),
     _rec_sub(ORB_ADVERT_INVALID), _rec_check_timer(nullptr),
+    _recording_active(false),
     _auto_next(false), _auto_next_timer(nullptr)
 {
     memset(_file_names, 0, sizeof(_file_names));
@@ -415,13 +416,19 @@ void PhoneAppMusic::_play(int index)
     if (index < 0 || index >= _track_count) return;
 
     /* Check if Audio app is recording — refuse playback if so.
-     * Always read the latest state via orb_copy (no orb_check guard) because
-     * _rec_check_timer_cb may have already consumed the last update, causing
-     * orb_check to return false for the latest data. */
+     * Use orb_check first to avoid blocking (orb_copy uses portMAX_DELAY).
+     * If no update is available, fall back to cached _recording_active
+     * (updated by _rec_check_timer_cb on every consumed message).
+     * Note: unconditional orb_copy would block forever if no publisher
+     * has ever sent recording_state, freezing the LVGL thread. */
     if (_rec_sub >= 0) {
-        struct recording_state_s rs = {};
-        orb_copy(ORB_ID(recording_state), _rec_sub, &rs);
-        if (rs.active) {
+        bool updated = false;
+        if (orb_check(_rec_sub, &updated) == 0 && updated) {
+            struct recording_state_s rs = {};
+            orb_copy(ORB_ID(recording_state), _rec_sub, &rs);
+            _recording_active = rs.active;
+        }
+        if (_recording_active) {
             ESP_LOGW(TAG, "Cannot play: recording in progress");
             lv_label_set_text(_label_status, "Recording in progress");
             return;
@@ -591,6 +598,7 @@ void PhoneAppMusic::_rec_check_timer_cb(lv_timer_t *timer)
 
     struct recording_state_s rs = {};
     orb_copy(ORB_ID(recording_state), app->_rec_sub, &rs);
+    app->_recording_active = rs.active;  /* cache for _play() fallback */
     if (rs.active && app->_is_playing) {
         ESP_LOGI(TAG, "Recording started — stopping playback");
         app->_stop();

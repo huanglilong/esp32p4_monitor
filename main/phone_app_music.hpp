@@ -60,6 +60,7 @@ private:
     /* uORB recording_state subscriber — stops playback when Audio app is recording */
     orb_sub_t            _rec_sub;
     lv_timer_t          *_rec_check_timer;
+    volatile bool        _recording_active;  /* cached latest state, updated by _rec_check_timer_cb */
 
     /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
     volatile bool       _auto_next;
