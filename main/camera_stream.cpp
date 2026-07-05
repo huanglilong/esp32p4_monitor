@@ -820,6 +820,10 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     CameraStream *cs = (CameraStream *)req->user_ctx;
 
     cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     cJSON_AddNumberToObject(root, "width", cs->_cam_width);
     cJSON_AddNumberToObject(root, "height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality);
@@ -831,7 +835,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     else if (cs->_cam_pixel_format == V4L2_PIX_FMT_YUV422P) fmt_str = "YUV422P";
     cJSON_AddStringToObject(root, "pixel_format", fmt_str);
 
-    char *json_str = cJSON_Print(root);
+    char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
 
     if (!json_str) {
@@ -850,6 +854,10 @@ static esp_err_t detection_info_handler(httpd_req_t *req)
     CameraStream *cs = (CameraStream *)req->user_ctx;
 
     cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     cJSON_AddBoolToObject(root, "detection_enabled", cs->_detector != nullptr);
     cJSON_AddBoolToObject(root, "model_ready", cs->_model_ready);
 
@@ -868,7 +876,7 @@ static esp_err_t detection_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "person_count", person_count);
     cJSON_AddNumberToObject(root, "max_confidence", detect_avail ? max_conf : 0.0);
 
-    char *json_str = cJSON_Print(root);
+    char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
 
     if (!json_str) {
