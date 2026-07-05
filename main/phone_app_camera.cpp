@@ -177,6 +177,13 @@ bool PhoneAppCamera::close(void)
         }
     }
 
+    /* Yield to let idle task fully reclaim the deleted task's TCB.
+     * The detection task clears _detect_task_handle before vTaskDelete(NULL),
+     * but there is a small window where the task is still executing its last
+     * instructions (e.g., semaphore give). This delay ensures the task has
+     * fully exited before we delete _detect_mutex in _deinit_detection(). */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
     /* Now safe to free resources */
     _deinit_detection();
     _deinit_camera();
