@@ -788,20 +788,35 @@ static esp_err_t stream_handler(httpd_req_t *req)
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
 
             cs->_frame_count = cs->_frame_count + 1;
+            cs->_fps_frame_count = cs->_fps_frame_count + 1;
+            cs->_fps_total_bytes = cs->_fps_total_bytes + jpeg_size;
 
-            /* Publish FPS stats via uORB */
+            /* Compute and publish FPS stats via uORB every FPS_LOG_INTERVAL_S seconds */
             {
-                static orb_advert_t s_fps_pub = ORB_ADVERT_INVALID;
-                if (s_fps_pub < 0) {
-                    s_fps_pub = orb_advertise(ORB_ID(fps_stats));
-                }
-                if (s_fps_pub >= 0) {
-                    struct fps_stats_s fps = {};
-                    fps.timestamp      = esp_timer_get_time();
-                    fps.frame_count    = cs->_frame_count;
-                    fps.fps_total_bytes = cs->_fps_total_bytes;
-                    fps.fps            = 0.0f;
-                    orb_publish(ORB_ID(fps_stats), s_fps_pub, &fps);
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                double elapsed = (now.tv_sec - cs->_fps_window_start.tv_sec) +
+                                 (now.tv_nsec - cs->_fps_window_start.tv_nsec) / 1e9;
+                if (elapsed >= cs->FPS_LOG_INTERVAL_S) {
+                    float fps = (float)cs->_fps_frame_count / (float)elapsed;
+                    static orb_advert_t s_fps_pub = ORB_ADVERT_INVALID;
+                    if (s_fps_pub < 0) {
+                        s_fps_pub = orb_advertise(ORB_ID(fps_stats));
+                    }
+                    if (s_fps_pub >= 0) {
+                        struct fps_stats_s fps_msg = {};
+                        fps_msg.timestamp      = esp_timer_get_time();
+                        fps_msg.frame_count    = cs->_frame_count;
+                        fps_msg.fps_total_bytes = cs->_fps_total_bytes;
+                        fps_msg.fps            = fps;
+                        orb_publish(ORB_ID(fps_stats), s_fps_pub, &fps_msg);
+                    }
+                    ESP_LOGI(TAG, "FPS: %.1f, bytes/s: %.0f", fps,
+                             (float)cs->_fps_total_bytes / elapsed);
+                    /* Reset FPS window */
+                    cs->_fps_window_start = now;
+                    cs->_fps_frame_count = 0;
+                    cs->_fps_total_bytes = 0;
                 }
             }
 
