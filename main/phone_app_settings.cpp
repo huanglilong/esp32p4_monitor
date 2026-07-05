@@ -85,6 +85,7 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     _nvs_dirty(false), _nvs_save_timer(nullptr),
     _status_timer(nullptr),
     _screen_index(SCREEN_MAIN), _is_ui_del(true),
+    _nvs{0, VOLUME_DEFAULT, BRIGHTNESS_DEFAULT},
     _scr_main(nullptr),
 
     _sw_wifi(nullptr), _label_wifi(nullptr),
@@ -116,8 +117,8 @@ PhoneAppSettings::~PhoneAppSettings()
         _nvs_dirty = false;
         nvs_handle_t nvs_h;
         if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, NVS_KEY_VOLUME, _nvs_param_map[NVS_KEY_VOLUME]);
-            nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, _nvs_param_map[NVS_KEY_BRIGHTNESS]);
+            nvs_set_i32(nvs_h, NVS_KEY_VOLUME, _nvs.volume);
+            nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, _nvs.brightness);
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
@@ -244,10 +245,6 @@ void PhoneAppSettings::bootWifiAutoConnect(void)
  *============================================================================*/
 bool PhoneAppSettings::init(void)
 {
-    _nvs_param_map[NVS_KEY_WIFI_EN] = 0;
-    _nvs_param_map[NVS_KEY_VOLUME] = VOLUME_DEFAULT;
-    _nvs_param_map[NVS_KEY_BRIGHTNESS] = BRIGHTNESS_DEFAULT;
-
     loadNvsParam();
     getNvsStr(NVS_KEY_WIFI_SSID, _wifi_ssid, sizeof(_wifi_ssid));
     getNvsStr(NVS_KEY_WIFI_PASS, _wifi_password, sizeof(_wifi_password));
@@ -270,7 +267,7 @@ bool PhoneAppSettings::run(void)
     /* Auto-start WiFi scan task if WiFi was enabled from NVS.
      * If task already running (kept alive from previous session by close()),
      * reuse it — don't recreate. */
-    if (_nvs_param_map[NVS_KEY_WIFI_EN] && _wifi_scan_task == NULL) {
+    if (_nvs.wifi_en && _wifi_scan_task == NULL) {
         _wifi_event_group = xEventGroupCreate();
         if (_wifi_event_group) {
             BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
@@ -294,7 +291,7 @@ bool PhoneAppSettings::run(void)
 
         /* WiFi status */
         if (app->_label_wifi) {
-            bool wifi_on = app->_nvs_param_map[NVS_KEY_WIFI_EN] != 0;
+            bool wifi_on = app->_nvs.wifi_en != 0;
             if (wifi_on) {
                 if (app->_wifi_event_group &&
                     (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
@@ -311,7 +308,7 @@ bool PhoneAppSettings::run(void)
 
         /* Volume */
         if (app->_label_vol) {
-            int32_t vol = app->_nvs_param_map[NVS_KEY_VOLUME];
+            int32_t vol = app->_nvs.volume;
             char buf[32];
             snprintf(buf, sizeof(buf), "Volume: %ld", vol);
             lv_label_set_text(app->_label_vol, buf);
@@ -319,7 +316,7 @@ bool PhoneAppSettings::run(void)
 
         /* Brightness */
         if (app->_label_brightness) {
-            int32_t bri = app->_nvs_param_map[NVS_KEY_BRIGHTNESS];
+            int32_t bri = app->_nvs.brightness;
             char buf[32];
             snprintf(buf, sizeof(buf), "Brightness: %ld", bri);
             lv_label_set_text(app->_label_brightness, buf);
@@ -364,8 +361,8 @@ bool PhoneAppSettings::close(void)
     }
     if (_nvs_dirty) {
         _nvs_dirty = false;
-        setNvsParam(NVS_KEY_VOLUME, _nvs_param_map[NVS_KEY_VOLUME]);
-        setNvsParam(NVS_KEY_BRIGHTNESS, _nvs_param_map[NVS_KEY_BRIGHTNESS]);
+        setNvsParam(NVS_KEY_VOLUME, _nvs.volume);
+        setNvsParam(NVS_KEY_BRIGHTNESS, _nvs.brightness);
     }
 
     _is_ui_del = true;
@@ -418,10 +415,16 @@ bool PhoneAppSettings::loadNvsParam(void)
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) { ESP_LOGW(TAG, "NVS open failed, using defaults"); return false; }
-    for (auto &kv : _nvs_param_map) {
-        err = nvs_get_i32(nvs_handle, kv.first.c_str(), &kv.second);
-        if (err == ESP_OK) ESP_LOGI(TAG, "Loaded %s = %ld", kv.first.c_str(), kv.second);
-        else if (err == ESP_ERR_NVS_NOT_FOUND) nvs_set_i32(nvs_handle, kv.first.c_str(), kv.second);
+    /* Load each parameter; write default if not found in NVS */
+    struct { const char *key; int32_t *val; } params[] = {
+        { NVS_KEY_WIFI_EN,    &_nvs.wifi_en },
+        { NVS_KEY_VOLUME,     &_nvs.volume },
+        { NVS_KEY_BRIGHTNESS, &_nvs.brightness },
+    };
+    for (auto &p : params) {
+        err = nvs_get_i32(nvs_handle, p.key, p.val);
+        if (err == ESP_OK) ESP_LOGI(TAG, "Loaded %s = %ld", p.key, (long)*p.val);
+        else if (err == ESP_ERR_NVS_NOT_FOUND) nvs_set_i32(nvs_handle, p.key, *p.val);
     }
     nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
@@ -460,16 +463,16 @@ bool PhoneAppSettings::getNvsStr(const char *key, char *out, size_t max_len)
 
 void PhoneAppSettings::applySettings(void)
 {
-    int32_t vol = _nvs_param_map[NVS_KEY_VOLUME];
+    int32_t vol = _nvs.volume;
     if (vol < VOLUME_MIN) vol = VOLUME_MIN;
     if (vol > VOLUME_MAX) vol = VOLUME_MAX;
-    _nvs_param_map[NVS_KEY_VOLUME] = vol;
+    _nvs.volume = vol;
     PeripheralManager::instance().set_volume((int)vol);
 
-    int32_t bri = _nvs_param_map[NVS_KEY_BRIGHTNESS];
+    int32_t bri = _nvs.brightness;
     if (bri < BRIGHTNESS_MIN) bri = BRIGHTNESS_MIN;
     if (bri > BRIGHTNESS_MAX) bri = BRIGHTNESS_MAX;
-    _nvs_param_map[NVS_KEY_BRIGHTNESS] = bri;
+    _nvs.brightness = bri;
     bsp_display_brightness_set((int)bri);
 
     ESP_LOGI(TAG, "Settings applied: vol=%ld, brightness=%ld", vol, bri);
@@ -586,10 +589,10 @@ void PhoneAppSettings::createMainScreen(void)
 
 void PhoneAppSettings::updateMainScreenFromNvs(void)
 {
-    int32_t vol = _nvs_param_map[NVS_KEY_VOLUME];
-    int32_t bri = _nvs_param_map[NVS_KEY_BRIGHTNESS];
+    int32_t vol = _nvs.volume;
+    int32_t bri = _nvs.brightness;
 
-    int32_t wifi_en = _nvs_param_map[NVS_KEY_WIFI_EN];
+    int32_t wifi_en = _nvs.wifi_en;
     if (wifi_en) {
         lv_obj_add_state(_sw_wifi, LV_STATE_CHECKED);
         /* Show connection status in WiFi row */
@@ -697,11 +700,11 @@ void PhoneAppSettings::onVolumeSliderChanged(lv_event_t *e)
     PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
     if (!app) return;
     int32_t vol = (int32_t)lv_slider_get_value(app->_slider_vol);
-    if (vol != app->_nvs_param_map[NVS_KEY_VOLUME]) {
+    if (vol != app->_nvs.volume) {
         char buf[32];
         snprintf(buf, sizeof(buf), "Volume: %ld", vol);
         lv_label_set_text(app->_label_vol, buf);
-        app->_nvs_param_map[NVS_KEY_VOLUME] = vol;
+        app->_nvs.volume = vol;
         app->_nvs_dirty = true;  // Defer NVS write (500ms debounce)
         PeripheralManager::instance().set_volume((int)vol);
     }
@@ -712,14 +715,14 @@ void PhoneAppSettings::onBrightnessSliderChanged(lv_event_t *e)
     PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
     if (!app) return;
     int32_t bri = (int32_t)lv_slider_get_value(app->_slider_brightness);
-    if (bri != app->_nvs_param_map[NVS_KEY_BRIGHTNESS]) {
+    if (bri != app->_nvs.brightness) {
         char buf[32];
         snprintf(buf, sizeof(buf), "Brightness: %ld", bri);
         lv_label_set_text(app->_label_brightness, buf);
-        app->_nvs_param_map[NVS_KEY_BRIGHTNESS] = bri;
+        app->_nvs.brightness = bri;
         app->_nvs_dirty = true;  // Defer NVS write (500ms debounce)
         if (bsp_display_brightness_set((int)bri) != ESP_OK) {
-            lv_slider_set_value(app->_slider_brightness, app->_nvs_param_map[NVS_KEY_BRIGHTNESS], LV_ANIM_OFF);
+            lv_slider_set_value(app->_slider_brightness, app->_nvs.brightness, LV_ANIM_OFF);
         }
     }
 }
@@ -744,8 +747,8 @@ void PhoneAppSettings::_nvs_save_timer_cb(lv_timer_t *timer)
      * (avoids 2x flash access overhead from separate setNvsParam calls). */
     nvs_handle_t nvs_h;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_h) == ESP_OK) {
-        nvs_set_i32(nvs_h, NVS_KEY_VOLUME, app->_nvs_param_map[NVS_KEY_VOLUME]);
-        nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, app->_nvs_param_map[NVS_KEY_BRIGHTNESS]);
+        nvs_set_i32(nvs_h, NVS_KEY_VOLUME, app->_nvs.volume);
+        nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, app->_nvs.brightness);
         nvs_commit(nvs_h);
         nvs_close(nvs_h);
     }
@@ -988,7 +991,7 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
         app->setNvsStr(NVS_KEY_WIFI_SSID, app->_wifi_ssid);
         app->setNvsStr(NVS_KEY_WIFI_PASS, app->_wifi_password);
         app->setNvsParam(NVS_KEY_WIFI_EN, 1);
-        app->_nvs_param_map[NVS_KEY_WIFI_EN] = 1;
+        app->_nvs.wifi_en = 1;
         vTaskDelay(pdMS_TO_TICKS(1000));
         if (!app->_is_ui_del) {
             app->processWifiConnect(WIFI_CONNECT_HIDE);
@@ -1093,7 +1096,7 @@ void PhoneAppSettings::onWifiRowClicked(lv_event_t *e)
     lv_scr_load(app->_scr_wifi_list);
 
     /* Start scan if WiFi is enabled */
-    if (app->_nvs_param_map[NVS_KEY_WIFI_EN]) {
+    if (app->_nvs.wifi_en) {
         app->startWifiScan();
     }
 }
@@ -1103,7 +1106,7 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
     PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
     if (!app) return;
     bool on = lv_obj_has_state(app->_sw_wifi, LV_STATE_CHECKED);
-    app->_nvs_param_map[NVS_KEY_WIFI_EN] = on ? 1 : 0;
+    app->_nvs.wifi_en = on ? 1 : 0;
     app->setNvsParam(NVS_KEY_WIFI_EN, on ? 1 : 0);
 
     if (on) {
@@ -1115,7 +1118,7 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             if (app->_wifi_event_group == NULL) {
                 ESP_LOGE(TAG, "Failed to create WiFi event group");
                 lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
-                app->_nvs_param_map[NVS_KEY_WIFI_EN] = 0;
+                app->_nvs.wifi_en = 0;
                 app->setNvsParam(NVS_KEY_WIFI_EN, 0);
                 return;
             }
@@ -1124,7 +1127,7 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             if (ret != pdPASS) {
                 ESP_LOGE(TAG, "Failed to create WiFi scan task");
                 lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
-                app->_nvs_param_map[NVS_KEY_WIFI_EN] = 0;
+                app->_nvs.wifi_en = 0;
                 app->setNvsParam(NVS_KEY_WIFI_EN, 0);
                 vEventGroupDelete(app->_wifi_event_group);
                 app->_wifi_event_group = nullptr;
@@ -1206,5 +1209,5 @@ void PhoneAppSettings::onWifiListScreenLoaded(lv_event_t *e)
     if (!app) return;
     app->_screen_index = SCREEN_WIFI_LIST;
     app->processWifiConnect(WIFI_CONNECT_HIDE);
-    if (app->_nvs_param_map[NVS_KEY_WIFI_EN]) app->startWifiScan();
+    if (app->_nvs.wifi_en) app->startWifiScan();
 }

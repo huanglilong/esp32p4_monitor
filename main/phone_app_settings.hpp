@@ -1,7 +1,5 @@
 #pragma once
 
-#include <map>
-#include <string>
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -88,7 +86,14 @@ private:
     /* State */
     ScreenIndex            _screen_index;
     bool                   _is_ui_del;
-    std::map<std::string, int32_t> _nvs_param_map;
+
+    /* NVS parameters — flat struct avoids std::map / std::string heap allocations.
+     * Only 3 keys: wifi_en, volume, brightness — no need for a map. */
+    struct {
+        int32_t wifi_en;
+        int32_t volume;
+        int32_t brightness;
+    } _nvs;
 
     char                   _wifi_ssid[33];
     char                   _wifi_password[65];

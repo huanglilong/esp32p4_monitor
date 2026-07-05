@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "dl_detect_define.hpp"
+#include "uorb.h"
 #include <time.h>
 #include <list>
 #include <atomic>

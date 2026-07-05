@@ -96,7 +96,7 @@ static bool           s_mdns_running = false;
 #define PCM_BUF_SAMPLES      (ENC_SAMPLES_PER_CH * 2)
 
 static bool           s_audio_inited = false;
-static volatile TaskHandle_t   s_audio_task = NULL;
+static TaskHandle_t   s_audio_task = NULL;
 static volatile bool  s_audio_running = false;
 static volatile bool  s_is_recording = false;
 static shine_t        s_shine = NULL;
@@ -187,6 +187,10 @@ static void audio_task(void *arg)
         }
     }
     free(buf);
+    /* Memory barrier before clearing task handle: ensures all prior writes
+     * (buffers, file handles, etc.) are visible before the stop function
+     * sees s_audio_task == NULL and proceeds to cleanup. */
+    __sync_synchronize();
     s_audio_task = NULL;
     vTaskDelete(NULL);
 }

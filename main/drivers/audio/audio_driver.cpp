@@ -113,12 +113,14 @@ void AudioDriver::init(void)
 
     i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
     const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
+    bool init_ok = true;
+
     if (!gpio_if) {
         ESP_LOGE(TAG, "Failed to create codec GPIO interface");
-        goto cleanup_i2s;
+        init_ok = false;
     }
 
-    if (_has_lcd) {
+    if (init_ok && _has_lcd) {
         /* ===== LCD-4B: ES8311 DAC (Speaker, 0x30) + ES7210 ADC (Mic, 0x80) ===== */
         audio_codec_i2s_cfg_t i2s_out_cfg = {
             .port = 0,
@@ -128,54 +130,66 @@ void AudioDriver::init(void)
         const audio_codec_data_if_t *data_out = audio_codec_new_i2s_data(&i2s_out_cfg);
         if (!data_out) {
             ESP_LOGE(TAG, "Failed to create I2S data output interface");
-            goto cleanup_i2s;
+            init_ok = false;
         }
 
-        audio_codec_i2s_cfg_t i2s_in_cfg = {
-            .port = 0,
-            .rx_handle = _rx_handle,
-            .tx_handle = NULL,
-        };
-        const audio_codec_data_if_t *data_in = audio_codec_new_i2s_data(&i2s_in_cfg);
-        if (!data_in) {
-            ESP_LOGE(TAG, "Failed to create I2S data input interface");
-            goto cleanup_i2s;
+        const audio_codec_data_if_t *data_in = nullptr;
+        if (init_ok) {
+            audio_codec_i2s_cfg_t i2s_in_cfg = {
+                .port = 0,
+                .rx_handle = _rx_handle,
+                .tx_handle = NULL,
+            };
+            data_in = audio_codec_new_i2s_data(&i2s_in_cfg);
+            if (!data_in) {
+                ESP_LOGE(TAG, "Failed to create I2S data input interface");
+                init_ok = false;
+            }
         }
 
-        audio_codec_i2c_cfg_t i2c_dac = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
-        const audio_codec_ctrl_if_t *ctrl_dac = audio_codec_new_i2c_ctrl(&i2c_dac);
-        es8311_codec_cfg_t es8311_cfg = {
-            .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
-            .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-            .pa_pin = 53, .master_mode = false, .use_mclk = true,
-            .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
-            .mclk_div = I2S_MCLK_MULTIPLE_256,
-        };
-        esp_codec_dev_cfg_t dev_dac = {
-            .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
-        };
-        _codec_handle = esp_codec_dev_new(&dev_dac);
-        if (!_codec_handle) {
-            ESP_LOGE(TAG, "Failed to create ES8311 DAC codec device");
-            goto cleanup_i2s;
+        if (init_ok) {
+            audio_codec_i2c_cfg_t i2c_dac = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
+            const audio_codec_ctrl_if_t *ctrl_dac = audio_codec_new_i2c_ctrl(&i2c_dac);
+            es8311_codec_cfg_t es8311_cfg = {
+                .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
+                .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
+                .pa_pin = 53, .master_mode = false, .use_mclk = true,
+                .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
+                .mclk_div = I2S_MCLK_MULTIPLE_256,
+            };
+            esp_codec_dev_cfg_t dev_dac = {
+                .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
+            };
+            _codec_handle = esp_codec_dev_new(&dev_dac);
+            if (!_codec_handle) {
+                ESP_LOGE(TAG, "Failed to create ES8311 DAC codec device");
+                init_ok = false;
+            }
         }
 
-        audio_codec_i2c_cfg_t i2c_adc = { .port = 0, .addr = ES7210_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
-        const audio_codec_ctrl_if_t *ctrl_adc = audio_codec_new_i2c_ctrl(&i2c_adc);
-        es7210_codec_cfg_t es7210_cfg = {
-            .ctrl_if = ctrl_adc, .master_mode = false,
-            .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2,
-            .mclk_src = ES7210_MCLK_FROM_PAD, .mclk_div = I2S_MCLK_MULTIPLE_256,
-        };
-        esp_codec_dev_cfg_t dev_adc = {
-            .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es7210_codec_new(&es7210_cfg), .data_if = data_in
-        };
-        _codec_mic_handle = esp_codec_dev_new(&dev_adc);
-        if (!_codec_mic_handle) {
-            ESP_LOGE(TAG, "Failed to create ES7210 ADC codec device");
-            goto cleanup_codec_dac;
+        if (init_ok) {
+            audio_codec_i2c_cfg_t i2c_adc = { .port = 0, .addr = ES7210_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
+            const audio_codec_ctrl_if_t *ctrl_adc = audio_codec_new_i2c_ctrl(&i2c_adc);
+            es7210_codec_cfg_t es7210_cfg = {
+                .ctrl_if = ctrl_adc, .master_mode = false,
+                .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2,
+                .mclk_src = ES7210_MCLK_FROM_PAD, .mclk_div = I2S_MCLK_MULTIPLE_256,
+            };
+            esp_codec_dev_cfg_t dev_adc = {
+                .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es7210_codec_new(&es7210_cfg), .data_if = data_in
+            };
+            _codec_mic_handle = esp_codec_dev_new(&dev_adc);
+            if (!_codec_mic_handle) {
+                ESP_LOGE(TAG, "Failed to create ES7210 ADC codec device");
+                /* DAC was created successfully, delete it before rollback */
+                if (_codec_handle) {
+                    esp_codec_dev_delete(_codec_handle);
+                    _codec_handle = nullptr;
+                }
+                init_ok = false;
+            }
         }
-    } else {
+    } else if (init_ok) {
         /* ===== WIFI6: ES8311 single-chip (0x30, ADC + DAC) + NS4150B amp ===== */
         audio_codec_i2s_cfg_t i2s_data_cfg = {
             .port = 0,
@@ -185,29 +199,55 @@ void AudioDriver::init(void)
         const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_data_cfg);
         if (!data_if) {
             ESP_LOGE(TAG, "Failed to create I2S data interface");
-            goto cleanup_i2s;
+            init_ok = false;
         }
 
-        audio_codec_i2c_cfg_t i2c_es8311 = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
-        const audio_codec_ctrl_if_t *ctrl_es8311 = audio_codec_new_i2c_ctrl(&i2c_es8311);
-        es8311_codec_cfg_t es8311_cfg = {
-            .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
-            .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-            .pa_pin = 53, .master_mode = false, .use_mclk = true,
-            .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
-            .mclk_div = I2S_MCLK_MULTIPLE_256,
-        };
-        esp_codec_dev_cfg_t dev_cfg = {
-            .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
-            .codec_if = es8311_codec_new(&es8311_cfg),
-            .data_if = data_if,
-        };
-        _codec_handle = esp_codec_dev_new(&dev_cfg);
-        if (!_codec_handle) {
-            ESP_LOGE(TAG, "Failed to create ES8311 codec device");
-            goto cleanup_i2s;
+        if (init_ok) {
+            audio_codec_i2c_cfg_t i2c_es8311 = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
+            const audio_codec_ctrl_if_t *ctrl_es8311 = audio_codec_new_i2c_ctrl(&i2c_es8311);
+            es8311_codec_cfg_t es8311_cfg = {
+                .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
+                .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
+                .pa_pin = 53, .master_mode = false, .use_mclk = true,
+                .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
+                .mclk_div = I2S_MCLK_MULTIPLE_256,
+            };
+            esp_codec_dev_cfg_t dev_cfg = {
+                .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
+                .codec_if = es8311_codec_new(&es8311_cfg),
+                .data_if = data_if,
+            };
+            _codec_handle = esp_codec_dev_new(&dev_cfg);
+            if (!_codec_handle) {
+                ESP_LOGE(TAG, "Failed to create ES8311 codec device");
+                init_ok = false;
+            }
         }
         /* _codec_mic_handle stays NULL */
+    }
+
+    if (!init_ok) {
+        /* Rollback: clean up any partially-created resources */
+        if (_codec_mic_handle) {
+            esp_codec_dev_delete(_codec_mic_handle);
+            _codec_mic_handle = nullptr;
+        }
+        if (_codec_handle) {
+            esp_codec_dev_delete(_codec_handle);
+            _codec_handle = nullptr;
+        }
+        if (_tx_handle) {
+            i2s_del_channel(_tx_handle);
+            _tx_handle = nullptr;
+        }
+        if (_rx_handle) {
+            i2s_del_channel(_rx_handle);
+            _rx_handle = nullptr;
+        }
+        gpio_set_level((gpio_num_t)53, 0);
+        ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
     }
 
     /* Create mutex BEFORE opening codecs */
@@ -218,53 +258,58 @@ void AudioDriver::init(void)
     if (_has_lcd) {
         if (esp_codec_dev_open(_codec_handle, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES8311 DAC codec");
-            goto cleanup_codec_all;
+            init_ok = false;
+        } else {
+            esp_codec_dev_set_out_vol(_codec_handle, _volume);
         }
-        esp_codec_dev_set_out_vol(_codec_handle, _volume);
-        if (esp_codec_dev_open(_codec_mic_handle, &fs) != ESP_CODEC_DEV_OK) {
+        if (init_ok && esp_codec_dev_open(_codec_mic_handle, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES7210 ADC codec");
-            goto cleanup_codec_all;
+            init_ok = false;
+        } else if (init_ok) {
+            esp_codec_dev_set_in_gain(_codec_mic_handle, 42);
         }
-        esp_codec_dev_set_in_gain(_codec_mic_handle, 42);
     } else {
         if (esp_codec_dev_open(_codec_handle, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES8311 codec");
-            goto cleanup_codec_all;
+            init_ok = false;
+        } else {
+            esp_codec_dev_set_out_vol(_codec_handle, _volume);
+            esp_codec_dev_set_in_gain(_codec_handle, 24);
         }
-        esp_codec_dev_set_out_vol(_codec_handle, _volume);
-        esp_codec_dev_set_in_gain(_codec_handle, 24);
+    }
+
+    if (!init_ok) {
+        /* Rollback codec open failure */
+        if (_codec_mic_handle) {
+            esp_codec_dev_close(_codec_mic_handle);
+            esp_codec_dev_delete(_codec_mic_handle);
+            _codec_mic_handle = nullptr;
+        }
+        if (_codec_handle) {
+            esp_codec_dev_close(_codec_handle);
+            esp_codec_dev_delete(_codec_handle);
+            _codec_handle = nullptr;
+        }
+        if (_codec_mutex) {
+            vSemaphoreDelete(_codec_mutex);
+            _codec_mutex = nullptr;
+        }
+        if (_tx_handle) {
+            i2s_del_channel(_tx_handle);
+            _tx_handle = nullptr;
+        }
+        if (_rx_handle) {
+            i2s_del_channel(_rx_handle);
+            _rx_handle = nullptr;
+        }
+        gpio_set_level((gpio_num_t)53, 0);
+        ESP_LOGE(TAG, "Audio codec open failed — audio unavailable");
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
     }
 
     ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", _has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume);
     _refcount = 1;
-    xSemaphoreGive(_lifecycle_mutex);
-    return;
-
-cleanup_codec_all:
-    if (_codec_mic_handle) {
-        esp_codec_dev_delete(_codec_mic_handle);
-        _codec_mic_handle = nullptr;
-    }
-cleanup_codec_dac:
-    if (_codec_handle) {
-        esp_codec_dev_delete(_codec_handle);
-        _codec_handle = nullptr;
-    }
-    if (_codec_mutex) {
-        vSemaphoreDelete(_codec_mutex);
-        _codec_mutex = nullptr;
-    }
-cleanup_i2s:
-    if (_tx_handle) {
-        i2s_del_channel(_tx_handle);
-        _tx_handle = nullptr;
-    }
-    if (_rx_handle) {
-        i2s_del_channel(_rx_handle);
-        _rx_handle = nullptr;
-    }
-    gpio_set_level((gpio_num_t)53, 0);
-    ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
     xSemaphoreGive(_lifecycle_mutex);
 }
 
