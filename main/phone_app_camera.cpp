@@ -222,7 +222,7 @@ bool PhoneAppCamera::_init_camera(void)
         return false;
     }
 
-    /* Reduce sensor frame rate from 50fps → ~10fps (VTS: 984→4920).
+    /* Reduce sensor frame rate from ~50fps → ~5fps (VTS: 984→9840).
      * ISP DMA: ~32 MB/s → ~6.4 MB/s. */
     ov5647_set_vts_10fps();
 

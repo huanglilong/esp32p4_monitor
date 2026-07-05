@@ -239,7 +239,7 @@ bool CameraStream::_init_video(void)
         return false;
     }
 
-    /* Step 1b: Reduce sensor frame rate from 50fps → ~10fps by increasing VTS. */
+    /* Step 1b: Reduce sensor frame rate from ~50fps → ~5fps by increasing VTS. */
     ov5647_set_vts_10fps();
 
     bool ok = false;
