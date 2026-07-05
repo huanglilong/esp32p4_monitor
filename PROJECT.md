@@ -750,3 +750,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - 新增 `ulog_git_info_t` 结构体和 `ulog_writer_set_git_info()` API, 将 git branch/commit/author/date/message 从应用层传入 ULog 组件
   - ULog Info 消息新增 5 个键: `ver_sw_branch` (PX4 标准键), `ver_sw_commit`, `ver_sw_author`, `ver_sw_date`, `ver_sw_msg`
   - `main.cpp` 在 `ulog_writer_init()` 后调用 `ulog_writer_set_git_info()` 传入 `git_info.h` 中的宏
+- [x] **并发安全修复** (v2.2):
+  - **AudioDriver::deinit() 竞态条件** (High): deinit() 释放 _lifecycle_mutex 10ms 等待 in-flight 操作退出期间, 并发 init() 可创建新 I2S/codec 资源变为孤儿泄漏。修复: 移除 _lifecycle_mutex 释放窗口, 始终持有锁; _codec_mutex 置 null 后 in-flight op 会跳过
+  - **NVS cache 数据竞争** (Medium): s_nvs_cache_count++ 在 HTTP/audio/WiFi 多 task 间无同步访问, Xtensa 双核上非原子 read-modify-write 是 UB。修复: 新增 s_nvs_cache_mutex (FreeRTOS mutex) 保护 nvs_cache_find_locked() 和 cache 读写
+  - **Logger ring buffer 活锁** (Medium): 缓冲区满时 producer retry loop 检测到空间但不发 data_sem, writer task 等 500ms 超时才唤醒。修复: retry loop 退出后 xSemaphoreGive(data_sem) 唤醒 writer

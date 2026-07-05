@@ -32,6 +32,7 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "mdns.h"
@@ -213,9 +214,11 @@ typedef struct {
 #define NVS_CACHE_MAX 8
 static nvs_cache_entry_t s_nvs_cache[NVS_CACHE_MAX];
 static int s_nvs_cache_count;
+static SemaphoreHandle_t s_nvs_cache_mutex;
 
-/** Find or create a cache slot for the given key. Returns slot index, or -1. */
-static int nvs_cache_find(const char *key)
+/** Find or create a cache slot for the given key. Returns slot index, or -1.
+ *  Must be called with s_nvs_cache_mutex held. */
+static int nvs_cache_find_locked(const char *key)
 {
     for (int i = 0; i < s_nvs_cache_count; i++) {
         if (strcmp(s_nvs_cache[i].key, key) == 0) return i;
@@ -232,10 +235,14 @@ static int nvs_cache_find(const char *key)
 static int32_t nvs_get_i32_def(const char *key, int32_t def)
 {
     /* Check RAM cache first (O(1), no flash access) */
-    int ci = nvs_cache_find(key);
+    xSemaphoreTake(s_nvs_cache_mutex, portMAX_DELAY);
+    int ci = nvs_cache_find_locked(key);
     if (ci >= 0 && s_nvs_cache[ci].valid) {
-        return s_nvs_cache[ci].value;
+        int32_t val = s_nvs_cache[ci].value;
+        xSemaphoreGive(s_nvs_cache_mutex);
+        return val;
     }
+    xSemaphoreGive(s_nvs_cache_mutex);
 
     /* Cache miss: read from NVS */
     nvs_handle_t h;
@@ -245,10 +252,13 @@ static int32_t nvs_get_i32_def(const char *key, int32_t def)
     nvs_close(h);
 
     /* Populate cache */
+    xSemaphoreTake(s_nvs_cache_mutex, portMAX_DELAY);
+    ci = nvs_cache_find_locked(key);
     if (ci >= 0) {
         s_nvs_cache[ci].value = val;
         s_nvs_cache[ci].valid = true;
     }
+    xSemaphoreGive(s_nvs_cache_mutex);
     return val;
 }
 
@@ -261,11 +271,13 @@ static void nvs_write_i32(const char *key, int32_t value)
     nvs_close(h);
 
     /* Update cache (write-through) */
-    int ci = nvs_cache_find(key);
+    xSemaphoreTake(s_nvs_cache_mutex, portMAX_DELAY);
+    int ci = nvs_cache_find_locked(key);
     if (ci >= 0) {
         s_nvs_cache[ci].value = value;
         s_nvs_cache[ci].valid = true;
     }
+    xSemaphoreGive(s_nvs_cache_mutex);
 }
 
 static void nvs_get_str(const char *key, char *out, size_t max_len)
@@ -1661,6 +1673,10 @@ static void web_config_task(void *arg)
     /* Create audio mutex BEFORE any HTTP handlers can run.
      * Avoids race where two handlers lazily create separate mutexes. */
     s_audio_mutex = xSemaphoreCreateMutex();
+
+    /* Create NVS cache mutex to protect s_nvs_cache / s_nvs_cache_count
+     * from concurrent access across HTTP, audio, and WiFi tasks. */
+    s_nvs_cache_mutex = xSemaphoreCreateMutex();
 
     /* Wait for WiFi connection before starting HTTP server.
      * LWIP TCPIP mbox is only valid after netif is up. */

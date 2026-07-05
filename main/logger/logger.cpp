@@ -354,6 +354,10 @@ static void _logger_push(const char *data, int len)
                 /* Buffer full for 100ms — drop the rest of this line */
                 break;
             }
+            /* Writer may have just drained and gone back to waiting on
+             * data_sem (500ms timeout).  Signal it now so it wakes
+             * promptly to consume the data we're about to write. */
+            xSemaphoreGive(s_log.data_sem);
         }
     }
 }

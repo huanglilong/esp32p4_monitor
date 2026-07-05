@@ -361,15 +361,14 @@ void AudioDriver::deinit(void)
     gpio_set_level((gpio_num_t)53, 0);
 
     /* Nullify codec mutex FIRST while we still hold the lifecycle lock.
-     * This prevents a racing init() from using the same _codec_mutex
-     * we're about to delete. If init() runs in the brief window below,
-     * it will create its own fresh _codec_mutex — no use-after-free. */
+     * In-flight set_volume/set_mic_gain ops check _codec_mutex != nullptr
+     * before taking it, so they will gracefully skip once we nullify it.
+     * We keep _lifecycle_mutex held throughout to prevent a racing init()
+     * from creating new resources that would be orphaned. */
     if (_codec_mutex) {
         SemaphoreHandle_t old_mutex = _codec_mutex;
-        _codec_mutex = nullptr;            /* nullify before releasing lock */
-        xSemaphoreGive(_lifecycle_mutex);  /* let in-flight set_volume/set_mic_gain finish */
+        _codec_mutex = nullptr;            /* in-flight ops will see null and skip */
         vTaskDelay(pdMS_TO_TICKS(10));     /* wait for in-flight ops to exit */
-        xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
         vSemaphoreDelete(old_mutex);       /* safe: no one references old_mutex anymore */
     }
 
