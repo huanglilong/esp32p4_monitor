@@ -684,6 +684,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
     httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
+    int dqbuf_fail_count = 0;
     while (cs->isRunning()) {
         /* Dequeue frame */
         memset(&buf, 0, sizeof(buf));
@@ -691,9 +692,15 @@ static esp_err_t stream_handler(httpd_req_t *req)
         buf.memory = V4L2_MEMORY_MMAP;
         if (ioctl(cs->_video_fd, VIDIOC_DQBUF, &buf) != 0) {
             ESP_LOGW(TAG, "V4L2 DQBUF failed (errno=%d)", errno);
+            dqbuf_fail_count++;
+            if (dqbuf_fail_count >= 100) {
+                ESP_LOGE(TAG, "V4L2 DQBUF failed %d times consecutively, stopping stream", dqbuf_fail_count);
+                break;
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+        dqbuf_fail_count = 0;  /* Reset on success */
         if (!(buf.flags & V4L2_BUF_FLAG_DONE)) {
             ESP_LOGD(TAG, "V4L2 DQBUF buf[%d] not done, requeue", buf.index);
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
