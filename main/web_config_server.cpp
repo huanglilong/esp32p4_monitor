@@ -1116,7 +1116,13 @@ static esp_err_t h_rec_status(httpd_req_t *req) {
 
 /* GET /api/audio/list */
 static esp_err_t h_list(httpd_req_t *req) {
-    (void)__audio_init(); /* Lazy-mount SD card so file list works even before first record */
+    /* Only need SD card for file listing, not audio codec.
+     * Using __sd_ensure() avoids claiming I2S resources that conflict
+     * with CameraStream's MJPEG streaming. */
+    if (!__sd_ensure()) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     DIR *d = opendir(REC_DIR);
     cJSON *root = cJSON_CreateObject();
     cJSON *arr = cJSON_CreateArray();
