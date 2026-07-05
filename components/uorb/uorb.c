@@ -28,6 +28,7 @@
 typedef struct {
     QueueHandle_t queue;      /**< FreeRTOS queue handle. */
     int           topic_idx;  /**< Index into s_topics[]; < 0 if inactive. */
+    int           generation; /**< Monotonically increasing; prevents ABA in orb_publish(). */
 } orb_sub_entry_t;
 
 /** Topic registry entry. */
@@ -59,6 +60,13 @@ static int s_num_subs;         /**< High-water mark: next never-used index. */
  * subscribe/unsubscribe cycles. */
 static int s_sub_free_list[ORB_MAX_SUBS];
 static int s_sub_free_count;   /**< Number of entries in the free-list. */
+
+/** Monotonically increasing generation counter assigned to subscriber
+ *  slots.  orb_publish() snapshots (index, generation) pairs and
+ *  verifies the generation still matches before delivering, preventing
+ *  the ABA problem where a slot is unsubscribed and reused between
+ *  snapshot and delivery. */
+static int s_sub_generation;
 
 /** Protects the registry and subscriber table. */
 static SemaphoreHandle_t s_mutex;
@@ -191,6 +199,7 @@ orb_sub_t orb_subscribe(orb_id_t meta)
 
     s_subs[s_idx].queue     = q;
     s_subs[s_idx].topic_idx = t_idx;
+    s_subs[s_idx].generation = s_sub_generation++;  /* ABA protection */
 
     int pos = topic->num_subscribers++;
     topic->sub_indices[pos] = s_idx;
@@ -251,7 +260,7 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
         return -1;
     }
 
-    /* Lock only to find the topic and snapshot subscriber indices.
+    /* Lock only to find the topic and snapshot subscriber (index, generation) pairs.
      * Queue operations (xQueueOverwrite/xQueueSend) are FreeRTOS
      * thread-safe, so we don't need to hold the lock during delivery.
      * This dramatically reduces contention for high-frequency topics
@@ -266,21 +275,31 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
     orb_topic_reg_t *topic = &s_topics[t_idx];
     int n_subs = topic->num_subscribers;
     int sub_indices[ORB_MAX_SUBSCRIBERS];
+    int sub_generations[ORB_MAX_SUBSCRIBERS];
     for (int i = 0; i < n_subs && i < ORB_MAX_SUBSCRIBERS; i++) {
-        sub_indices[i] = topic->sub_indices[i];
+        int idx = topic->sub_indices[i];
+        sub_indices[i] = idx;
+        sub_generations[i] = s_subs[idx].generation;
     }
     unlock();
 
     const bool overwrite = (meta->o_depth == 1);
 
     /* Deliver to subscribers lock-free (queue ops are thread-safe).
-     * Note: a subscriber could unsubscribe between our snapshot and
-     * delivery. Since we hold a snapshot of sub_indices, the slot
-     * at s_subs[s_idx] may now be free-listed (topic_idx=-1, queue=NULL).
-     * The NULL queue check handles this safely — we just skip it. */
+     * ABA protection: we verify the generation counter still matches.
+     * If a subscriber handle was freed and reused between our snapshot
+     * and delivery, the generation will differ — we skip delivery to
+     * avoid sending data to the wrong subscriber.
+     * If the slot was simply unsubscribed (queue=NULL), we also skip. */
     for (int i = 0; i < n_subs; i++) {
         int s_idx = sub_indices[i];
         if (s_idx < 0 || s_idx >= s_num_subs) continue;
+
+        /* ABA check: if generation changed, slot was freed and reused */
+        if (s_subs[s_idx].generation != sub_generations[i]) {
+            continue;
+        }
+
         QueueHandle_t q = s_subs[s_idx].queue;
         if (q == NULL) {
             continue;
