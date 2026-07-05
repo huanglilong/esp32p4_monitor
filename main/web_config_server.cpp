@@ -1653,6 +1653,9 @@ static void web_config_task(void *arg)
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
     config.max_uri_handlers = 24;  /* 5 core + 6 audio + 3 file mgr + 4 CORS + 5 ULog + 1 spare */
+    config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
+                                      stack vars + ESP_LOGI → uart_write → recursive mutex
+                                      needs deep call chain; logger vprintf hook adds more */
     config.lru_purge_enable = true;
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {

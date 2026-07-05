@@ -89,4 +89,53 @@ menu "Monitor Example Configuration"
         int "I2S DIN GPIO"
         default 11
 
+    # ── App Logger (SD card text log) ──
+    choice APP_LOG_SD_LEVEL
+        prompt "Minimum log level for SD card"
+        default APP_LOG_SD_LEVEL_INFO
+        config APP_LOG_SD_LEVEL_NONE
+            bool "None"
+        config APP_LOG_SD_LEVEL_ERROR
+            bool "Error"
+        config APP_LOG_SD_LEVEL_WARN
+            bool "Warning"
+        config APP_LOG_SD_LEVEL_INFO
+            bool "Info"
+        config APP_LOG_SD_LEVEL_DEBUG
+            bool "Debug"
+    endchoice
+
+    config APP_LOG_SD_LEVEL
+        int
+        default 0 if APP_LOG_SD_LEVEL_NONE
+        default 1 if APP_LOG_SD_LEVEL_ERROR
+        default 2 if APP_LOG_SD_LEVEL_WARN
+        default 3 if APP_LOG_SD_LEVEL_INFO
+        default 4 if APP_LOG_SD_LEVEL_DEBUG
+
+    config APP_LOG_MAX_FILE_SIZE_KB
+        int "Max log file size (KB)"
+        default 1024
+        range 64 10240
+        help
+            When the current log file reaches this size it is
+            closed and a new file is created.
+
+    config APP_LOG_MAX_FILES
+        int "Max retained log files"
+        default 5
+        range 1 100
+        help
+            Maximum number of log files to retain on the SD card.
+            Older files are deleted when this limit is exceeded.
+
+    config APP_LOG_RINGBUF_SIZE
+        int "Ring buffer size (bytes)"
+        default 8192
+        range 2048 65536
+        help
+            Internal ring buffer for decoupling log producers from
+            SD card writes.  Larger = less producer blocking, but
+            more RAM.
+
 endmenu

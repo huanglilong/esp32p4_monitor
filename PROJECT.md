@@ -55,6 +55,9 @@ esp32p4_monitor/
 │   │   └── camera/
 │   │       ├── camera_driver.hpp   # CameraDriver — camera_state pub/sub + claim/release
 │   │       └── camera_driver.cpp
+│   ├── logger/                     # 文本日志模块 (NEW)
+│   │   ├── logger.hpp              # LOG_I/W/E 宏 + Logger API (level 过滤)
+│   │   └── logger.cpp              # Ring buffer + writer task → SD card text file
 │   ├── web_config_server.hpp       # Web 配置服务器头文件
 │   ├── web_config_server.cpp       # Web 配置服务器 (HTTP :8080, WiFi/音量设置)
 │   ├── phone_app_camera.hpp        # Camera App 头文件

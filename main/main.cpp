@@ -27,6 +27,7 @@
 #include "phone_app_settings.hpp"
 #include "phone_app_camera_stream.hpp"
 #include "web_config_server.hpp"
+#include "logger/logger.hpp"
 #include "git_info.h"
 #include "example_config.h"
 #include "mdns.h"
@@ -442,12 +443,6 @@ static bool detect_lcd_via_i2c(void)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== ESP32-P4 Monitor Starting ===");
-    ESP_LOGI(TAG, "Git Info: %s", GIT_LOG1);
-    ESP_LOGI(TAG, "  branch:  %s", GIT_BRANCH);
-    ESP_LOGI(TAG, "  commit:  %s", GIT_COMMIT);
-    ESP_LOGI(TAG, "  author:  %s", GIT_AUTHOR);
-    ESP_LOGI(TAG, "  date:    %s", GIT_DATE);
-    ESP_LOGI(TAG, "  message: %s", GIT_MSG);
 
     /* 0a. mDNS mutex init — must happen before any task uses shared_mdns_ensure/release */
     shared_mdns_mutex_init();
@@ -510,6 +505,21 @@ extern "C" void app_main(void)
     PhoneAppSettings::bootWifiAutoConnect();
 
     web_config_server_start();
+
+    /* ── Text Logger (SD card, ESP_LOG* capture) ── */
+    if (PeripheralManager::instance().sdcard_available()) {
+        logger_init("/sdcard");
+    } else {
+        ESP_LOGW(TAG, "SD card not available, skipping text logger init");
+    }
+
+    // git info
+    ESP_LOGI(TAG, "Git Info: %s", GIT_LOG1);
+    ESP_LOGI(TAG, "  branch:  %s", GIT_BRANCH);
+    ESP_LOGI(TAG, "  commit:  %s", GIT_COMMIT);
+    ESP_LOGI(TAG, "  author:  %s", GIT_AUTHOR);
+    ESP_LOGI(TAG, "  date:    %s", GIT_DATE);
+    ESP_LOGI(TAG, "  message: %s", GIT_MSG);
 
     /* ── ULog Logger initialization (only if SD card is mounted) ── */
     if (PeripheralManager::instance().sdcard_available()) {

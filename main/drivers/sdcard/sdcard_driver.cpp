@@ -82,7 +82,11 @@ bool SDCardDriver::init(void)
     esp_err_t ret;
     ESP_LOGI(TAG, "Initializing SD card via SDSPI...");
 
-    /* Power on SD via LDO4 — only on WIFI6. LCD-4B: BSP display init already powers LDO4. */
+    /* Power on SD via LDO4.  On LCD-4B the BSP display init will
+     * also acquire LDO4 via esp_ldo_acquire_channel — but that API
+     * does not support shared ownership.  We skip LDO4 here on
+     * LCD-4B and let the display init handle it; the caller must
+     * retry init_sdcard() after the display is up. */
     if (!_has_lcd) {
         sd_pwr_ctrl_ldo_config_t ldo_config = { .ldo_chan_id = 4 };
         ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &_pwr_ctrl);
@@ -94,7 +98,7 @@ bool SDCardDriver::init(void)
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     } else {
-        ESP_LOGI(TAG, "LCD-4B: LDO4 already powered by BSP display init, skipping");
+        ESP_LOGI(TAG, "LCD-4B: deferring LDO4 to BSP display init");
     }
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
