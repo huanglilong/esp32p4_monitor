@@ -35,6 +35,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "ulog_writer.h"
+#include "uorb.h"
 
 static const char *TAG = "monitor";
 
@@ -446,6 +447,9 @@ extern "C" void app_main(void)
 
     /* 0a. mDNS mutex init — must happen before any task uses shared_mdns_ensure/release */
     shared_mdns_mutex_init();
+
+    /* 0b. uORB init — must happen before any uORB API calls */
+    orb_init();
 
     /* 0. NVS init */
     esp_err_t nvs_err = nvs_flash_init();

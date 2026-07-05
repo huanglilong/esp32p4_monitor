@@ -17,6 +17,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <assert.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -63,14 +64,24 @@ static int s_sub_free_count;   /**< Number of entries in the free-list. */
 static SemaphoreHandle_t s_mutex;
 
 /* ------------------------------------------------------------------ */
+/*  Init                                                               */
+/* ------------------------------------------------------------------ */
+
+void orb_init(void)
+{
+    if (s_mutex != NULL) return; /* Idempotent */
+    s_mutex = xSemaphoreCreateMutex();
+    assert(s_mutex != NULL);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
 static inline void lock(void)
 {
-    if (s_mutex == NULL) {
-        s_mutex = xSemaphoreCreateMutex();
-    }
+    /* s_mutex is created by orb_init() at boot, so it must already
+     * exist by the time any other uORB API is called. */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
 }
 

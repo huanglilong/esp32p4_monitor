@@ -163,6 +163,15 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer);
  */
 int orb_check(orb_sub_t handle, bool *updated);
 
+/**
+ * Initialize the uORB subsystem (must be called once before any other API).
+ *
+ * Creates the global mutex eagerly, eliminating the race condition
+ * that would occur if two threads simultaneously called any uORB
+ * function and both attempted to lazily create the mutex.
+ */
+void orb_init(void);
+
 #ifdef __cplusplus
 }
 #endif
