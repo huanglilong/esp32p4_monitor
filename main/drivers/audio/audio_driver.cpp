@@ -253,19 +253,24 @@ void AudioDriver::init(void)
     /* Create mutex BEFORE opening codecs */
     _codec_mutex = xSemaphoreCreateMutex();
 
-    /* Open codecs */
+    /* Open codecs — track which ones were successfully opened so rollback
+     * only calls esp_codec_dev_close() on opened handles. */
+    bool codec_dac_opened = false;
+    bool codec_mic_opened = false;
     esp_codec_dev_sample_info_t fs = { .bits_per_sample = 16, .channel = 2, .channel_mask = 0x03, .sample_rate = EXAMPLE_AUDIO_SAMPLE_RATE };
     if (_has_lcd) {
         if (esp_codec_dev_open(_codec_handle, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES8311 DAC codec");
             init_ok = false;
         } else {
+            codec_dac_opened = true;
             esp_codec_dev_set_out_vol(_codec_handle, _volume);
         }
         if (init_ok && esp_codec_dev_open(_codec_mic_handle, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES7210 ADC codec");
             init_ok = false;
         } else if (init_ok) {
+            codec_mic_opened = true;
             esp_codec_dev_set_in_gain(_codec_mic_handle, 42);
         }
     } else {
@@ -273,20 +278,21 @@ void AudioDriver::init(void)
             ESP_LOGE(TAG, "Failed to open ES8311 codec");
             init_ok = false;
         } else {
+            codec_dac_opened = true;
             esp_codec_dev_set_out_vol(_codec_handle, _volume);
             esp_codec_dev_set_in_gain(_codec_handle, 24);
         }
     }
 
     if (!init_ok) {
-        /* Rollback codec open failure */
+        /* Rollback codec open failure — only close handles that were opened */
         if (_codec_mic_handle) {
-            esp_codec_dev_close(_codec_mic_handle);
+            if (codec_mic_opened) esp_codec_dev_close(_codec_mic_handle);
             esp_codec_dev_delete(_codec_mic_handle);
             _codec_mic_handle = nullptr;
         }
         if (_codec_handle) {
-            esp_codec_dev_close(_codec_handle);
+            if (codec_dac_opened) esp_codec_dev_close(_codec_handle);
             esp_codec_dev_delete(_codec_handle);
             _codec_handle = nullptr;
         }
