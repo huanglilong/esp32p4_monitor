@@ -153,7 +153,7 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 | `wifi_state` | `wifi_state_s` | 1 | Settings (wifi_scan) | Web Config, UI |
 | `audio_level` | `audio_level_s` | 1 | Audio task | UI 电平表 |
 | `camera_state` | `camera_state_s` | 1 | CameraDriver | PeripheralManager, CameraStream, PhoneAppCamera |
-| `recording_state` | `recording_state_s` | 1 | Audio/Web task | UI 录制状态 |
+| `recording_state` | `recording_state_s` | 1 | PhoneAppAudio | UI 录制状态, PhoneAppMusic 录制互斥 |
 | `volume_state` | `volume_state_s` | 1 | AudioDriver (via PeripheralManager) | Music Playback |
 
 ## Driver 模块架构 (Phase 3 重构)
@@ -709,3 +709,25 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **WiFi 扫描优化**: 扫描任务空闲轮询从 200ms 降到 500ms
 - [x] **Web 音频录制/播放**: web_config_server 增加录音 (Start/End, Shine MP3 → SD) 和播放 (esp_audio_simple_player) 功能, Camera Stream 未运行时可用
 - [x] **Web File Manager**: SD 卡文件浏览器 (list/download/delete)，与 Audio Recorder 模式互斥
+- [x] **音频录制↔播放互斥** (v2):
+  - **分析结论**: Camera Stream 和音频使用独立硬件(MIPI CSI vs I2S), 不需要互斥
+  - **实现**: PhoneAppAudio 录制开始/停止时通过 uORB `recording_state` 发布状态
+  - **PhoneAppMusic**: 订阅 `recording_state`, 录制中自动停止播放并阻止播放启动
+- [x] **Web Camera Stream 解除 LCD-4B 限制** (v2):
+  - 之前: LCD-4B 板 Web UI 上 Camera Stream 开关被禁用, 提示 "Use Camera Stream App on the display"
+  - 现在: LCD-4B 与 WIFI6 一致, Web UI 和显示屏 App 均可控制 Camera Stream
+  - 修改: `web_config_server.cpp` 中移除所有 `g_has_lcd` 对 camera stream 的限制条件
+- [x] **Camera Stream 和 Web Audio 不再互斥** (v2):
+  - 硬件分析: Camera 使用 MIPI CSI (专用引脚), Audio 使用 I2S (GPIO 9-13), 完全独立硬件
+  - 移除所有 `__cam_running()` 对 audio handler 的阻断 (6 处)
+  - 移除 `__audio_stop_all()` 函数和 `camera_state` uORB 订阅
+  - Web UI: 移除 `audio_card` 根据 `cam_running` 隐藏的 JS 逻辑, Camera Stream 和 Audio 页面可同时存在
+  - 显示屏 Camera Stream App 开关状态与 `CameraStream::isRunning()` 同步
+- [x] **Web Audio 录制↔播放互斥补全** (v2.1):
+  - **问题**: 之前的录制↔播放互斥仅在 PhoneAppAudio → PhoneAppMusic 方向生效, Web 服务器的录制和播放相互不知情
+  - **修复**:
+    - `web_config_server.cpp`: 新增 `s_rec_pub` uORB publisher, `h_rec_start` 发布 `recording_state.active=true`, `h_rec_stop` 发布 `active=false`
+    - `h_rec_start`: 开始录制前先停止 web 播放 (`s_asp`/`s_playing`)
+    - `h_play`: 检查 `s_is_recording`, 录制中拒绝播放
+    - `phone_app_audio.cpp`: `~PhoneAppAudio()` 和 `close()` 中重置 `_rec_pub`
+    - `phone_app_music.cpp`: `~PhoneAppMusic()` 中清理 `_rec_sub` 和 `_rec_check_timer` (防御性)

@@ -268,6 +268,19 @@ void PhoneAppCameraStream::_update_stream_info(void)
 
     if (!_label_stream_info) return;
 
+    /* Sync switch state with actual camera stream status (may have changed
+     * from another source, e.g. web server toggling CameraStream). */
+    if (_sw_cam_stream) {
+        bool switch_on = lv_obj_has_state(_sw_cam_stream, LV_STATE_CHECKED);
+        if (running != switch_on) {
+            if (running) {
+                lv_obj_add_state(_sw_cam_stream, LV_STATE_CHECKED);
+            } else {
+                lv_obj_clear_state(_sw_cam_stream, LV_STATE_CHECKED);
+            }
+        }
+    }
+
     if (running) {
         /* Read latest FPS stats from uORB topic (non-blocking) */
         bool updated = false;

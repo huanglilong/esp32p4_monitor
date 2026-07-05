@@ -4,6 +4,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdio.h>
+#include "uorb.h"
+#include "topics.h"
 
 extern "C" {
 #include "layer3.h"
@@ -40,6 +42,9 @@ private:
     int                _pcm_buf_count;   // Samples accumulated (per channel)
     volatile uint32_t  _record_bytes_written;
     volatile uint32_t  _record_start_ms;
+
+    /* uORB publisher: notifies other modules (e.g. Music) when recording is active */
+    orb_advert_t       _rec_pub;
 
     /* Recordings list */
     char              *_recording_names[MAX_RECORDINGS];

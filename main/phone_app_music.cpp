@@ -32,6 +32,7 @@ PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     _nvs_dirty(false), _nvs_save_timer(nullptr),
     _vol_sync_timer(nullptr),
     _vol_sub(ORB_ADVERT_INVALID),
+    _rec_sub(ORB_ADVERT_INVALID), _rec_check_timer(nullptr),
     _auto_next(false), _auto_next_timer(nullptr)
 {
     memset(_file_names, 0, sizeof(_file_names));
@@ -59,6 +60,18 @@ PhoneAppMusic::~PhoneAppMusic()
     if (_vol_sub >= 0) {
         orb_unsubscribe(_vol_sub);
         _vol_sub = ORB_ADVERT_INVALID;
+    }
+
+    /* Clean up recording check timer */
+    if (_rec_check_timer) {
+        lv_timer_delete(_rec_check_timer);
+        _rec_check_timer = nullptr;
+    }
+
+    /* Unsubscribe from recording_state uORB */
+    if (_rec_sub >= 0) {
+        orb_unsubscribe(_rec_sub);
+        _rec_sub = ORB_ADVERT_INVALID;
     }
 
     /* Flush pending NVS write */
@@ -249,6 +262,13 @@ bool PhoneAppMusic::run(void)
         }
     }, 200, this);
 
+    /* Recording check timer: subscribe to recording_state uORB topic.
+     * When Audio app starts recording, immediately stop playback. */
+    if (_rec_sub < 0) {
+        _rec_sub = orb_subscribe(ORB_ID(recording_state));
+    }
+    _rec_check_timer = lv_timer_create(_rec_check_timer_cb, 200, this);
+
     /* Scan SD card */
     _scan_files();
 
@@ -289,6 +309,16 @@ bool PhoneAppMusic::close(void)
     if (_vol_sub >= 0) {
         orb_unsubscribe(_vol_sub);
         _vol_sub = ORB_ADVERT_INVALID;
+    }
+    /* Clean up recording check timer */
+    if (_rec_check_timer) {
+        lv_timer_delete(_rec_check_timer);
+        _rec_check_timer = nullptr;
+    }
+    /* Unsubscribe from recording_state uORB */
+    if (_rec_sub >= 0) {
+        orb_unsubscribe(_rec_sub);
+        _rec_sub = ORB_ADVERT_INVALID;
     }
     /* Flush pending NVS write */
     if (_nvs_save_timer) {
@@ -384,6 +414,20 @@ void PhoneAppMusic::_play(int index)
 {
     if (index < 0 || index >= _track_count) return;
 
+    /* Check if Audio app is recording — refuse playback if so.
+     * Always read the latest state via orb_copy (no orb_check guard) because
+     * _rec_check_timer_cb may have already consumed the last update, causing
+     * orb_check to return false for the latest data. */
+    if (_rec_sub >= 0) {
+        struct recording_state_s rs = {};
+        orb_copy(ORB_ID(recording_state), _rec_sub, &rs);
+        if (rs.active) {
+            ESP_LOGW(TAG, "Cannot play: recording in progress");
+            lv_label_set_text(_label_status, "Recording in progress");
+            return;
+        }
+    }
+
     /* Stop + destroy previous player for clean pipeline state (S31 fix).
      * Recreate fresh ASP handle each play to prevent GMF state residue crashes. */
     if (_asp_handle) {
@@ -402,12 +446,14 @@ void PhoneAppMusic::_play(int index)
     ESP_LOGI(TAG, "Playing: %s", uri);
     lv_label_set_text(_label_title, name);
 
-    /* Create fresh ASP handle */
+    /* Create fresh ASP handle — core 1 (core 0 reserved for camera/HTTP/NPU).
+     * Priority 3: below LVGL (core 1) to avoid UI stutter, above idle.
+     * Stack 8192: MP3 decoder needs headroom beyond the default 4096. */
     esp_asp_cfg_t asp_cfg = {
         .out = { .cb = _asp_output_cb, .user_ctx = this },
-        .task_prio = 5,
-        .task_stack = 4096,
-        .task_core = 0,
+        .task_prio = 3,
+        .task_stack = 8192,
+        .task_core = 1,
     };
     if (esp_audio_simple_player_new(&asp_cfg, &_asp_handle) != ESP_GMF_ERR_OK || !_asp_handle) {
         ESP_LOGE(TAG, "Failed to create player");
@@ -528,4 +574,26 @@ void PhoneAppMusic::_auto_next_timer_cb(lv_timer_t *timer)
     if (!app || !app->_auto_next) return;
     app->_auto_next = false;
     app->_next();
+}
+
+/*============================================================================
+ * Recording Check Timer: polls recording_state uORB to stop playback
+ * when Audio app starts recording.
+ *============================================================================*/
+void PhoneAppMusic::_rec_check_timer_cb(lv_timer_t *timer)
+{
+    PhoneAppMusic *app = (PhoneAppMusic *)timer->user_data;
+    if (!app) return;
+    if (app->_rec_sub < 0) return;
+
+    bool updated = false;
+    if (orb_check(app->_rec_sub, &updated) != 0 || !updated) return;
+
+    struct recording_state_s rs = {};
+    orb_copy(ORB_ID(recording_state), app->_rec_sub, &rs);
+    if (rs.active && app->_is_playing) {
+        ESP_LOGI(TAG, "Recording started — stopping playback");
+        app->_stop();
+        lv_label_set_text(app->_label_status, "Recording in progress");
+    }
 }

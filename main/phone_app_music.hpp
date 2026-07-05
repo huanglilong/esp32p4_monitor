@@ -4,6 +4,7 @@
 #include "esp_audio_simple_player.h"
 #include "esp_gmf_err.h"
 #include "uorb.h"
+#include "topics.h"
 
 #define MAX_TRACKS 50
 
@@ -20,6 +21,7 @@ private:
     static int _asp_event_cb(esp_asp_event_pkt_t *pkt, void *ctx);
     static int _asp_output_cb(uint8_t *data, int data_size, void *ctx);
     static void _auto_next_timer_cb(lv_timer_t *timer);
+    static void _rec_check_timer_cb(lv_timer_t *timer);
 
     void _scan_files(void);
     void _play(int index);
@@ -54,6 +56,10 @@ private:
 
     /* uORB volume_state subscriber — replaces NVS polling */
     orb_sub_t            _vol_sub;
+
+    /* uORB recording_state subscriber — stops playback when Audio app is recording */
+    orb_sub_t            _rec_sub;
+    lv_timer_t          *_rec_check_timer;
 
     /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
     volatile bool       _auto_next;

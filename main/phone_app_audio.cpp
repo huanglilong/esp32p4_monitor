@@ -35,6 +35,7 @@ PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :
     _is_recording(false), _encoder(nullptr), _record_file(nullptr),
     _pcm_buffer(nullptr), _pcm_buf_count(0),
     _record_bytes_written(0), _record_start_ms(0),
+    _rec_pub(ORB_ADVERT_INVALID),
     _recording_count(0),
     _btn_back(nullptr), _btn_record(nullptr),
     _label_rec_status(nullptr), _label_footer(nullptr),
@@ -74,6 +75,9 @@ PhoneAppAudio::~PhoneAppAudio()
         lv_timer_delete(_update_timer);
         _update_timer = nullptr;
     }
+    /* Reset uORB recording_state publisher handle */
+    _rec_pub = ORB_ADVERT_INVALID;
+
     /* Free recording names (defensive — close() normally does this) */
     for (int i = 0; i < _recording_count; i++) {
         if (_recording_names[i]) { free(_recording_names[i]); _recording_names[i] = nullptr; }
@@ -216,6 +220,9 @@ bool PhoneAppAudio::close(void)
     for (int i = 0; i < _recording_count; i++) {
         if (_recording_names[i]) { free(_recording_names[i]); _recording_names[i] = nullptr; }
     }
+
+    /* Reset uORB recording_state publisher handle */
+    _rec_pub = ORB_ADVERT_INVALID;
 
     /* Deinit audio — release DMA/PSRAM resources. SD card stays mounted. */
     PeripheralManager::instance().deinit_audio();
@@ -387,6 +394,19 @@ void PhoneAppAudio::_start_recording(void)
     _record_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     _is_recording = true;
 
+    /* Publish recording_state.active=true for cross-module notification (e.g. Music app) */
+    if (_rec_pub < 0) {
+        _rec_pub = orb_advertise(ORB_ID(recording_state));
+    }
+    if (_rec_pub >= 0) {
+        struct recording_state_s rs = {};
+        rs.timestamp = esp_timer_get_time();
+        rs.active = true;
+        rs.bytes_written = 0;
+        rs.elapsed_ms = 0;
+        orb_publish(ORB_ID(recording_state), _rec_pub, &rs);
+    }
+
     /* Update button appearance */
     lv_obj_set_style_bg_color(_btn_record, lv_color_hex(0x666666), 0);
     lv_obj_t *btn_label = lv_obj_get_child(_btn_record, 0);
@@ -436,6 +456,16 @@ void PhoneAppAudio::_stop_recording(void)
     if (_pcm_buffer) {
         free(_pcm_buffer);
         _pcm_buffer = nullptr;
+    }
+
+    /* Publish recording_state.active=false for cross-module notification (e.g. Music app) */
+    if (_rec_pub >= 0) {
+        struct recording_state_s rs = {};
+        rs.timestamp = esp_timer_get_time();
+        rs.active = false;
+        rs.bytes_written = _record_bytes_written;
+        rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - _record_start_ms));
+        orb_publish(ORB_ID(recording_state), _rec_pub, &rs);
     }
 
     /* Update button appearance */

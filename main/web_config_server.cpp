@@ -62,7 +62,6 @@ extern "C" {
 static const char *TAG = "WebConfig";
 
 /* Board detection — still extern until fully migrated */
-extern volatile bool g_has_lcd;
 
 #define WEB_CONFIG_PORT         8080
 
@@ -114,6 +113,9 @@ static volatile bool    s_playing = false;
 
 /* Mutual exclusion flag — file manager sets this to block audio ops during download/delete */
 static volatile bool    s_fm_busy = false;
+
+/* uORB recording_state publisher — notifies PhoneAppMusic when web recording is active */
+static orb_advert_t     s_rec_pub = ORB_ADVERT_INVALID;
 
 /* Mutex to serialize audio operations across concurrent HTTP handlers.
  * Without this, two clients hitting /api/record and /api/play simultaneously
@@ -402,10 +404,10 @@ static const char *WEB_UI_HTML =
 "let cs=document.getElementById('cam_status');"
 "cs.textContent=j.cam_running?'● Streaming active':'○ Stopped';"
 "cs.style.color=j.cam_running?'#4caf50':'#a0a0b0';"
-"document.getElementById('audio_card').style.display=j.cam_running?'none':'block';"
+"document.getElementById('audio_card').style.display='block';"
 "document.getElementById('files_card').style.display='none';"
 "fmMode=false;"
-"if(!j.cam_running)loadFiles();"
+"loadFiles();"
 "updateUI()}catch(e){showStatus('Failed to load settings','error')}}"
 "function showStatus(msg,cls){let s=document.getElementById('status');"
 "s.textContent=msg;s.className=cls}"
@@ -419,10 +421,9 @@ static const char *WEB_UI_HTML =
 "let cs=document.getElementById('cam_status');"
 "cs.textContent=j.running?'● Streaming active':'○ Stopped';"
 "cs.style.color=j.running?'#4caf50':'#a0a0b0';"
-"document.getElementById('audio_card').style.display=j.running?'none':'block';"
 "document.getElementById('files_card').style.display='none';"
 "fmMode=false;"
-"if(!j.running)loadFiles();"
+"loadFiles();"
 "showStatus(j.running?'Stream started':'Stream stopped','success')}"
 "else{showStatus(j.error||'Failed','error');loadStatus()}}"
 "catch(e){showStatus('Connection error','error');loadStatus()}}"
@@ -609,8 +610,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     nvs_get_str(NVS_KEY_WIFI_PASS, pass, sizeof(pass));
     int32_t wifi_en = nvs_get_i32_def(NVS_KEY_WIFI_EN, 0);
     int32_t volume  = nvs_get_i32_def(NVS_KEY_VOLUME, VOLUME_DEFAULT);
-    int32_t cam_en = g_has_lcd ? 0 : nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0);
-    bool cam_running = g_has_lcd ? false : CameraStream::instance().isRunning();
+    int32_t cam_en = nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0);
+    bool cam_running = CameraStream::instance().isRunning();
 
     /* Build JSON safely with cJSON — avoids injection from SSID special chars */
     cJSON *root = cJSON_CreateObject();
@@ -816,13 +817,6 @@ static esp_err_t settings_handler(httpd_req_t *req)
 
 static esp_err_t camera_stream_handler(httpd_req_t *req)
 {
-    if (g_has_lcd) {
-        /* LCD-4B: Camera Stream managed by Phone App, not available via web */
-        const char *resp = "{\"ok\":0,\"error\":\"Use Camera Stream App on the display\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
-        return ESP_OK;
-    }
     char buf[128];
     int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (received <= 0) {
@@ -917,10 +911,6 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
 /*============================================================================
  * Audio Handlers — record / play / list mp3 files on SD card
  *============================================================================*/
-static bool __cam_running(void) {
-    extern volatile bool g_has_lcd;
-    return (!g_has_lcd) && CameraStream::instance().isRunning();
-}
 
 /* Lazy-init SD card + audio codec on headless boards */
 static bool __audio_init(void) {
@@ -999,7 +989,6 @@ static bool __path_sanitize(const char *user_path, char *out, size_t out_len) {
 
 /* GET /api/audio/record_start */
 static esp_err_t h_rec_start(httpd_req_t *req) {
-    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     audio_lock();
     if (s_is_recording)   { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
     if (s_fm_busy)        { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
@@ -1045,6 +1034,30 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_is_recording = true;
+
+    /* Stop any active web playback — recording and playback share I2S hardware */
+    if (s_asp && s_playing) {
+        esp_audio_simple_player_stop(s_asp);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_audio_simple_player_destroy(s_asp);
+        s_asp = NULL;
+        s_playing = false;
+        ESP_LOGI(TAG, "Stopped web playback for recording");
+    }
+
+    /* Publish recording_state.active=true so PhoneAppMusic can stop its playback */
+    if (s_rec_pub < 0) {
+        s_rec_pub = orb_advertise(ORB_ID(recording_state));
+    }
+    if (s_rec_pub >= 0) {
+        struct recording_state_s rs = {};
+        rs.timestamp = esp_timer_get_time();
+        rs.active = true;
+        rs.bytes_written = 0;
+        rs.elapsed_ms = 0;
+        orb_publish(ORB_ID(recording_state), s_rec_pub, &rs);
+    }
+
     audio_unlock();
     ESP_LOGI(TAG, "Recording: %s", s_rec_path);
     httpd_resp_sendstr(req, "{\"ok\":1}");
@@ -1053,7 +1066,6 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
 
 /* GET /api/audio/record_stop */
 static esp_err_t h_rec_stop(httpd_req_t *req) {
-    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     audio_lock();
     if (!s_is_recording) {
         /* Recover from stale state if a previous record_start failed mid-way. */
@@ -1066,6 +1078,17 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
         return ESP_OK;
     }
     s_is_recording = false;
+
+    /* Publish recording_state.active=false so PhoneAppMusic can resume playback */
+    if (s_rec_pub >= 0) {
+        struct recording_state_s rs = {};
+        rs.timestamp = esp_timer_get_time();
+        rs.active = false;
+        rs.bytes_written = s_rec_bytes;
+        rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms));
+        orb_publish(ORB_ID(recording_state), s_rec_pub, &rs);
+    }
+
     audio_unlock();  /* Release lock before blocking _stop_audio_task_if_running */
     _stop_audio_task_if_running(); /* Stop audio task to release I2S RX */
     audio_lock();
@@ -1082,7 +1105,6 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
 
 /* GET /api/audio/record_status */
 static esp_err_t h_rec_status(httpd_req_t *req) {
-    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     char r[128];
     if (s_is_recording) {
         uint32_t e = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms) / 1000);
@@ -1094,7 +1116,6 @@ static esp_err_t h_rec_status(httpd_req_t *req) {
 
 /* GET /api/audio/list */
 static esp_err_t h_list(httpd_req_t *req) {
-    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     (void)__audio_init(); /* Lazy-mount SD card so file list works even before first record */
     DIR *d=opendir(REC_DIR); cJSON *root=cJSON_CreateObject(),*arr=cJSON_CreateArray();
     cJSON_AddItemToObject(root,"files",arr);
@@ -1139,7 +1160,6 @@ static int _asp_evt(esp_asp_event_pkt_t *pkt, void *_) { (void)_;
 
 /* GET /api/audio/play?file=xxx.mp3 */
 static esp_err_t h_play(httpd_req_t *req) {
-    if(__cam_running()){ httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     if(!__audio_init()){ httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
     char q[256]={},fn[128]={};
     if(httpd_req_get_url_query_str(req,q,sizeof(q))!=ESP_OK||!strlen(q)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
@@ -1149,6 +1169,8 @@ static esp_err_t h_play(httpd_req_t *req) {
     char uri[160]; snprintf(uri,sizeof(uri),"file://" REC_DIR "/%s",fn);
     audio_lock();
     if (s_fm_busy) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
+    /* Refuse playback while web recording is active — recording and playback share I2S hardware */
+    if (s_is_recording) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Recording in progress\"}"); return ESP_OK; }
     /* Stop + destroy previous player for clean state (matching Music App lifecycle) */
     if (s_asp) {
         esp_audio_simple_player_stop(s_asp);
@@ -1157,7 +1179,7 @@ static esp_err_t h_play(httpd_req_t *req) {
         s_asp = NULL;
     }
     s_playing = false;
-    esp_asp_cfg_t c={.out={.cb=_asp_out},.task_prio=5,.task_stack=4096,.task_core=0};
+    esp_asp_cfg_t c={.out={.cb=_asp_out},.task_prio=3,.task_stack=8192,.task_core=1};
     if(esp_audio_simple_player_new(&c,&s_asp)!=ESP_GMF_ERR_OK||!s_asp){ audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     esp_audio_simple_player_set_event(s_asp,_asp_evt,NULL);
     esp_gmf_err_t ret = esp_audio_simple_player_run(s_asp, uri, NULL);
@@ -1172,7 +1194,6 @@ static esp_err_t h_play(httpd_req_t *req) {
 
 /* GET /api/audio/stop */
 static esp_err_t h_stop(httpd_req_t *req) {
-    if (__cam_running()) { httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera running\"}"); return ESP_OK; }
     audio_lock();
     if(s_asp){ esp_audio_simple_player_stop(s_asp); s_playing=false; }
     audio_unlock();
@@ -1696,8 +1717,8 @@ static void web_config_task(void *arg)
     ESP_LOGI(TAG, "Web config server started on port %d", WEB_CONFIG_PORT);
     s_running = true;
 
-    /* Auto-start camera stream if NVS says it was enabled (WIFI6 only) */
-    if (!g_has_lcd && nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
+    /* Auto-start camera stream if NVS says it was enabled */
+    if (nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
         ESP_LOGI(TAG, "NVS cam_stream=1, auto-starting camera stream...");
         CameraStream::instance().start();
     }
