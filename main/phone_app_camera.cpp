@@ -46,6 +46,7 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     _cam_canvas(nullptr), _refresh_timer(nullptr), _btn_back(nullptr),
     _cam_running(false),
     _detector(nullptr),
+    _detect_in_buf(nullptr), _detect_in_size(0),
     _detect_available(false), _detect_task_handle(nullptr), _detect_mutex(nullptr)
 {
 }
@@ -388,6 +389,18 @@ bool PhoneAppCamera::_init_detection(void)
         return false;
     }
 
+    /* Allocate private copy buffer for detection inference.
+     * This allows us to memcpy the frame under mutex, then release
+     * the mutex before running 560ms inference — no frame tearing. */
+    _detect_in_size = _cam_buf_size;
+    _detect_in_buf = (uint8_t *)heap_caps_malloc(_detect_in_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!_detect_in_buf) {
+        ESP_LOGE(TAG, "Failed to allocate detection input buffer (%zu bytes)", _detect_in_size);
+        vSemaphoreDelete(_detect_mutex);
+        _detect_mutex = nullptr;
+        return false;
+    }
+
     /* Create COCODetect instance (YOLO11n 320x320 for P4).
      * Use nothrow to prevent std::bad_alloc on OOM (no C++ exception support). */
     _detector = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);  // lazy load
@@ -428,6 +441,13 @@ void PhoneAppCamera::_deinit_detection(void)
         _detector = nullptr;
     }
 
+    /* Free private copy buffer */
+    if (_detect_in_buf) {
+        heap_caps_free(_detect_in_buf);
+        _detect_in_buf = nullptr;
+        _detect_in_size = 0;
+    }
+
     /* Delete mutex */
     if (_detect_mutex) {
         vSemaphoreDelete(_detect_mutex);
@@ -454,28 +474,26 @@ void PhoneAppCamera::_detection_task(void *arg)
             continue;
         }
 
-        /* Sync cache: refresh timer (core 1) wrote to _cam_buffer via memcpy from V4L2.
-         * Invalidate CPU cache to see fresh data (PSRAM needs explicit sync on P4).
-         * Take _detect_mutex during cache sync + inference setup to prevent
-         * the timer from writing a new frame while we read (avoids tearing). */
+        /* Sync cache + copy frame under mutex, then release mutex before
+         * running 560ms inference. This prevents frame tearing: the LVGL
+         * timer can write to _cam_buffer while we inference on our private copy. */
         dl::image::img_t img = {};  /* Declared outside if-block for scope */
         if (app->_detect_mutex &&
             xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-            /* COCODetect's built-in CPU preprocessor handles resize + format conversion. */
+            /* Copy frame to private buffer while holding mutex */
+            memcpy(app->_detect_in_buf, app->_cam_buffer, app->_detect_in_size);
+
+            xSemaphoreGive(app->_detect_mutex);
+
+            /* Set up image descriptor pointing to our private copy */
             img = {
-                .data = app->_cam_buffer,
+                .data = app->_detect_in_buf,
                 .width = (uint16_t)app->_cam_width,
                 .height = (uint16_t)app->_cam_height,
                 .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
             };
-
-            /* Release mutex BEFORE running inference (~560ms).
-             * Inference reads from _cam_buffer but the data is already
-             * cache-synced and the model preprocessor will copy it
-             * internally during preprocessing (resize + format convert). */
-            xSemaphoreGive(app->_detect_mutex);
         } else {
             /* Skip this detection cycle if mutex unavailable */
             vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(DETECT_INTERVAL_MS));

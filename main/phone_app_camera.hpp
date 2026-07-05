@@ -52,6 +52,8 @@ private:
 
     /* Detection subsystem */
     COCODetect                 *_detector;           // COCO detection instance
+    uint8_t                    *_detect_in_buf;      // Private copy buffer for inference (avoids holding mutex during 560ms inference)
+    size_t                      _detect_in_size;     // Size of _detect_in_buf
     std::list<dl::detect::result_t> _detect_results; // Latest detection results
     volatile bool               _detect_available;   // New results available? (cross-core)
     TaskHandle_t                _detect_task_handle; // Detection FreeRTOS task
