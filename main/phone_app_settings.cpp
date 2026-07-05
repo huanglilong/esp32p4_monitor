@@ -370,6 +370,17 @@ bool PhoneAppSettings::close(void)
     bool wifi_connected = _wifi_event_group &&
         (xEventGroupGetBits(_wifi_event_group) & WIFI_CONNECTED_BIT);
     if (!wifi_connected) {
+        /* Unregister event handlers BEFORE deleting the event group to prevent
+         * use-after-free: wifiEventHandler checks _wifi_event_group but a
+         * TOCTOU race exists between the null-check and xEventGroupSetBits. */
+        if (_wifi_handler_inst) {
+            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, _wifi_handler_inst);
+            _wifi_handler_inst = nullptr;
+        }
+        if (_ip_handler_inst) {
+            esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, _ip_handler_inst);
+            _ip_handler_inst = nullptr;
+        }
         if (_wifi_scan_task) {
             vTaskDelete(_wifi_scan_task);
             _wifi_scan_task = nullptr;
