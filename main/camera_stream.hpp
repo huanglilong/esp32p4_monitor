@@ -71,6 +71,12 @@ public:
     SemaphoreHandle_t      _encoder_sem;
     std::atomic<bool>      _encoder_initialized;  /* atomic: stream_handler (httpd task) ↔ _deinit_video (caller task) */
 
+    /* Last JPEG snapshot for /api/capture_image — written by stream handler, read by HTTP handler */
+    SemaphoreHandle_t      _last_jpeg_mutex;
+    uint8_t               *_last_jpeg_buf;
+    uint32_t               _last_jpeg_size;
+    uint32_t               _last_jpeg_capacity;
+
     /* Lazy JPEG encoder init — called from stream_handler (C callback, needs public access) */
     bool _init_encoder(void);
     void _deinit_encoder(void);

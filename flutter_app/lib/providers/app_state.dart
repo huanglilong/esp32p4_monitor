@@ -271,18 +271,16 @@ class AppState extends ChangeNotifier {
         final info = await _httpService.fetchCameraInfo();
         _deviceStatus = 'Camera connected';
         _addLog('Camera info received');
-        if (info['cameras'] is List && (info['cameras'] as List).isNotEmpty) {
-          final cam = (info['cameras'] as List).first as Map<String, dynamic>;
-          final res = cam['currentResolution'] as Map<String, dynamic>?;
-          if (res != null) {
-            final resStr =
-                '${res['width']}x${res['height']} @ ${cam['currentFrameRate']}fps';
-            _latestText = resStr;
-            _addLog('Resolution: $resStr');
-          }
-          final fmt = cam['pixelFormat'] ?? 'unknown';
-          _addLog('Pixel format: $fmt');
+        // Firmware returns flat JSON: {width, height, jpeg_quality, frame_rate, pixel_format, total_frames}
+        if (info['width'] != null && info['height'] != null) {
+          final w = info['width'] as num;
+          final h = info['height'] as num;
+          final fr = (info['frame_rate'] as num?)?.toInt() ?? 0;
+          _latestText = '${w}x$h @ ${fr}fps';
+          _addLog('Resolution: $_latestText');
         }
+        final fmt = info['pixel_format'] ?? 'unknown';
+        _addLog('Pixel format: $fmt');
       } catch (_) {
         _addLog('Failed to fetch camera info');
       }

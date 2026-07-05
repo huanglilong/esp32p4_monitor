@@ -123,6 +123,8 @@ CameraStream::CameraStream() :
     _jpeg_quality(30),  // Lower quality = faster encode + less WiFi/SDIO traffic
     _encoder_sem(nullptr),
     _encoder_initialized(false),
+    _last_jpeg_mutex(nullptr),
+    _last_jpeg_buf(nullptr), _last_jpeg_size(0), _last_jpeg_capacity(0),
     _frame_count(0), _fps_frame_count(0),
     _fps_window_start{0, 0},
     _fps_total_bytes(0),
@@ -139,11 +141,18 @@ CameraStream::CameraStream() :
     _mdns_running(false)
 {
     _detect_mutex = xSemaphoreCreateMutex();
+    _last_jpeg_mutex = xSemaphoreCreateMutex();
 }
 
 CameraStream::~CameraStream()
 {
     stop();
+    if (_last_jpeg_mutex) {
+        vSemaphoreDelete(_last_jpeg_mutex);
+        _last_jpeg_mutex = nullptr;
+    }
+    free(_last_jpeg_buf);
+    _last_jpeg_buf = nullptr;
     if (_detect_mutex) {
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
@@ -798,6 +807,23 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
                 break;
             }
+
+            /* Save latest JPEG snapshot for /api/capture_image endpoint */
+            if (cs->_last_jpeg_mutex &&
+                xSemaphoreTake(cs->_last_jpeg_mutex, 0) == pdTRUE) {
+                if (cs->_last_jpeg_capacity < jpeg_size) {
+                    uint8_t *new_buf = (uint8_t *)realloc(cs->_last_jpeg_buf, jpeg_size);
+                    if (new_buf) {
+                        cs->_last_jpeg_buf = new_buf;
+                        cs->_last_jpeg_capacity = jpeg_size;
+                    }
+                }
+                if (cs->_last_jpeg_buf && cs->_last_jpeg_capacity >= jpeg_size) {
+                    memcpy(cs->_last_jpeg_buf, jpeg_data, jpeg_size);
+                    cs->_last_jpeg_size = jpeg_size;
+                }
+                xSemaphoreGive(cs->_last_jpeg_mutex);
+            }
             if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                 xSemaphoreGive(cs->_encoder_sem);
             }
@@ -881,7 +907,34 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     return ret;
 }
 
-/** Detection info JSON handler — person count + max confidence */
+
+    /** GET /api/capture_image — return the latest JPEG frame as image/jpeg */
+    static esp_err_t capture_image_handler(httpd_req_t *req)
+    {
+        CameraStream *cs = (CameraStream *)req->user_ctx;
+
+        if (!cs->_last_jpeg_mutex) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Snapshot not available");
+            return ESP_FAIL;
+        }
+
+        esp_err_t ret = ESP_FAIL;
+        if (xSemaphoreTake(cs->_last_jpeg_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (cs->_last_jpeg_buf && cs->_last_jpeg_size > 0) {
+                httpd_resp_set_type(req, "image/jpeg");
+                ret = httpd_resp_send(req, (char *)cs->_last_jpeg_buf, cs->_last_jpeg_size);
+            } else {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No frame captured yet");
+            }
+            xSemaphoreGive(cs->_last_jpeg_mutex);
+        } else {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Snapshot busy");
+        }
+        return ret;
+    }
+
+
+    /** Detection info JSON handler — person count + max confidence */
 static esp_err_t detection_info_handler(httpd_req_t *req)
 {
     CameraStream *cs = (CameraStream *)req->user_ctx;
@@ -1064,11 +1117,13 @@ bool CameraStream::_start_http_server(void)
     httpd_uri_t uri_quality = { .uri = "/api/set_quality", .method = HTTP_GET, .handler = set_quality_handler, .user_ctx = this };
     httpd_uri_t uri_config  = { .uri = "/api/set_camera_config", .method = HTTP_POST, .handler = set_camera_config_handler, .user_ctx = this };
     httpd_uri_t uri_detect  = { .uri = "/api/get_detection_info", .method = HTTP_GET, .handler = detection_info_handler, .user_ctx = this };
+    httpd_uri_t uri_capture = { .uri = "/api/capture_image", .method = HTTP_GET, .handler = capture_image_handler, .user_ctx = this };
     httpd_register_uri_handler(_httpd_80, &uri_index);
     httpd_register_uri_handler(_httpd_80, &uri_info);
     httpd_register_uri_handler(_httpd_80, &uri_quality);
     httpd_register_uri_handler(_httpd_80, &uri_config);
     httpd_register_uri_handler(_httpd_80, &uri_detect);
+    httpd_register_uri_handler(_httpd_80, &uri_capture);
 
     /* Port 81: MJPEG stream */
     config.server_port += 1;   // 80 → 81 (matches reference: config.server_port += 1)
