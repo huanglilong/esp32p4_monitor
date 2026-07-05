@@ -167,6 +167,11 @@
 | S120 | **AudioDriver codec close 未打开句柄** | codec open 失败 rollback 时对未 open 的 handle 调用 `esp_codec_dev_close()`。修复: 跟踪 `codec_dac_opened`/`codec_mic_opened` 标志，仅 close 已打开的 handle | ✅ |
 | S121 | **ULog Writer NUL 终止符修复** | ULog 字符串字段不应包含 NUL 终止符（ULog 规范: "Strings do not contain the termination NULL character"）。Format/Subscription/Info/Logging 消息均错误包含 `\0`，导致 pyulog `KeyError: 'fps_stats\x00'`。修复: 移除所有字符串字段 NUL 终止符，与 PX4 参考实现一致 | ✅ |
 | S122 | **ULog Git 版本信息** | 新增 `ulog_git_info_t` + `ulog_writer_set_git_info()` API，ULog Info 消息写入 `ver_sw_branch`（PX4 标准键）、`ver_sw_commit`、`ver_sw_author`、`ver_sw_date`、`ver_sw_msg`，从 `git_info.h` 编译时宏获取 | ✅ |
+| S123 | **orb_init() 幂等竞态修复** | `orb_init()` 的 `if (s_mutex != NULL) return` 检查本身不是原子的，并发调用可双重创建 mutex。修复: 移除幂等检查改为 `assert(s_mutex == NULL)`，文档说明必须在 app_main 中任务创建前调用一次 | ✅ |
+| S124 | **CameraStream _fps_pub 双重广播竞态** | `_fps_pub` 是普通 `orb_advert_t`，`if (_fps_pub < 0) _fps_pub = orb_advertise()` 非原子 check-then-set。修复: 改为 `std::atomic<orb_advert_t>` + `compare_exchange_strong()`，匹配 AudioDriver::_vol_pub 模式 | ✅ |
+| S125 | **CameraStream _fps_frame_count 一致性** | `_fps_frame_count` 为普通 uint32_t 而 `_fps_total_bytes` 为 `std::atomic<uint32_t>`，两者在同一代码路径递增/重置。修复: `_fps_frame_count` 也改为 `std::atomic<uint32_t>` | ✅ |
+| S126 | **AudioDriver _volume 隐式原子加载** | `_volume` 为 `std::atomic<int>`，但 init() 中用隐式 `operator int()` 而非显式 `.load()`。修复: 统一使用 `_volume.load(std::memory_order_relaxed)` (写均在 mutex 内) | ✅ |
+| S127 | **CameraDriver owner-tracked claim/release** | `claim()` 不区分重入（同模块）和争用（不同模块），CameraStream 运行时 Camera App `claim()` 返回 true → V4L2 操作冲突 → WDT 崩溃。修复: `claim(caller_id)/release(caller_id)` 支持 owner tracking，同 caller_id 可重入，不同 caller_id 互斥。PhoneAppCamera close() 中 `example_video_deinit()` 仅在 `_video_initialized` 时调用 | ✅ |
 
 ---
 

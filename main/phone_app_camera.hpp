@@ -49,6 +49,7 @@ private:
     lv_obj_t           *_btn_back;            // Back button overlay
 
     volatile bool        _cam_running;
+    bool                 _video_initialized;  // True if this app successfully initialized the V4L2 pipeline
 
     /* Detection subsystem */
     COCODetect                 *_detector;           // COCO detection instance

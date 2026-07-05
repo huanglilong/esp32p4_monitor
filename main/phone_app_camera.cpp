@@ -45,6 +45,7 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     _cam_width(0), _cam_height(0), _cam_pixel_format(0),
     _cam_canvas(nullptr), _refresh_timer(nullptr), _btn_back(nullptr),
     _cam_running(false),
+    _video_initialized(false),
     _detector(nullptr),
     _detect_in_buf(nullptr), _detect_in_size(0),
     _detect_available(false), _detect_task_handle(nullptr), _detect_mutex(nullptr)
@@ -152,7 +153,7 @@ bool PhoneAppCamera::close(void)
     }
 
     /* Release camera hardware via CameraDriver */
-    CameraDriver::instance().release();
+    CameraDriver::instance().release("camera_app");
 
     /* Signal detection task to stop BEFORE deinit (avoid use-after-free) */
     _cam_running = false;
@@ -189,10 +190,17 @@ bool PhoneAppCamera::close(void)
     _deinit_detection();
     _deinit_camera();
 
-    /* Release CSI/ISP pipeline (esp_video). Safe to call even if already deinited;
-     * next Camera App or Camera Stream start will re-init via example_video_init(). */
-    if (example_video_deinit() != ESP_OK) {
-        ESP_LOGW(TAG, "example_video_deinit failed (may already be deinited)");
+    /* Release CSI/ISP pipeline (esp_video) ONLY if this app successfully
+     * initialized it. If Camera App failed to claim the camera (e.g.,
+     * CameraStream is running), we must NOT deinit the pipeline — it
+     * belongs to the other module. Deiniting it would crash the streamer. */
+    if (_video_initialized) {
+        if (example_video_deinit() != ESP_OK) {
+            ESP_LOGW(TAG, "example_video_deinit failed (may already be deinited)");
+        }
+        _video_initialized = false;
+    } else {
+        ESP_LOGI(TAG, "Skipping example_video_deinit — camera was not initialized by this app");
     }
 
     ESP_LOGI(TAG, "Camera app closed");
@@ -210,7 +218,7 @@ bool PhoneAppCamera::_init_camera(void)
     /* Claim camera hardware via CameraDriver FIRST, before any V4L2 operations.
      * This ensures atomic check-and-claim (no TOCTOU gap with CameraStream).
      * CameraStream::start() also claims before setting _running=true. */
-    if (!CameraDriver::instance().claim()) {
+    if (!CameraDriver::instance().claim("camera_app")) {
         ESP_LOGW(TAG, "Camera hardware in use, cannot open Camera App");
         return false;
     }
@@ -218,7 +226,7 @@ bool PhoneAppCamera::_init_camera(void)
     /* Init video pipeline (CSI + ISP) via esp_video. Safe to call multiple times. */
     if (example_video_init() != ESP_OK) {
         ESP_LOGE(TAG, "example_video_init failed");
-        CameraDriver::instance().release();
+        CameraDriver::instance().release("camera_app");
         return false;
     }
 
@@ -316,6 +324,7 @@ bool PhoneAppCamera::_init_camera(void)
     }
 
     _cam_running = true;
+    _video_initialized = true;
     ESP_LOGI(TAG, "V4L2 camera pipeline started (%" PRIu32 "x%" PRIu32 ")", _cam_width, _cam_height);
 
     /* Advertise detection_result topic */
@@ -335,7 +344,7 @@ void PhoneAppCamera::_cleanup_camera_init(void)
     }
     free(_cam_buffer); _cam_buffer = nullptr;
     ::close(_video_fd); _video_fd = -1;
-    CameraDriver::instance().release();
+    CameraDriver::instance().release("camera_app");
     example_video_deinit();
 }
 

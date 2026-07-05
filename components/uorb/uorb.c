@@ -77,7 +77,10 @@ static SemaphoreHandle_t s_mutex;
 
 void orb_init(void)
 {
-    if (s_mutex != NULL) return; /* Idempotent */
+    /* Must be called exactly once from app_main() before any tasks are created.
+     * Not safe to call concurrently — the idempotent check itself is a race.
+     * In practice this is safe because app_main runs before other tasks exist. */
+    assert(s_mutex == NULL);
     s_mutex = xSemaphoreCreateMutex();
     assert(s_mutex != NULL);
 }

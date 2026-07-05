@@ -264,7 +264,7 @@ void AudioDriver::init(void)
             init_ok = false;
         } else {
             codec_dac_opened = true;
-            esp_codec_dev_set_out_vol(_codec_handle, _volume);
+            esp_codec_dev_set_out_vol(_codec_handle, _volume.load(std::memory_order_relaxed));
         }
         if (init_ok && esp_codec_dev_open(_codec_mic_handle, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES7210 ADC codec");
@@ -279,7 +279,7 @@ void AudioDriver::init(void)
             init_ok = false;
         } else {
             codec_dac_opened = true;
-            esp_codec_dev_set_out_vol(_codec_handle, _volume);
+            esp_codec_dev_set_out_vol(_codec_handle, _volume.load(std::memory_order_relaxed));
             esp_codec_dev_set_in_gain(_codec_handle, 24);
         }
     }
@@ -314,7 +314,7 @@ void AudioDriver::init(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", _has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume.load());
+    ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", _has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume.load(std::memory_order_relaxed));
     _refcount = 1;
     xSemaphoreGive(_lifecycle_mutex);
 }

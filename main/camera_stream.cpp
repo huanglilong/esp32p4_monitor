@@ -174,7 +174,7 @@ bool CameraStream::start(void)
 
     /* Claim camera hardware via CameraDriver BEFORE any resource allocation.
      * This ensures cross-module mutual exclusion from the earliest point. */
-    if (!CameraDriver::instance().claim()) {
+    if (!CameraDriver::instance().claim("stream")) {
         ESP_LOGW(TAG, "Camera hardware in use, cannot start stream");
         _running = false;
         return false;
@@ -183,7 +183,7 @@ bool CameraStream::start(void)
     if (!_init_video()) {
         ESP_LOGE(TAG, "Video init failed");
         _running = false;
-        CameraDriver::instance().release();
+        CameraDriver::instance().release("stream");
         return false;
     }
 
@@ -196,7 +196,7 @@ bool CameraStream::start(void)
         _deinit_video();
         _deinit_detection();
         _running = false;
-        CameraDriver::instance().release();
+        CameraDriver::instance().release("stream");
         return false;
     }
 
@@ -221,7 +221,7 @@ void CameraStream::stop(void)
      * stream loop never exits, httpd_stop() blocks indefinitely. */
     _running = false;
 
-    CameraDriver::instance().release();
+    CameraDriver::instance().release("stream");
     _stop_http_server();
     _deinit_mdns();
     _deinit_detection();
@@ -920,9 +920,11 @@ static esp_err_t stream_handler(httpd_req_t *req)
                                  (now.tv_nsec - cs->_fps_window_start.tv_nsec) / 1e9;
                 if (elapsed >= cs->FPS_LOG_INTERVAL_S) {
                     float fps = (float)cs->_fps_frame_count / (float)elapsed;
-                    if (cs->_fps_pub < 0) {
-                        cs->_fps_pub = orb_advertise(ORB_ID(fps_stats));
-                    }
+                    /* Atomic lazy-advertise: prevent double-advertise race
+                     * (same pattern as AudioDriver::_vol_pub) */
+                    orb_advert_t expected = ORB_ADVERT_INVALID;
+                    cs->_fps_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(fps_stats)),
+                            std::memory_order_acq_rel, std::memory_order_acquire);
                     if (cs->_fps_pub >= 0) {
                         struct fps_stats_s fps_msg = {};
                         fps_msg.timestamp      = esp_timer_get_time();

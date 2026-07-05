@@ -53,7 +53,7 @@ esp32p4_monitor/
 │   │   │   ├── sdcard_driver.hpp   # SDCardDriver — SD 卡 mount/unmount + LDO
 │   │   │   └── sdcard_driver.cpp
 │   │   └── camera/
-│   │       ├── camera_driver.hpp   # CameraDriver — camera_state pub/sub + claim/release
+│   │       ├── camera_driver.hpp   # CameraDriver — camera_state pub/sub + claim/release (owner-tracked)
 │   │       └── camera_driver.cpp
 │   ├── logger/                     # 文本日志模块 (NEW)
 │   │   ├── logger.hpp              # LOG_I/W/E 宏 + Logger API (level 过滤)
@@ -176,12 +176,13 @@ PeripheralManager (thin facade)
 |--------|------|------|----------|
 | AudioDriver | `drivers/audio/` | I2S channel + ES8311/ES7210 codec init/deinit, volume/mic_gain/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
 | SDCardDriver | `drivers/sdcard/` | SDSPI init-once (LDO VO4 power-cycle), never unmount | _init_mutex |
-| CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API | uORB pub/sub |
+| CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API with owner tracking | _mutex |
 
 **设计要点**:
 - PeripheralManager API 完全不变，app 模块无需修改
 - 各 Driver 可独立使用 (如 `AudioDriver::instance().set_volume(80)`)
-- CameraDriver 的 `claim()/release()` 替代了 CameraStream/PhoneAppCamera 中直接发布 camera_state uORB 的代码
+- CameraDriver 的 `claim(caller_id)/release(caller_id)` 替代了 CameraStream/PhoneAppCamera 中直接发布 camera_state uORB 的代码
+- `claim()` 支持 owner tracking: 同一 caller_id 可重入, 不同 caller_id 互斥 (防止 CameraStream 运行时 Camera App 误操作 V4L2)
 
 ## FreeRTOS 任务列表
 
