@@ -14,6 +14,7 @@
 #include "esp_sntp.h"
 #include <string.h>
 #include <stdio.h>
+#include <atomic>
 
 /* uORB */
 #include "uorb.h"
@@ -32,15 +33,28 @@ uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
 
-/* uORB publisher for WiFi state */
-static orb_advert_t s_wifi_pub = ORB_ADVERT_INVALID;
+/* Thread-safe WiFi state uORB publisher.
+ * wifiEventHandler runs on the system event task and can fire concurrently
+ * (e.g., rapid connect/disconnect). Use std::atomic to prevent double
+ * orb_advertise() from racing on the lazy-init check. */
+static std::atomic<orb_advert_t> s_wifi_pub{ORB_ADVERT_INVALID};
 
 static void publish_wifi_state(bool connected, bool scanning, int8_t rssi, const char *ssid)
 {
-    if (s_wifi_pub < 0) {
-        s_wifi_pub = orb_advertise(ORB_ID(wifi_state));
+    orb_advert_t pub = s_wifi_pub.load();
+    if (pub < 0) {
+        orb_advert_t new_pub = orb_advertise(ORB_ID(wifi_state));
+        /* CAS: if another thread already advertised, discard our handle */
+        if (!s_wifi_pub.compare_exchange_strong(pub, new_pub)) {
+            /* Another thread won the race; new_pub is our unused handle.
+             * uORB handles are global and don't need explicit free. */
+        } else {
+            pub = new_pub;
+        }
+    } else {
+        pub = s_wifi_pub.load();
     }
-    if (s_wifi_pub >= 0) {
+    if (pub >= 0) {
         struct wifi_state_s ws = {};
         ws.timestamp  = esp_timer_get_time();
         ws.connected  = connected;
@@ -50,7 +64,7 @@ static void publish_wifi_state(bool connected, bool scanning, int8_t rssi, const
             strncpy(ws.ssid, ssid, sizeof(ws.ssid) - 1);
             ws.ssid[sizeof(ws.ssid) - 1] = '\0';
         }
-        orb_publish(ORB_ID(wifi_state), s_wifi_pub, &ws);
+        orb_publish(ORB_ID(wifi_state), pub, &ws);
     }
 }
 
