@@ -79,6 +79,7 @@ public:
     uint32_t               _fps_frame_count;   /* Frames in current FPS window */
     struct timespec        _fps_window_start;  /* Start of current FPS window */
     volatile uint32_t      _fps_total_bytes;   /* JPEG bytes in current FPS window */
+    orb_advert_t           _fps_pub;           /* uORB publisher for fps_stats — class member for lifecycle control */
     static constexpr int   FPS_LOG_INTERVAL_S = 2;  /* Log FPS every 2s */
 
     /* Detection — inline, no separate task/buffer needed */

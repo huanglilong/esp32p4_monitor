@@ -126,6 +126,7 @@ CameraStream::CameraStream() :
     _frame_count(0), _fps_frame_count(0),
     _fps_window_start{0, 0},
     _fps_total_bytes(0),
+    _fps_pub(ORB_ADVERT_INVALID),
     _detector(nullptr),
     _detect_in_buf(nullptr), _detect_in_size(0),
     _detect_results(),
@@ -215,6 +216,9 @@ void CameraStream::stop(void)
     _deinit_mdns();
     _deinit_detection();
     _deinit_video();
+
+    /* Reset FPS publisher handle — will be re-created on next start() */
+    _fps_pub = ORB_ADVERT_INVALID;
 
     ESP_LOGI(TAG, "Stream stopped");
 }
@@ -806,18 +810,17 @@ static esp_err_t stream_handler(httpd_req_t *req)
                                  (now.tv_nsec - cs->_fps_window_start.tv_nsec) / 1e9;
                 if (elapsed >= cs->FPS_LOG_INTERVAL_S) {
                     float fps = (float)cs->_fps_frame_count / (float)elapsed;
-                    static orb_advert_t s_fps_pub = ORB_ADVERT_INVALID;
-                    if (s_fps_pub < 0) {
-                        s_fps_pub = orb_advertise(ORB_ID(fps_stats));
-                    }
-                    if (s_fps_pub >= 0) {
-                        struct fps_stats_s fps_msg = {};
-                        fps_msg.timestamp      = esp_timer_get_time();
-                        fps_msg.frame_count    = cs->_frame_count;
-                        fps_msg.fps_total_bytes = cs->_fps_total_bytes;
-                        fps_msg.fps            = fps;
-                        orb_publish(ORB_ID(fps_stats), s_fps_pub, &fps_msg);
-                    }
+                if (cs->_fps_pub < 0) {
+                    cs->_fps_pub = orb_advertise(ORB_ID(fps_stats));
+                }
+                if (cs->_fps_pub >= 0) {
+                    struct fps_stats_s fps_msg = {};
+                    fps_msg.timestamp      = esp_timer_get_time();
+                    fps_msg.frame_count    = cs->_frame_count;
+                    fps_msg.fps_total_bytes = cs->_fps_total_bytes;
+                    fps_msg.fps            = fps;
+                    orb_publish(ORB_ID(fps_stats), cs->_fps_pub, &fps_msg);
+                }
                     ESP_LOGI(TAG, "FPS: %.1f, bytes/s: %.0f", fps,
                              (float)cs->_fps_total_bytes / elapsed);
                     /* Reset FPS window */
