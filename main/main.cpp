@@ -27,6 +27,7 @@
 #include "phone_app_settings.hpp"
 #include "phone_app_camera_stream.hpp"
 #include "web_config_server.hpp"
+#include "git_info.h"
 #include "example_config.h"
 #include "mdns.h"
 #include "lwip/apps/netbiosns.h"
@@ -438,6 +439,12 @@ static bool detect_lcd_via_i2c(void)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== ESP32-P4 Monitor Starting ===");
+    ESP_LOGI(TAG, "Git Info: %s", GIT_LOG1);
+    ESP_LOGI(TAG, "  branch:  %s", GIT_BRANCH);
+    ESP_LOGI(TAG, "  commit:  %s", GIT_COMMIT);
+    ESP_LOGI(TAG, "  author:  %s", GIT_AUTHOR);
+    ESP_LOGI(TAG, "  date:    %s", GIT_DATE);
+    ESP_LOGI(TAG, "  message: %s", GIT_MSG);
 
     /* 0a. mDNS mutex init — must happen before any task uses shared_mdns_ensure/release */
     shared_mdns_mutex_init();
