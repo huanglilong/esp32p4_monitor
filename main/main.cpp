@@ -231,9 +231,12 @@ static void monitor_init_display(lv_display_t **disp)
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
             .buff_dma = false,
 #else
+            /* ESP32-P4 PSRAM is DMA-capable (SOC_PSRAM_DMA_CAPABLE=y).
+             * Allocating draw buffers from PSRAM frees ~72KB internal SRAM
+             * for JPEG encoder DMA descriptors (rxlink/txlink). */
             .buff_dma = true,
 #endif
-            .buff_spiram = false,
+            .buff_spiram = true,
             .sw_rotate = false,
         }
     };

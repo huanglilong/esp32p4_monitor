@@ -68,6 +68,11 @@ public:
     uint32_t               _jpeg_out_size;
     uint8_t                _jpeg_quality;
     SemaphoreHandle_t      _encoder_sem;
+    std::atomic<bool>      _encoder_initialized;  /* atomic: stream_handler (httpd task) ↔ _deinit_video (caller task) */
+
+    /* Lazy JPEG encoder init — called from stream_handler (C callback, needs public access) */
+    bool _init_encoder(void);
+    void _deinit_encoder(void);
 
     /* FPS tracking — cross-core: HTTP handler (core 0) writes, LVGL timer (core 1) reads */
     volatile uint32_t      _frame_count;       /* Total frames sent */

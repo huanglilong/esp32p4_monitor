@@ -146,6 +146,7 @@
 | S99 | **ULog 目录级清理** | 清理策略改为按子目录 (日期/session) 整体删除，替代 flat 文件扫描；自动迁移旧格式 `.ulog` flat 文件 | ✅ |
 | S100 | **SNTP 时间同步** | WiFi 获取 IP 后自动启动 SNTP (`pool.ntp.org`)，为 ULog 日期命名提供 wall-clock 时间 | ✅ |
 | S101 | **ULog RTC 时间戳** | 文件头和 `boot_time_utc_us` 在 SNTP 同步后使用真实 UTC 时间，无 SNTP 时回退近似值 | ✅ |
+| S102 | **JPEG 编码器 OOM 修复 (LCD-4B)** | HW JPEG 编码器 DMA 描述符需内部 SRAM，LCD-4B 因 LVGL 绘制缓冲占用 ~72KB 内部 SRAM 导致分配失败。修复: ① LVGL 绘制缓冲改用 PSRAM (`buff_spiram=true`, P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 3 次重试+退避) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` | ✅ |
 
 ---
 

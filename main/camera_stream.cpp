@@ -8,6 +8,7 @@
 #include "esp_check.h"
 #include "esp_timer.h"
 #include "esp_cache.h"
+#include "esp_heap_caps.h"
 #include "esp_video_init.h"
 #include "esp_video_ioctl.h"
 #include "example_video_common.h"
@@ -121,6 +122,7 @@ CameraStream::CameraStream() :
     _jpeg_out_buf(nullptr), _jpeg_out_size(0),
     _jpeg_quality(30),  // Lower quality = faster encode + less WiFi/SDIO traffic
     _encoder_sem(nullptr),
+    _encoder_initialized(false),
     _frame_count(0), _fps_frame_count(0),
     _fps_window_start{0, 0},
     _fps_total_bytes(0),
@@ -316,32 +318,12 @@ bool CameraStream::_init_video(void)
                  (char)((_cam_pixel_format >> 24) & 0xFF),
                  _cam_pixel_format);
 
-        /* Step 7: Init JPEG encoder for non-JPEG formats */
-        if (_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
-            example_encoder_config_t enc_cfg = {
-                .width = _cam_width,
-                .height = _cam_height,
-                .pixel_format = _cam_pixel_format,
-                .quality = _jpeg_quality,
-            };
-            ESP_LOGI(TAG, "Encoder init: %" PRIu32 "x%" PRIu32 " quality=%d",
-                     _cam_width, _cam_height, _jpeg_quality);
-            if (example_encoder_init(&enc_cfg, &_encoder_handle) != ESP_OK) {
-                ESP_LOGE(TAG, "Encoder init failed for format 0x%08" PRIx32, _cam_pixel_format);
-                break;
-            }
-            if (example_encoder_alloc_output_buffer(_encoder_handle, &_jpeg_out_buf, &_jpeg_out_size) != ESP_OK) {
-                ESP_LOGE(TAG, "Encoder output buffer alloc failed");
-                break;
-            }
-            ESP_LOGI(TAG, "Encoder output buffer: %" PRIu32 " bytes", _jpeg_out_size);
-            _encoder_sem = xSemaphoreCreateBinary();
-            if (!_encoder_sem) {
-                ESP_LOGE(TAG, "Encoder semaphore create failed");
-                break;
-            }
-            xSemaphoreGive(_encoder_sem);
-        }
+        /* Step 7: Skip JPEG encoder init here — it's done lazily on first
+         * MJPEG client connection via _init_encoder().  The encoder's DMA
+         * descriptors require MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL (internal SRAM),
+         * which may be scarce on LCD-4B when LVGL draw buffers are also in
+         * internal RAM.  Deferring to first client gives the system time to
+         * settle and potentially free transient allocations. */
 
         /* Step 8: VIDIOC_STREAMON */
         ESP_LOGI(TAG, "V4L2 STREAMON...");
@@ -354,9 +336,6 @@ bool CameraStream::_init_video(void)
     } while (0);
 
     if (!ok) {
-        if (_encoder_sem) { vSemaphoreDelete(_encoder_sem); _encoder_sem = nullptr; }
-        if (_jpeg_out_buf) { example_encoder_free_output_buffer(_encoder_handle, _jpeg_out_buf); _jpeg_out_buf = nullptr; }
-        if (_encoder_handle) { example_encoder_deinit(_encoder_handle); _encoder_handle = nullptr; }
         for (uint32_t i = 0; i < _v4l2_buf_count; i++) {
             if (_v4l2_bufs[i]) { munmap(_v4l2_bufs[i], _v4l2_buf_len[i]); _v4l2_bufs[i] = nullptr; }
         }
@@ -390,6 +369,108 @@ void CameraStream::_deinit_video(void)
         _video_fd = -1;
     }
 
+    _deinit_encoder();
+
+    /* Release CSI/ISP pipeline (esp_video). This unregisters the VFS device
+     * so that the next Camera App or Camera Stream start can re-register it. */
+    if (example_video_deinit() != ESP_OK) {
+        ESP_LOGW(TAG, "example_video_deinit failed (may already be deinited)");
+    }
+}
+
+/*============================================================================
+ * Lazy JPEG Encoder Init/Deinit
+ *
+ * The JPEG hardware encoder's DMA descriptors (rxlink, txlink) require
+ * MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL — they MUST be in internal SRAM.
+ * On LCD-4B, internal SRAM is scarce because LVGL draw buffers also live
+ * there.  By deferring encoder creation to the first MJPEG client, we:
+ *   1. Give the system time to settle (transient allocations freed)
+ *   2. Allow PSRAM-based draw buffers to be used (if SPIRAM_TRY_ALLOCATE_DMA_BUFFER)
+ *   3. Retry with backoff if internal memory is temporarily fragmented
+ *============================================================================*/
+bool CameraStream::_init_encoder(void)
+{
+    /* Atomic compare-and-set: if already initialized, return immediately.
+     * This prevents concurrent callers from double-initializing (e.g.,
+     * if httpd ever becomes multi-threaded). */
+    bool expected = false;
+    if (_encoder_initialized.load(std::memory_order_acquire)) return true;
+    if (!_encoder_initialized.compare_exchange_strong(expected, true,
+            std::memory_order_acq_rel, std::memory_order_acquire)) {
+        return true;  // another caller won the race
+    }
+
+    /* JPEG format from sensor needs no software encoder */
+    if (_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+        return true;
+    }
+
+    example_encoder_config_t enc_cfg = {
+        .width = _cam_width,
+        .height = _cam_height,
+        .pixel_format = _cam_pixel_format,
+        .quality = _jpeg_quality,
+    };
+
+    /* Retry up to 3 times with increasing delay.
+     * Internal SRAM may be temporarily fragmented; a short delay lets
+     * other tasks free buffers (e.g., LVGL flush completes). */
+    const int MAX_RETRIES = 3;
+    for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        ESP_LOGI(TAG, "Encoder init attempt %d/%d: %" PRIu32 "x%" PRIu32 " quality=%d",
+                 attempt, MAX_RETRIES, _cam_width, _cam_height, _jpeg_quality);
+
+        if (example_encoder_init(&enc_cfg, &_encoder_handle) == ESP_OK) {
+            break;  // success
+        }
+
+        ESP_LOGW(TAG, "JPEG encoder alloc failed (attempt %d/%d), internal SRAM may be low", attempt, MAX_RETRIES);
+
+        if (attempt < MAX_RETRIES) {
+            /* Log internal memory state for debugging */
+            ESP_LOGI(TAG, "Free internal: %zu bytes, free PSRAM: %zu bytes",
+                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+            vTaskDelay(pdMS_TO_TICKS(500 * attempt));  // increasing backoff
+        }
+    }
+
+    if (!_encoder_handle) {
+        ESP_LOGE(TAG, "Encoder init failed for format 0x%08" PRIx32 " after %d attempts",
+                 _cam_pixel_format, MAX_RETRIES);
+        _encoder_initialized.store(false, std::memory_order_release);
+        return false;
+    }
+
+    if (example_encoder_alloc_output_buffer(_encoder_handle, &_jpeg_out_buf, &_jpeg_out_size) != ESP_OK) {
+        ESP_LOGE(TAG, "Encoder output buffer alloc failed");
+        example_encoder_deinit(_encoder_handle);
+        _encoder_handle = nullptr;
+        _encoder_initialized.store(false, std::memory_order_release);
+        return false;
+    }
+    ESP_LOGI(TAG, "Encoder output buffer: %" PRIu32 " bytes", _jpeg_out_size);
+
+    _encoder_sem = xSemaphoreCreateBinary();
+    if (!_encoder_sem) {
+        ESP_LOGE(TAG, "Encoder semaphore create failed");
+        example_encoder_free_output_buffer(_encoder_handle, _jpeg_out_buf);
+        _jpeg_out_buf = nullptr;
+        example_encoder_deinit(_encoder_handle);
+        _encoder_handle = nullptr;
+        _encoder_initialized.store(false, std::memory_order_release);
+        return false;
+    }
+    xSemaphoreGive(_encoder_sem);
+
+    /* _encoder_initialized was already set to true by compare_exchange_strong at entry */
+    ESP_LOGI(TAG, "JPEG encoder initialized successfully");
+    return true;
+}
+
+void CameraStream::_deinit_encoder(void)
+{
     if (_encoder_handle) {
         if (_jpeg_out_buf) {
             example_encoder_free_output_buffer(_encoder_handle, _jpeg_out_buf);
@@ -404,11 +485,7 @@ void CameraStream::_deinit_video(void)
         _encoder_sem = nullptr;
     }
 
-    /* Release CSI/ISP pipeline (esp_video). This unregisters the VFS device
-     * so that the next Camera App or Camera Stream start can re-register it. */
-    if (example_video_deinit() != ESP_OK) {
-        ESP_LOGW(TAG, "example_video_deinit failed (may already be deinited)");
-    }
+    _encoder_initialized.store(false, std::memory_order_release);
 }
 
 /*============================================================================
@@ -592,6 +669,17 @@ static esp_err_t stream_handler(httpd_req_t *req)
     char part_buf[128];
     struct v4l2_buffer buf;
     struct timespec ts;
+
+    /* Lazy-init JPEG encoder on first MJPEG client connection.
+     * This defers the internal-SRAM-heavy DMA descriptor allocation
+     * until after V4L2 pipeline is stable and transient memory freed. */
+    if (!cs->_encoder_initialized.load(std::memory_order_acquire) && cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+        if (!cs->_init_encoder()) {
+            ESP_LOGE(TAG, "Cannot start MJPEG stream: JPEG encoder init failed");
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+    }
 
     httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
