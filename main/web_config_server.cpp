@@ -1107,9 +1107,16 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
 static esp_err_t h_rec_status(httpd_req_t *req) {
     char r[128];
     if (s_is_recording) {
-        uint32_t e = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms) / 1000);
-        snprintf(r,sizeof(r),"{\"recording\":1,\"seconds\":%lu,\"bytes\":%lu}",(unsigned long)e,(unsigned long)s_rec_bytes); }
-    else snprintf(r,sizeof(r),"{\"recording\":0}");
+        /* Take audio mutex to get consistent snapshot of recording state.
+         * s_rec_bytes is updated by the recording task and read here
+         * from the httpd task — technically a data race without sync. */
+        audio_lock();
+        uint32_t bytes = s_rec_bytes;
+        uint32_t start_ms = s_rec_start_ms;
+        audio_unlock();
+        uint32_t e = (uint32_t)((esp_timer_get_time() / 1000 - start_ms) / 1000);
+        snprintf(r,sizeof(r),"{\"recording\":1,\"seconds\":%lu,\"bytes\":%lu}",(unsigned long)e,(unsigned long)bytes);
+    } else snprintf(r,sizeof(r),"{\"recording\":0}");
     httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
