@@ -712,6 +712,14 @@ static esp_err_t stream_handler(httpd_req_t *req)
             continue;
         }
 
+        /* Bounds check: defensive guard against out-of-range buffer index */
+        if (buf.index >= cs->_v4l2_buf_count) {
+            ESP_LOGW(TAG, "V4L2 DQBUF returned invalid index %u (max %u), requeue", buf.index, cs->_v4l2_buf_count);
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         /* Invalidate CPU cache on V4L2 mmap buffer */
         esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
