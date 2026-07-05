@@ -341,17 +341,10 @@ bool PhoneAppMusic::close(void)
     }
     /* Destroy ASP handle BEFORE deinit_audio — ASP's output callback
      * references codec/I2S via PeripheralManager::codec_write().
-     * _stop() may have already destroyed it, so check for non-null. */
+     * _stop() may have already destroyed it, so check for non-null.
+     * destroy() internally waits for GMF task STOPPED state. */
     if (_asp_handle) {
         esp_audio_simple_player_stop(_asp_handle);
-        esp_asp_state_t state = ESP_ASP_STATE_NONE;
-        for (int i = 0; i < 10; i++) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            if (esp_audio_simple_player_get_state(_asp_handle, &state) == ESP_GMF_ERR_OK
-                && state == ESP_ASP_STATE_STOPPED) {
-                break;
-            }
-        }
         esp_audio_simple_player_destroy(_asp_handle);
         _asp_handle = nullptr;
     }
@@ -444,21 +437,10 @@ void PhoneAppMusic::_play(int index)
 
     /* Stop + destroy previous player for clean pipeline state (S31 fix).
      * Recreate fresh ASP handle each play to prevent GMF state residue crashes.
-     * Poll for STOPPED state with timeout — vTaskDelay alone doesn't guarantee
-     * GMF task has finished processing when stop() returns. */
+     * destroy() internally calls stop() and waits for GMF task STOPPED via
+     * xEventGroupWaitBits, so no need for external polling. */
     if (_asp_handle) {
         esp_audio_simple_player_stop(_asp_handle);
-        /* Wait for GMF task to reach STOPPED state (up to 2s).
-         * Without this, destroy() can free pipeline resources while the
-         * GMF task is still executing callbacks → crash. */
-        esp_asp_state_t state = ESP_ASP_STATE_NONE;
-        for (int i = 0; i < 20; i++) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            if (esp_audio_simple_player_get_state(_asp_handle, &state) == ESP_GMF_ERR_OK
-                && state == ESP_ASP_STATE_STOPPED) {
-                break;
-            }
-        }
         esp_audio_simple_player_destroy(_asp_handle);
         _asp_handle = nullptr;
     }
@@ -527,17 +509,6 @@ void PhoneAppMusic::_stop(void)
 {
     if (_asp_handle) {
         esp_audio_simple_player_stop(_asp_handle);
-        /* Wait for GMF task to reach STOPPED state (up to 1s).
-         * Without this, destroy() can free pipeline resources while the
-         * GMF task is still executing callbacks → crash. */
-        esp_asp_state_t state = ESP_ASP_STATE_NONE;
-        for (int i = 0; i < 10; i++) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            if (esp_audio_simple_player_get_state(_asp_handle, &state) == ESP_GMF_ERR_OK
-                && state == ESP_ASP_STATE_STOPPED) {
-                break;
-            }
-        }
         esp_audio_simple_player_destroy(_asp_handle);
         _asp_handle = nullptr;
         _is_playing = false;
