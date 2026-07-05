@@ -123,6 +123,7 @@ CameraStream::CameraStream() :
     _jpeg_quality(30),  // Lower quality = faster encode + less WiFi/SDIO traffic
     _encoder_sem(nullptr),
     _encoder_initialized(false),
+    _encoder_init_in_progress(false),
     _last_jpeg_mutex(nullptr),
     _last_jpeg_buf(nullptr), _last_jpeg_size(0), _last_jpeg_capacity(0),
     _frame_count(0), _fps_frame_count(0),
@@ -404,18 +405,26 @@ void CameraStream::_deinit_video(void)
  *============================================================================*/
 bool CameraStream::_init_encoder(void)
 {
-    /* Atomic compare-and-set: if already initialized, return immediately.
-     * This prevents concurrent callers from double-initializing (e.g.,
-     * if httpd ever becomes multi-threaded). */
-    bool expected = false;
+    /* Fast path: already fully initialized */
     if (_encoder_initialized.load(std::memory_order_acquire)) return true;
-    if (!_encoder_initialized.compare_exchange_strong(expected, true,
+
+    /* Claim init ownership via in-progress flag.
+     * Winner: proceeds to do the actual initialization.
+     * Loser: spins until init is complete, then returns the result. */
+    bool expected = false;
+    if (!_encoder_init_in_progress.compare_exchange_strong(expected, true,
             std::memory_order_acq_rel, std::memory_order_acquire)) {
-        return true;  // another caller won the race
+        /* Another thread owns initialization — wait for it to finish */
+        while (_encoder_init_in_progress.load(std::memory_order_acquire)) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        return _encoder_initialized.load(std::memory_order_acquire);
     }
 
     /* JPEG format from sensor needs no software encoder */
     if (_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+        _encoder_initialized.store(true, std::memory_order_release);
+        _encoder_init_in_progress.store(false, std::memory_order_release);
         return true;
     }
 
@@ -452,7 +461,7 @@ bool CameraStream::_init_encoder(void)
     if (!_encoder_handle) {
         ESP_LOGE(TAG, "Encoder init failed for format 0x%08" PRIx32 " after %d attempts",
                  _cam_pixel_format, MAX_RETRIES);
-        _encoder_initialized.store(false, std::memory_order_release);
+        _encoder_init_in_progress.store(false, std::memory_order_release);
         return false;
     }
 
@@ -460,7 +469,7 @@ bool CameraStream::_init_encoder(void)
         ESP_LOGE(TAG, "Encoder output buffer alloc failed");
         example_encoder_deinit(_encoder_handle);
         _encoder_handle = nullptr;
-        _encoder_initialized.store(false, std::memory_order_release);
+        _encoder_init_in_progress.store(false, std::memory_order_release);
         return false;
     }
     ESP_LOGI(TAG, "Encoder output buffer: %" PRIu32 " bytes", _jpeg_out_size);
@@ -472,12 +481,14 @@ bool CameraStream::_init_encoder(void)
         _jpeg_out_buf = nullptr;
         example_encoder_deinit(_encoder_handle);
         _encoder_handle = nullptr;
-        _encoder_initialized.store(false, std::memory_order_release);
+        _encoder_init_in_progress.store(false, std::memory_order_release);
         return false;
     }
     xSemaphoreGive(_encoder_sem);
 
-    /* _encoder_initialized was already set to true by compare_exchange_strong at entry */
+    /* All resources ready — mark initialized and release progress lock */
+    _encoder_initialized.store(true, std::memory_order_release);
+    _encoder_init_in_progress.store(false, std::memory_order_release);
     ESP_LOGI(TAG, "JPEG encoder initialized successfully");
     return true;
 }
@@ -498,7 +509,10 @@ void CameraStream::_deinit_encoder(void)
         _encoder_sem = nullptr;
     }
 
+    /* Reset both flags — init-in-progress must be cleared so next start()
+     * can re-enter _init_encoder() without seeing stale progress state. */
     _encoder_initialized.store(false, std::memory_order_release);
+    _encoder_init_in_progress.store(false, std::memory_order_release);
 }
 
 /*============================================================================
