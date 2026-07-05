@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 /*
  * SDCardDriver — manages SD card lifecycle via SDSPI.
  *
@@ -46,7 +48,7 @@ private:
 
     SemaphoreHandle_t           _init_mutex;
     sdmmc_card_t                *_card;
-    bool                        _initialized;
+    std::atomic<bool>           _initialized;
     bool                        _has_lcd;
     sd_pwr_ctrl_handle_t        _pwr_ctrl;
 };
