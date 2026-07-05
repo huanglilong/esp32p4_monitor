@@ -67,7 +67,7 @@ private:
 
     bool                    _has_lcd;
     int                     _refcount;
-    int                     _volume;
+    std::atomic<int>        _volume;
 
     esp_codec_dev_handle_t  _codec_handle;
     esp_codec_dev_handle_t  _codec_mic_handle;

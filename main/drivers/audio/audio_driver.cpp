@@ -314,7 +314,7 @@ void AudioDriver::init(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", _has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume);
+    ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", _has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume.load());
     _refcount = 1;
     xSemaphoreGive(_lifecycle_mutex);
 }
