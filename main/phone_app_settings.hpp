@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -85,7 +86,7 @@ private:
 
     /* State */
     ScreenIndex            _screen_index;
-    bool                   _is_ui_del;
+    std::atomic<bool>      _is_ui_del;
 
     /* NVS parameters — flat struct avoids std::map / std::string heap allocations.
      * Only 3 keys: wifi_en, volume, brightness — no need for a map. */
@@ -132,8 +133,8 @@ private:
     static uint32_t          _wifi_reconnect_count;  // consecutive reconnect attempts
     static esp_event_handler_instance_t _wifi_handler_inst;  // WIFI_EVENT handler instance
     static esp_event_handler_instance_t _ip_handler_inst;    // IP_EVENT handler instance
-    volatile bool            _wifi_scanning;
-    volatile bool            _wifi_connecting;     // Guard against multiple connect tasks
+    std::atomic<bool>       _wifi_scanning;
+    std::atomic<bool>       _wifi_connecting;     // Guard against multiple connect tasks
 
     static constexpr int   WIFI_SCAN_MAX = 20;
     static constexpr int   TASK_STACK_WIFI_SCAN = 6 * 1024;
