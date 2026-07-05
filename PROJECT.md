@@ -55,9 +55,9 @@ esp32p4_monitor/
 │   │   └── camera/
 │   │       ├── camera_driver.hpp   # CameraDriver — camera_state pub/sub + claim/release (owner-tracked)
 │   │       └── camera_driver.cpp
-│   ├── logger/                     # 文本日志模块 (NEW)
-│   │   ├── logger.hpp              # LOG_I/W/E 宏 + Logger API (level 过滤)
-│   │   └── logger.cpp              # Ring buffer + writer task → SD card text file
+│   ├── logger/                     # 文本日志模块
+│   │   ├── logger.hpp              # Logger API (level 过滤, esp_log_set_vprintf 拦截)
+│   │   └── logger.cpp              # Ring buffer + writer task → SD card text file, 文件轮转
 │   ├── web_config_server.hpp       # Web 配置服务器头文件
 │   ├── web_config_server.cpp       # Web 配置服务器 (HTTP :8080, WiFi/音量设置)
 │   ├── phone_app_camera.hpp        # Camera App 头文件
@@ -349,10 +349,10 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 
 | 项目 | 配置 |
 |------|------|
-| 传感器 | OV5647, I2C auto-detect, 格式 `MIPI_2lane_24Minput_RAW8_800x800_50fps` (**VTS 运行时降为 4920 → ~10fps**) |
+| 传感器 | OV5647, I2C auto-detect, 格式 `MIPI_2lane_24Minput_RAW8_800x800_50fps` (**VTS 运行时降为 9840 → ~5fps**) |
 | CSI | 2-lane, 200Mbps, RAW8 input |
 | ISP | RAW8→RGB565, 80MHz clock |
-| ISP DMA | **~6.4 MB/s** (800×800×1×~10fps, VTS=4920) |
+| ISP DMA | **~3.2 MB/s** (800×800×1×~5fps, VTS=9840) |
 | 帧缓冲 | PSRAM, `heap_caps_aligned_alloc(128, ...)`, 128字节对齐 (cache line) |
 | 显示 | LVGL `lv_canvas` + buffer 零拷贝, 30fps 定时器刷新 |
 | 传感器初始化 | `esp_cam_sensor` auto-detect → `set_format` → VTS I2C write → `ioctl(S_STREAM)` |
@@ -380,8 +380,10 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 
 **工作流程**:
 1. Camera 30fps 正常预览 (ISP DMA → PSRAM → LVGL canvas)
-2. detect task 每 600ms: 快照 RGB565 buffer → memcpy → COCODetect::run() → filter person
+2. detect task 每 600ms: 快照 RGB565 buffer → memcpy 到私有 `_detect_in_buf` → 释放 mutex → COCODetect::run() → filter person
 3. LVGL timer 检测到结果后: lv_canvas_init_layer → 画绿色矩形 + 置信度 % 标签 → lv_canvas_finish_layer
+
+**注意**: `_detect_in_buf` 是独立分配的私有缓冲区，检测任务在 mutex 内 memcpy 后立即释放 mutex，推理在无锁状态下进行，避免与 LVGL timer 帧更新冲突。
 
 **TODO/优化**:
 - 置信度标签带绿色背景框提升可读性
@@ -501,6 +503,8 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - 启动条件: Toggle ON + WiFi 已连接 + Settings App 运行中
 - 自动停止: Toggle OFF / WiFi 断开 / 退出 Settings App
 - **不持久化**: 重启后默认 OFF
+- **JPEG 快照**: `/api/capture_image` 返回最新帧 (stream handler 每帧缓存)
+- **内联人体检测**: 每 3 帧运行 COCODetect, 检测框绘制在 JPEG 帧上
 
 **NVS 命名空间**: `"settings"`
 
@@ -519,11 +523,11 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 
 | 项目 | 配置 |
 |------|------|
-| 传感器 | OV5647, VTS=4920 (~10fps) |
+| 传感器 | OV5647, VTS=9840 (~5fps) |
 | 编码 | **HW JPEG** (`CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER=y`, esp_driver_jpeg), CPU 几乎无负载 |
 | 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~14KB/帧) |
-| 帧率实测 | **6.9fps** @ 10fps sensor, CPU 7% |
-| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`), 端口 81: MJPEG `/stream` |
+| 帧率实测 | **~4fps** @ 5fps sensor, CPU 7% |
+| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/capture_image`), 端口 81: MJPEG `/stream` |
 | Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块) |
 
 **调试过程中发现并修复的关键问题**:
@@ -532,6 +536,9 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **JPEG 缓存对齐**: HW 编码器输出缓冲区需 `esp_cache_msync` 且大小向上取整到 128B 缓存行边界。
 - **客户端断连处理**: `httpd_resp_send_chunk` 失败时 `break` 优雅退出, 避免 `httpd_sock_err` 刷屏。
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
+- **JPEG 编码器初始化竞态**: 两个并发客户端可同时触发延迟初始化。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护。
+- **JPEG 快照**: stream handler 每帧保存最新 JPEG 到 `_last_jpeg_buf` (mutex 保护), `/api/capture_image` 端点返回最新帧的 `image/jpeg`。
+- **内联人体检测**: CameraStream 在 stream_handler 中每 3 帧运行一次 COCODetect 推理，检测框直接绘制在 JPEG 帧上。模型在后台 task 加载 (`_model_load_task`)，加载完成后 `_model_ready` atomic flag 置位。
 
 ### 15. esp_hosted (WiFi over SDIO) 稳定性
 
@@ -548,7 +555,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - `SDIO_OPTIMIZATION_RX_STREAMING_MODE=y` + `TX_Q_SIZE=20` + `RX_Q_SIZE=20`
 - `MEMPOOL_PREFER_SPIRAM=y` (必需: SRAM 被 LVGL 缓冲区消耗)
 - `SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` (WiFi/LWIP 缓冲移至 PSRAM)
-- 帧率降至 ~10fps (VTS=4920) 降低 DMA 压力: ISP 带宽 ~6.4 MB/s
+- 帧率降至 ~5fps (VTS=9840) 降低 DMA 压力: ISP 带宽 ~3.2 MB/s
 
 > **已知风险**: 高带宽入站 TCP (>200KB/s) 在 v2.12.7 仍可能触发死锁 (#197)。Camera Stream 为出站 (MJPEG ~98KB/s @ 7fps), 验证稳定。
 
@@ -598,6 +605,11 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - `GET /api/audio/list` — 列出 `.mp3` 文件
 - `GET /api/audio/play?file=xxx.mp3` — 播放文件
 - `GET /api/audio/stop` — 停止播放
+
+**ULog API 端点** (3 个):
+- `GET /api/ulog/status` — 日志状态 (running/filepath/bytes_written)
+- `POST /api/ulog/start` — 开始 ULog 录制
+- `POST /api/ulog/stop` — 停止 ULog 录制
 
 ### 19. Web File Manager (web_config_server 文件管理)
 
@@ -731,6 +743,11 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - 移除 `__audio_stop_all()` 函数和 `camera_state` uORB 订阅
   - Web UI: 移除 `audio_card` 根据 `cam_running` 隐藏的 JS 逻辑, Camera Stream 和 Audio 页面可同时存在
   - 显示屏 Camera Stream App 开关状态与 `CameraStream::isRunning()` 同步
+- [x] **CameraStream 内联人体检测** (v2.2):
+  - CameraStream 在 MJPEG stream_handler 中每 3 帧运行 COCODetect 推理
+  - 检测框直接绘制在 JPEG 帧上 (RGB565 buffer → draw box → JPEG encode)
+  - 模型在后台 task 加载，不阻塞 stream 启动
+  - 与 PhoneAppCamera 的检测共享相同的 COCODetect 模型和阈值
 - [x] **Web Audio 录制↔播放互斥补全** (v2.1):
   - **问题**: 之前的录制↔播放互斥仅在 PhoneAppAudio → PhoneAppMusic 方向生效, Web 服务器的录制和播放相互不知情
   - **修复**:
@@ -755,3 +772,16 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - **AudioDriver::deinit() 竞态条件** (High): deinit() 释放 _lifecycle_mutex 10ms 等待 in-flight 操作退出期间, 并发 init() 可创建新 I2S/codec 资源变为孤儿泄漏。修复: 移除 _lifecycle_mutex 释放窗口, 始终持有锁; _codec_mutex 置 null 后 in-flight op 会跳过
   - **NVS cache 数据竞争** (Medium): s_nvs_cache_count++ 在 HTTP/audio/WiFi 多 task 间无同步访问, Xtensa 双核上非原子 read-modify-write 是 UB。修复: 新增 s_nvs_cache_mutex (FreeRTOS mutex) 保护 nvs_cache_find_locked() 和 cache 读写
   - **Logger ring buffer 活锁** (Medium): 缓冲区满时 producer retry loop 检测到空间但不发 data_sem, writer task 等 500ms 超时才唤醒。修复: retry loop 退出后 xSemaphoreGive(data_sem) 唤醒 writer
+- [x] **线程安全审查修复** (v2.3):
+  - **JPEG encoder init race** (S123): `_encoder_init_in_progress` atomic flag 防止双客户端并发初始化
+  - **uORB orb_init() 幂等竞态** (S124): 移除幂等检查改为 assert, 必须在 app_main 任务创建前调用一次
+  - **uORB subscriber ABA 保护** (S125): generation counter 防止 slot 复用后消息投递到错误订阅者
+  - **Settings bool atomic** (S126): `_wifi_scanning`/`_wifi_connecting`/`_is_ui_del` → `std::atomic` 跨 task 安全
+  - **AudioDriver _vol_pub atomic** (S127): `std::atomic<orb_advert_t>` + `compare_exchange_strong()` 单次广播
+  - **CameraStream _frame_count/_fps_total_bytes** (S128): `volatile` → `std::atomic` 正确跨核内存序
+  - **SDCardDriver _initialized atomic** (S129): `available()` 无锁读取线程安全
+  - **AudioDriver _volume atomic** (S130): `volume()` 无锁读取线程安全
+  - **CameraDriver mutable _sub** (S131): 移除 `const_cast`, 保持 const 正确性
+  - **CameraDriver owner-tracked claim/release** (S127): `claim(caller_id)/release(caller_id)` 支持 owner tracking, 同 caller_id 可重入, 不同 caller_id 互斥
+  - **Music 播放失败清理** (S128): `_play()` 失败时销毁半初始化 ASP handle + UI 复位
+  - **Brookesia 初始化失败清理** (S129): 失败时删除临时 `ESP_Brookesia_Phone` 对象

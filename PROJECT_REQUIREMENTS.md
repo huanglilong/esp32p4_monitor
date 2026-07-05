@@ -130,6 +130,8 @@
 | S85 | **Flutter 设备可达性状态** | 设备卡片显示状态徽章：Connected(绿) / Reachable(蓝) / Offline(橙) / History(灰)，TCP 端口 80/8080 探测 | ✅ |
 | R18 | **Web File Manager** | web_config_server 新增 SD 卡文件管理器：递归浏览目录、Download 文件到浏览器、Delete 文件/空目录；与 Audio Recorder 互斥（模式切换），路径穿越防护 | ✅ |
 | R19 | **Flutter File Manager** | Flutter App Settings 页新增文件管理：目录浏览/导航、下载、删除，含确认弹窗 | ✅ |
+| R20 | **CameraStream JPEG 快照** | `/api/capture_image` 端点返回最新 JPEG 帧 (stream handler 每帧缓存到 `_last_jpeg_buf`, mutex 保护) | ✅ |
+| R21 | **CameraStream 内联人体检测** | MJPEG stream_handler 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
 | S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
 | S87 | **AudioDriver deinit mutex 删除竞态** | `deinit()` 先置空 codec handles + yield 让 in-flight 操作退出，再安全删除 `_codec_mutex`；同时重置 `_vol_pub` 防止重启用 stale handle | ✅ |
 | S88 | **AudioDriver set_volume stale publish** | codec mutex 超时时跳过 uORB publish，避免发布未实际应用的音量值 | ✅ |
@@ -174,6 +176,25 @@
 | S127 | **CameraDriver owner-tracked claim/release** | `claim()` 不区分重入（同模块）和争用（不同模块），CameraStream 运行时 Camera App `claim()` 返回 true → V4L2 操作冲突 → WDT 崩溃。修复: `claim(caller_id)/release(caller_id)` 支持 owner tracking，同 caller_id 可重入，不同 caller_id 互斥。PhoneAppCamera close() 中 `example_video_deinit()` 仅在 `_video_initialized` 时调用 | ✅ |
 | S128 | **Music 播放失败清理** | `PhoneAppMusic::_play()` 在 `esp_audio_simple_player_run()` 失败时销毁半初始化的 ASP handle，并把播放状态/UI 复位，避免 GMF handle 泄漏和按钮状态残留 | ✅ |
 | S129 | **Brookesia 初始化失败清理** | `monitor_init_brookesia()` 在任一步骤失败时删除临时 `ESP_Brookesia_Phone` 对象，避免部分安装成功的 App 在失败退出路径中泄漏 | ✅ |
+| S130 | **SDCardDriver _initialized atomic** | `_initialized` 从 `bool` 改为 `std::atomic<bool>`，`available()` 无锁读取线程安全 | ✅ |
+| S131 | **AudioDriver _volume atomic** | `_volume` 从 `std::atomic<int>` 隐式加载改为显式 `.load(std::memory_order_relaxed)`，`volume()` 无锁读取线程安全 | ✅ |
+| S132 | **CameraDriver mutable _sub** | 移除 `const_cast`，`_sub` 改为 `mutable` 成员，保持 `available()` const 正确性 | ✅ |
+| S133 | **JPEG encoder init race** | 两个并发 MJPEG 客户端可同时触发延迟初始化导致 double-init。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护 | ✅ |
+| S134 | **uORB orb_init() 幂等竞态** | `orb_init()` 的 `if (s_mutex != NULL) return` 检查本身不是原子的。修复: 移除幂等检查改为 `assert(s_mutex == NULL)`，必须在 app_main 任务创建前调用一次 | ✅ |
+| S135 | **uORB subscriber ABA 保护** | 订阅者 slot 复用后可能收到错误 topic 的消息。修复: generation counter 防止消息投递到错误订阅者 | ✅ |
+| S136 | **Settings bool atomic migration** | `_wifi_scanning`/`_wifi_connecting`/`_is_ui_del` 从 `volatile bool` 改为 `std::atomic<bool>`，跨 task 安全 | ✅ |
+| S137 | **AudioDriver _vol_pub atomic** | `_vol_pub` 从普通 `orb_advert_t` 改为 `std::atomic<orb_advert_t>` + `compare_exchange_strong()`，防止双重 `orb_advertise()` | ✅ |
+| S138 | **CameraStream FPS fields atomic** | `_frame_count`/`_fps_frame_count`/`_fps_total_bytes` 从 `volatile` 改为 `std::atomic<uint32_t>`，正确跨核内存序 | ✅ |
+| S139 | **AudioDriver deinit 竞态** | deinit() 释放 `_lifecycle_mutex` 10ms 等待 in-flight 操作退出期间，并发 init() 可创建孤儿资源。修复: 始终持有锁，`_codec_mutex` 置 null 后 in-flight op 跳过 | ✅ |
+| S140 | **NVS cache 数据竞争** | `s_nvs_cache_count++` 在多 task 间无同步访问。修复: 新增 `s_nvs_cache_mutex` (FreeRTOS mutex) | ✅ |
+| S141 | **Logger ring buffer 活锁** | 缓冲区满时 producer retry loop 检测到空间但不发 `data_sem`。修复: retry loop 退出后 `xSemaphoreGive(data_sem)` 唤醒 writer | ✅ |
+| S142 | **V4L2 triple buffer** | CameraStream V4L2 使用 3 个 buffer (原 2 个)，减少 DQBUF 队列饥饿风险 | ✅ |
+| S143 | **ULog storage path** | `.ulg` 文件存储路径从 `/sdcard/log` 改为 `/sdcard/data` | ✅ |
+| S144 | **ULog session counter reset** | session counter 超过 60000 时重置，防止 NVS uint16 溢出 | ✅ |
+| S145 | **ULog refactor: hardware-independent** | `ulog_writer` 移除硬件依赖，通过 `ulog_init_config_t` 从应用层接收配置（session_counter/has_wall_clock/sys_name 等），组件可移植 | ✅ |
+| S146 | **nvs_set_i32 rename** | 静态函数 `nvs_set_i32` 重命名为 `nvs_write_i32`，避免与 ESP-IDF API 名称冲突 (shadow warning) | ✅ |
+| S147 | **MJPEG stream + detection fix** | 检测帧绘制时 MJPEG 流暂停 + FPS 统计未发布。修复: 检测和流处理顺序正确化 | ✅ |
+| S148 | **Camera info JSON parsing** | Camera Stream Web UI JSON 解析错误修复 | ✅ |
 
 ---
 
@@ -225,7 +246,7 @@
 | L1 | **esp-hosted v2.12.7 锁定** | v2.12.8+ 在 Waveshare 硬件上验证更快死锁 (#197) |
 | L2 | **无 SoftAP 配网** | SDIO 缓冲区溢出导致 C6 崩溃，首次启动需预置 WiFi 凭据 |
 | L3 | **Camera 检测帧率 ~1.8fps** | YOLO11n NPU 推理 ~560ms/帧 |
-| L4 | **Camera Stream 帧率 ~6.9fps** | 受限于 sensor VTS=4920 (~10fps) + HW JPEG 编码 |
+| L4 | **Camera Stream 帧率 ~4fps** | 受限于 sensor VTS=9840 (~5fps) + HW JPEG 编码 + 内联检测 |
 | L5 | **720×720 无预设样式表** | ESP-Brookesia 默认回退方案 |
 | L6 | **PPA client 注册未使用** | 307KB PSRAM 占用，可优化 |
 | L7 | **esp-dl mbedtls/sha256.h 兼容 shim** | ESP-IDF v6.x (mbedtls 4.x) 将 `sha256.h` 移至 `mbedtls/private/`，`managed_components/espressif__esp-dl` 未更新。当前方案: `main/compat/mbedtls/sha256.h` 转发头 + CMake include path。下次升级 esp-dl 后应移除 |
@@ -234,10 +255,13 @@
 
 | # | 严重度 | 问题 | 原因 |
 |---|--------|------|------|
-| K1 | 🟢 低 | Camera 帧缓冲跨核并发 (timer core1 / detect core0) 画面撕裂 | 非关键，影响单帧 |
+| K1 | ✅ 已修复 | **Camera 帧缓冲跨核并发** | 分配私有 `_detect_in_buf`, mutex 内 memcpy 后释放再推理 (S110) |
 | K2 | 🟢 低 | Audio 无用的 PSRAM 分配 (1920B) | 开销极小 |
 | K3 | 🟢 低 | Music 部分低优先级边界情况 | 见 project_design.md §4.10 |
 | K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已生效** | 所有 6 个端点均已加 `__cam_running()` 检查 (2026-07-02) |
+| K5 | 🟢 低 | CameraStream stream_handler 代码重复 | 检测和流处理逻辑混合，可提取为独立函数 |
+| K6 | 🟢 低 | Logger 重入风险 | esp_log_set_vprintf 回调中调用 ESP_LOG 可能递归 |
+| K7 | 🟢 低 | Web `s_audio_running` 跨核竞态 | HTTP handler 和 audio task 并发访问，非原子 bool |
 
 ---
 
@@ -276,7 +300,7 @@
 | Camera | 📷 | OV5647 预览 + 人体检测 | LCD-4B (有屏幕) |
 | Audio | 🎤 | 双 Mic 电平 + MP3 录音 | LCD-4B + Audio codec |
 | Music | 🎵 | MP3/WAV 播放 | LCD-4B + Audio codec |
-| Camera Stream | 🌐 | MJPEG WiFi 推流 | LCD-4B + WiFi |
+| Camera Stream | 🌐 | MJPEG WiFi 推流 + 人体检测 | LCD-4B + WiFi |
 | Settings | ⚙️ | 音量/亮度 + WiFi | LCD-4B |
 | Squareline | 🎨 | 内置示例 | LCD-4B |
 
@@ -285,8 +309,13 @@
 | 功能 | 访问方式 | 适用板子 |
 |------|----------|----------|
 | Web 配置 (:8080) | 浏览器 | LCD-4B + WIFI6 |
-| Web 音频录制 (:8080) | 浏览器 Audio Recorder card | WIFI6 (Camera Stream OFF 时可用) |
-| Web 音频播放 (:8080) | 浏览器 Audio Recorder card | WIFI6 (Camera Stream OFF 时可用) |
+| Web 音频录制 (:8080) | 浏览器 Audio Recorder card | LCD-4B + WIFI6 |
+| Web 音频播放 (:8080) | 浏览器 Audio Recorder card | LCD-4B + WIFI6 |
+| Web 文件管理 (:8080) | 浏览器 Files card | LCD-4B + WIFI6 |
+| Web ULog 控制 (:8080) | 浏览器 ULog card | LCD-4B + WIFI6 |
+| JPEG 快照 (:80) | `/api/capture_image` | Camera Stream 运行时 |
+
+> **注意**: Camera Stream 和 Audio 使用独立硬件 (MIPI CSI vs I2S), 可同时运行。
 
 ---
 
@@ -304,6 +333,10 @@
 | 2026-07-03 | +S49 Driver 模块拆分: PeripheralManager→thin facade + AudioDriver + SDCardDriver + CameraDriver (claim/release API) |
 | 2026-07-03 | +S44~S48 Bug 修复 (gettimeofday overflow, Music _stop ASP 泄漏, SD LDO 检查, web task 干净退出) +PeripheralManager facade 模块化重构 (消除 extern 全局变量) |
 | 2026-07-03 | +S42 uORB 消息总线（FreeRTOS Queue 实现） +S43 .msg 自动生成 pipeline +P11 IPC 迁移计划 |
+| 2026-07-06 | +R20 CameraStream JPEG 快照 (`/api/capture_image`), +R21 CameraStream 内联人体检测 (每3帧 COCODetect, 检测框绘制在 JPEG 帧上) |
+| 2026-07-06 | +S130~S148 线程安全审查修复: SDCardDriver/AudioDriver atomic (S130-S131), CameraDriver mutable (S132), JPEG encoder init race (S133), uORB orb_init/ABA (S134-S135), Settings bool atomic (S136), AudioDriver _vol_pub atomic (S137), CameraStream FPS atomic (S138), AudioDriver deinit 竞态 (S139), NVS cache mutex (S140), Logger ring buffer 活锁 (S141), V4L2 triple buffer (S142), ULog storage path/session/refactor (S143-S145), nvs_write_i32 rename (S146), MJPEG+detection fix (S147), Camera info JSON (S148) |
+| 2026-07-06 | +K1 已修复 (Camera 帧缓冲跨核并发 → _detect_in_buf 私有缓冲), +K5~K7 已知低优先级问题 |
+| 2026-07-06 | VTS 勘误: 4920(~10fps)→9840(~5fps), Camera Stream 帧率 ~6.9fps→~4fps |
 | 2026-07-06 | +S123 JPEG encoder init race fix: two-phase init with _encoder_init_in_progress flag prevents null handle dereference |
 | 2026-07-06 | +S124 uORB orb_init(): eager mutex creation at boot eliminates dual-create race in lock() |
 | 2026-07-06 | +S125 uORB subscriber ABA protection: generation counter prevents message delivery to wrong subscriber after slot reuse |

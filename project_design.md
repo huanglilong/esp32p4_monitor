@@ -24,13 +24,27 @@
 
 ```
 app_main()
-├── NVS Flash Init
-├── Boot WiFi Auto-Connect (NVS SSID/password → 后台连接)
-├── MIPI DSI Display → ST7703 + GT911 → taskLVGL 创建
-├── ESP-Brookesia Phone UI (6 个 App 安装)
-└── Idle Loop (60s)
+├── 0a. mDNS mutex init (shared_mdns_mutex_init)
+├── 0. NVS Flash Init + 亮度加载
+├── 1. MIPI DSI Display → ST7703 + GT911 → taskLVGL 创建
+├── 2. SD 卡挂载 (boot时挂载, 永不下电, WiFi之前)
+├── 3. WiFi 自动连接 (SD之后)
+├── 4. ESP-Brookesia Phone UI (6 个 App 安装)
+├── 5. Web Config Server (HTTP :8080)
+├── 6. ULog Logger (仅当 SD 卡成功挂载时初始化)
+└── 7. vTaskDelete(NULL) — 回收 app_main 任务栈
 ```
-SD 卡和音频 I2S 不在 app_main() 中初始化，由 Audio/Music App 按需初始化/释放 (引用计数)。
+SD 卡在 `app_main()` 中挂载后**永不卸载**。音频 I2S 由 Audio/Music App 按需初始化/释放 (引用计数)。
+
+**Driver 架构**:
+```
+App 层 (Audio/Music/Camera/Settings/web_config)
+         ↓ 调用 (API 不变)
+PeripheralManager (thin facade)
+  ├── AudioDriver::instance()     — I2S + codec 生命周期 + volume uORB
+  ├── SDCardDriver::instance()    — SD mount/unmount + LDO power-cycle
+  └── CameraDriver::instance()    — camera_state pub/sub + claim/release (owner-tracked)
+```
 
 ### 1.3 组件依赖
 
@@ -49,6 +63,8 @@ SD 卡和音频 I2S 不在 app_main() 中初始化，由 Audio/Music App 按需�
 | `espressif/coco_detect` | 0.4 | COCO 检测模型 (YOLO11n) |
 | `espressif/esp_wifi_remote` | * | P4 远程 WiFi (通过 C6 SDIO) |
 | `shine_encoder` | 本地 | 定点 MP3 编码器 |
+| `uorb` | 本地 1.0.0 | uORB for FreeRTOS (pub/sub 消息总线) |
+| `ulog` | 本地 1.0.0 | ULog 日志写入 (SD 卡, PX4 双模式命名) |
 
 ### 1.4 App 列表与职责
 
@@ -249,7 +265,7 @@ ES8311 Codec (I2S TX, 48kHz 16bit Stereo)
 **MJPEG 推流管道**:
 ```
 OV5647 → MIPI CSI → V4L2 (esp_video) → HW JPEG Encoder (esp_driver_jpeg)
-    ↓ 800x800 RGBP @ ~10fps (VTS=4920)
+    ↓ 800x800 RGBP @ ~5fps (VTS=9840)
 MJPEG Stream (port 81) + Web UI (port 80)
     ↓ <img> + AJAX stats (分辨率/帧率/帧数/画质)
 Browser / Flutter App
@@ -830,9 +846,10 @@ esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_C
 
 | # | 严重度 | 文件 | 问题 | 修复 |
 |---|--------|------|------|------|
-| 1 | 🔴 | `web_config_server.cpp:770,785,796,859` | **K4/R17 互斥不全**: S33 声称"6 个端点均加 `__cam_running()`"，实际仅 2/6。`h_rec_stop`、`h_rec_status`、`h_list`、`h_stop` 无保护 | 4 个端点均加 `__cam_running()` guard |
-| 2 | 🔴 | `camera_stream.hpp:79` | `_detector` 指针无 volatile: `_model_load_task_fn` (core 0) 写入，`stream_handler` (HTTP handler) 读取，编译器可缓存旧 null 值 | 改为 `COCODetect * volatile`，替换 `_frame_count++` 为显式赋值 |
+| 1 | 🔴→✅ | `web_config_server.cpp:770,785,796,859` | **K4/R17 互斥不全**: S33 声称"6 个端点均加 `__cam_running()`"，实际仅 2/6。`h_rec_stop`、`h_rec_status`、`h_list`、`h_stop` 无保护 | ✅ 已修复: Camera Stream 和 Audio 不再互斥 (硬件独立), 移除 `__cam_running()` |
+| 2 | 🔴→✅ | `camera_stream.hpp:79` | **K4/R17 互斥不全**: S33 声称"6 个端点均加 `__cam_running()`"，实际仅 2/6。`h_rec_stop`、`h_rec_status`、`h_list`、`h_stop` 无保护 | ✅ 已修复: Camera Stream 和 Audio 不再互斥 (硬件独立), 移除 `__cam_running()` |
+| 3 | 🔴→✅ | `camera_stream.hpp:79` | `_detector` 指针无 volatile: `_model_load_task_fn` (core 0) 写入，`stream_handler` (HTTP handler) 读取，编译器可缓存旧 null 值 | ✅ 已修复: 改为 `std::atomic<COCODetect*>` (S80) |
 | 3 | 🟡 | `main/main.cpp:205` | **SD LDO re-acquire 未检查**: 第二次 `esp_ldo_acquire_channel` 返回值未检查，失败时 `s_sdcard_ldo_chan` 为脏句柄 | 加返回值检查，失败时 clear handle + return false |
 | 4 | 🟡 | `web_config_server.cpp:1039` | **vTaskDelete 自删除风险**: `web_config_server_stop()` 若从 `web_config_task` 内部调用会自删除 | 加 `xTaskGetCurrentTaskHandle()` 检查，自删除时设 handle=NULL 再 `vTaskDelete(NULL)` |
 | 5 | 🟡 | `web_config_server.cpp:756` | **localtime() 非线程安全**: 返回 static buffer，多 HTTP handler 并发访问 | 改用 `localtime_r(&t, &tm_buf)` |
-| 6 | 🟡 | `camera_stream.hpp:72-75` | `_frame_count`/`_fps_total_bytes` 无 volatile: HTTP handler 写入，LVGL timer (core 1) 读取 FPS | 加 `volatile` 修饰 |
+| 6 | 🟡→✅ | `camera_stream.hpp:72-75` | `_frame_count`/`_fps_total_bytes` 无 volatile: HTTP handler 写入，LVGL timer (core 1) 读取 FPS | ✅ 已修复: 改为 `std::atomic<uint32_t>` (S138) |

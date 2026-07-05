@@ -60,6 +60,7 @@
     |   DAC_I2S_SCLK	|   GPIO12   |  P4→ES8311	|   BCLK    |
     |   DAC_I2S_LRCK	|   GPIO10   |  P4→ES8311	|   LRCK    |
     |   DAC_I2S_SDIN	|   GPIO9    |  P4→ES8311	|   PCM     |
+    |   PA_CTRL         |   GPIO53   |  P4→NS4150B  |   Power Amp Enable (HIGH=ON) |
   - SDMMC/SDSPI:
 
     > **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5), 通过 IO MUX 可配置为 SDMMC 4-bit 或 SDSPI 模式。
@@ -84,3 +85,15 @@
   - [ESP32-P4 Datasheet](https://documentation.espressif.com/esp32-p4_datasheet_en.pdf)
   - [ESP32-P4 Technical Reference Manual](https://documentation.espressif.com/esp32-p4_technical_reference_manual_en.pdf)
 - ESP-IDF Version: v6.x
+
+### Software Features
+- **MIPI DSI** 720×720 LCD + GT911 Touch (ESP-Brookesia Phone UI, LVGL v9.2.2)
+- **MIPI CSI** OV5647 camera (V4L2, ~5fps, HW JPEG, ESP-DL human detection)
+- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, inline detection, JPEG snapshot)
+- **Audio** Dual mic monitoring + MP3 recording (Shine encoder, SD card) + Music playback (ESP-GMF)
+- **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control)
+- **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery and settings
+- **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
+- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation)
+- **Multi-board** Auto-detect LCD-4B / WIFI6 via GT911 I2C probe, single firmware
+- **Driver Architecture** PeripheralManager facade → AudioDriver + SDCardDriver + CameraDriver
