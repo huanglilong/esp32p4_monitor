@@ -73,6 +73,21 @@ typedef struct {
     char message[128];   /**< Git commit message (first line) */
 } ulog_git_info_t;
 
+/** Initialization config — all hardware/platform-dependent params
+ *  supplied by the application, keeping the ULog component portable. */
+typedef struct {
+    uint16_t session_counter; /**< Boot session number (managed by app via NVS) */
+    bool     has_wall_clock;  /**< True if SNTP/RTC has synced wall-clock time */
+    char     sys_name[32];    /**< System name, e.g. "esp32p4_monitor" */
+    char     ver_sw[32];      /**< Software version, e.g. "IDF v6.0.2" */
+    char     ver_hw[32];      /**< Hardware board name, e.g. "ESP32-P4-WIFI6" */
+    char     sys_uuid[24];    /**< Unique ID (e.g. MAC-based), e.g. "E8F60AE6E08A" */
+    char     sys_os_name[16]; /**< OS name, e.g. "FreeRTOS" */
+    char     sys_os_ver[32];  /**< OS version, e.g. "v6.0.2" */
+    char     sys_mcu[32];     /**< MCU name, e.g. "ESP32-P4NRW32" */
+    char     arch[16];        /**< Architecture, e.g. "esp32p4" */
+} ulog_init_config_t;
+
 /** ULog writer states. */
 typedef enum {
     ULOG_STATE_UNINIT = 0,
@@ -96,9 +111,11 @@ ulog_writer_t *ulog_writer_get(void);
  *
  * @param writer         ULogWriter instance
  * @param sd_mount_path  SD card mount path, e.g. "/sdcard"
+ * @param config         Initialization config (session, hardware info, etc.)
  * @return ESP_OK on success
  */
-esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path);
+esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path,
+                           const ulog_init_config_t *config);
 
 /**
  * Set git version info for ULog Info messages.
@@ -108,6 +125,15 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path);
  * @param git_info Pointer to git info struct (contents are copied)
  */
 void ulog_writer_set_git_info(ulog_writer_t *writer, const ulog_git_info_t *git_info);
+
+/**
+ * Update wall-clock availability status.
+ * Call when SNTP syncs or when starting logging to re-check.
+ *
+ * @param writer          ULogWriter instance
+ * @param has_wall_clock  True if wall-clock time is available
+ */
+void ulog_writer_set_wall_clock(ulog_writer_t *writer, bool has_wall_clock);
 
 /**
  * Register a topic for logging.

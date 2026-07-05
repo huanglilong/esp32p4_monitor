@@ -32,13 +32,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
-#include "esp_idf_version.h"
-#include "esp_system.h"
 #include "esp_log.h"
-#include "esp_mac.h"
-#include "esp_sntp.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 #include <inttypes.h>
 
 static const char *TAG = "ULog";
@@ -69,14 +63,6 @@ static const char *TAG = "ULog";
 #define ULOG_MAX_FILE_SIZE  (100 * 1024 * 1024)
 #endif
 #endif
-
-/** Wall-clock time threshold: dates before 2020-01-01 indicate
- *  SNTP has not synced yet, so use session-based naming. */
-#define RTC_THRESHOLD_EPOCH 1577836800ULL
-
-/** NVS namespace and key for session counter persistence. */
-#define ULOG_NVS_NAMESPACE "ulog"
-#define ULOG_NVS_SESSION_KEY "session"
 
 /** Default max ULog storage as percentage of SD card capacity. */
 #ifndef ULOG_MAX_CAPACITY_PCT
@@ -247,10 +233,14 @@ typedef struct ulog_writer {
     uint16_t      file_counter;     /**< File counter within current session/date dir */
 
     /* Info fields */
-    char          sys_name[32];     /**< System name, e.g. "esp32p4_monitor" */
+    char          sys_name[32];     /**< System name */
     char          ver_sw[32];       /**< Software version string */
     char          ver_hw[32];       /**< Hardware board name */
     char          sys_uuid[24];     /**< MAC-based unique ID */
+    char          sys_os_name[16];  /**< OS name */
+    char          sys_os_ver[32];   /**< OS version */
+    char          sys_mcu[32];      /**< MCU name */
+    char          arch[16];         /**< Architecture */
     ulog_git_info_t git_info;       /**< Git version info (from app) */
 } ulog_writer_t;
 
@@ -265,9 +255,6 @@ static esp_err_t write_info_messages(ulog_writer_t *writer);
 static esp_err_t write_format_messages(ulog_writer_t *writer);
 static esp_err_t write_subscription_messages(ulog_writer_t *writer);
 static void ensure_log_dir(const char *dir);
-static bool has_wall_clock_time(void);
-static uint16_t load_session_counter(void);
-static void save_session_counter(uint16_t counter);
 static esp_err_t create_log_path(ulog_writer_t *writer);
 static void cleanup_old_logs(const char *log_root, size_t size_limit);
 static esp_err_t rotate_log_file(ulog_writer_t *writer);
@@ -282,38 +269,27 @@ ulog_writer_t *ulog_writer_get(void)
     return &s_instance;
 }
 
-esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path)
+esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path,
+                           const ulog_init_config_t *config)
 {
-    if (!writer || !sd_mount_path) return ESP_ERR_INVALID_ARG;
+    if (!writer || !sd_mount_path || !config) return ESP_ERR_INVALID_ARG;
 
     memset(writer, 0, sizeof(*writer));
     writer->fd = -1;
     writer->state = ULOG_STATE_IDLE;
     strlcpy(writer->sd_mount_path, sd_mount_path, sizeof(writer->sd_mount_path));
-    snprintf(writer->sys_name, sizeof(writer->sys_name), "esp32p4_monitor");
-    snprintf(writer->ver_sw, sizeof(writer->ver_sw), "IDF %s", esp_get_idf_version());
 
-    /* Detect hardware board type */
-    extern volatile bool g_has_lcd;
-    snprintf(writer->ver_hw, sizeof(writer->ver_hw), "%s",
-             g_has_lcd ? "ESP32-P4-WIFI6-LCD-4B" : "ESP32-P4-WIFI6");
-
-    /* Generate sys_uuid from base MAC */
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_BASE);
-    snprintf(writer->sys_uuid, sizeof(writer->sys_uuid),
-             "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    /* Load session counter from NVS (incremented each boot) */
-    writer->session_counter = load_session_counter();
-    if (writer->session_counter > 60000) {
-        writer->session_counter = 0; /* reset on overflow threshold */
-    }
-    writer->session_counter++;
-    save_session_counter(writer->session_counter);
-
-    /* Check wall-clock time availability */
-    writer->has_wall_clock = has_wall_clock_time();
+    /* Copy config from application */
+    writer->session_counter = config->session_counter;
+    writer->has_wall_clock = config->has_wall_clock;
+    strlcpy(writer->sys_name, config->sys_name, sizeof(writer->sys_name));
+    strlcpy(writer->ver_sw, config->ver_sw, sizeof(writer->ver_sw));
+    strlcpy(writer->ver_hw, config->ver_hw, sizeof(writer->ver_hw));
+    strlcpy(writer->sys_uuid, config->sys_uuid, sizeof(writer->sys_uuid));
+    strlcpy(writer->sys_os_name, config->sys_os_name, sizeof(writer->sys_os_name));
+    strlcpy(writer->sys_os_ver, config->sys_os_ver, sizeof(writer->sys_os_ver));
+    strlcpy(writer->sys_mcu, config->sys_mcu, sizeof(writer->sys_mcu));
+    strlcpy(writer->arch, config->arch, sizeof(writer->arch));
 
     if (!ringbuf_init(&writer->ringbuf, ULOG_RINGBUF_SIZE)) {
         ESP_LOGE(TAG, "Failed to allocate ring buffer");
@@ -331,6 +307,12 @@ void ulog_writer_set_git_info(ulog_writer_t *writer, const ulog_git_info_t *git_
 {
     if (!writer || !git_info) return;
     writer->git_info = *git_info;
+}
+
+void ulog_writer_set_wall_clock(ulog_writer_t *writer, bool has_wall_clock)
+{
+    if (!writer) return;
+    writer->has_wall_clock = has_wall_clock;
 }
 
 esp_err_t ulog_writer_add_topic(ulog_writer_t *writer, orb_id_t meta,
@@ -373,7 +355,10 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
     }
 
     /* Re-check wall-clock time (SNTP may have synced since init) */
-    writer->has_wall_clock = has_wall_clock_time();
+    struct timespec ts_now;
+    if (clock_gettime(CLOCK_REALTIME, &ts_now) == 0) {
+        writer->has_wall_clock = (uint64_t)ts_now.tv_sec > 1577836800ULL;
+    }
 
     /* Ensure log root directory exists */
     char log_root[MAX_PATH + 8];
@@ -823,15 +808,15 @@ static esp_err_t write_info_messages(ulog_writer_t *writer)
     if (err != ESP_OK) return err;
     err = write_info_str("ver_hw", writer->ver_hw);
     if (err != ESP_OK) return err;
-    err = write_info_str("sys_os_name", "FreeRTOS");
+    err = write_info_str("sys_os_name", writer->sys_os_name);
     if (err != ESP_OK) return err;
-    err = write_info_str("sys_os_ver", esp_get_idf_version());
+    err = write_info_str("sys_os_ver", writer->sys_os_ver);
     if (err != ESP_OK) return err;
-    err = write_info_str("sys_mcu", "ESP32-P4NRW32");
+    err = write_info_str("sys_mcu", writer->sys_mcu);
     if (err != ESP_OK) return err;
     err = write_info_str("sys_uuid", writer->sys_uuid);
     if (err != ESP_OK) return err;
-    err = write_info_str("arch", "esp32p4");
+    err = write_info_str("arch", writer->arch);
     if (err != ESP_OK) return err;
 
     /* Git version info */
@@ -951,38 +936,6 @@ static esp_err_t write_subscription_messages(ulog_writer_t *writer)
 /* ------------------------------------------------------------------ */
 /*  Time source detection                                               */
 /* ------------------------------------------------------------------ */
-
-/** Check if wall-clock time is available (SNTP synced).
- *  Returns true if CLOCK_REALTIME > 2020-01-01. */
-static bool has_wall_clock_time(void)
-{
-    struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return false;
-    return (uint64_t)ts.tv_sec > RTC_THRESHOLD_EPOCH;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Session counter persistence (NVS)                                   */
-/* ------------------------------------------------------------------ */
-
-static uint16_t load_session_counter(void)
-{
-    nvs_handle_t h;
-    if (nvs_open(ULOG_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return 0;
-    uint16_t val = 0;
-    nvs_get_u16(h, ULOG_NVS_SESSION_KEY, &val);
-    nvs_close(h);
-    return val;
-}
-
-static void save_session_counter(uint16_t counter)
-{
-    nvs_handle_t h;
-    if (nvs_open(ULOG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u16(h, ULOG_NVS_SESSION_KEY, counter);
-    nvs_commit(h);
-    nvs_close(h);
-}
 
 /* ------------------------------------------------------------------ */
 /*  File system helpers                                                 */

@@ -523,8 +523,50 @@ extern "C" void app_main(void)
 
     /* ── ULog Logger initialization (only if SD card is mounted) ── */
     if (PeripheralManager::instance().sdcard_available()) {
+        /* Session counter: load from NVS, increment, save */
+        uint16_t session = 0;
+        nvs_handle_t nvs_h;
+        if (nvs_open("ulog", NVS_READONLY, &nvs_h) == ESP_OK) {
+            nvs_get_u16(nvs_h, "session", &session);
+            nvs_close(nvs_h);
+        }
+        if (session > 60000) session = 0;
+        session++;
+        if (nvs_open("ulog", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_u16(nvs_h, "session", session);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
+
+        /* Check wall-clock time availability */
+        bool has_rtc = false;
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+            has_rtc = (uint64_t)ts.tv_sec > 1577836800ULL; /* > 2020-01-01 */
+        }
+
+        /* Hardware info */
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_BASE);
+        char sys_uuid[24];
+        snprintf(sys_uuid, sizeof(sys_uuid), "%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+        ulog_init_config_t cfg = {};
+        cfg.session_counter = session;
+        cfg.has_wall_clock = has_rtc;
+        strlcpy(cfg.sys_name, "esp32p4_monitor", sizeof(cfg.sys_name));
+        snprintf(cfg.ver_sw, sizeof(cfg.ver_sw), "IDF %s", esp_get_idf_version());
+        snprintf(cfg.ver_hw, sizeof(cfg.ver_hw), "%s",
+                 g_has_lcd ? "ESP32-P4-WIFI6-LCD-4B" : "ESP32-P4-WIFI6");
+        strlcpy(cfg.sys_uuid, sys_uuid, sizeof(cfg.sys_uuid));
+        strlcpy(cfg.sys_os_name, "FreeRTOS", sizeof(cfg.sys_os_name));
+        strlcpy(cfg.sys_os_ver, esp_get_idf_version(), sizeof(cfg.sys_os_ver));
+        strlcpy(cfg.sys_mcu, "ESP32-P4NRW32", sizeof(cfg.sys_mcu));
+        strlcpy(cfg.arch, "esp32p4", sizeof(cfg.arch));
+
         ulog_writer_t *ulog = ulog_writer_get();
-        ulog_writer_init(ulog, "/sdcard");
+        ulog_writer_init(ulog, "/sdcard", &cfg);
 
         /* Pass git version info for ULog Info messages */
         ulog_git_info_t git = {};
