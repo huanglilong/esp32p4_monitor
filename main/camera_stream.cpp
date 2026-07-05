@@ -733,19 +733,81 @@ static esp_err_t stream_handler(httpd_req_t *req)
         esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Every N frames: copy frame, Q buffer quickly, run inference inline.
-         * Only when model is fully loaded (background task completed).
-         * This holds the V4L2 buffer only for the memcpy (~ms), not for the
-         * entire 560ms inference — no frame drops. */
+        /* Every N frames: copy frame, encode+send JPEG, then run inference.
+         * The V4L2 buffer is held during encode (~200ms, same as non-detection path),
+         * but released before inference (~560ms) — no frame drops. */
         bool detection_run_this_frame = false;
         if (cs->_detector && cs->_model_ready
             && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
             uint32_t copy_sz = buf.bytesused;
             if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
             memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
-            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);  // Return buffer immediately
+
+            /* Encode and send JPEG from the V4L2 buffer (same as non-detection path) */
+            uint32_t jpeg_size;
+            uint8_t *jpeg_data;
+
+            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+                jpeg_data = cs->_v4l2_bufs[buf.index];
+                jpeg_size = buf.bytesused;
+            } else {
+                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                    continue;
+                }
+                esp_err_t ret = example_encoder_process(cs->_encoder_handle,
+                                                         cs->_v4l2_bufs[buf.index], buf.bytesused,
+                                                         cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
+                if (ret != ESP_OK) {
+                    xSemaphoreGive(cs->_encoder_sem);
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                    continue;
+                }
+                jpeg_data = cs->_jpeg_out_buf;
+            }
+
+            /* Send MJPEG part before inference so stream stays continuous */
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            int hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, jpeg_size,
+                                (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
+            if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK ||
+                httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
+                httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
+                if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+                    xSemaphoreGive(cs->_encoder_sem);
+                }
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                break;
+            }
+            if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+                xSemaphoreGive(cs->_encoder_sem);
+            }
+
+            /* Save JPEG snapshot for /api/capture_image */
+            if (cs->_last_jpeg_mutex &&
+                xSemaphoreTake(cs->_last_jpeg_mutex, 0) == pdTRUE) {
+                if (cs->_last_jpeg_capacity < jpeg_size) {
+                    uint8_t *new_buf = (uint8_t *)realloc(cs->_last_jpeg_buf, jpeg_size);
+                    if (new_buf) {
+                        cs->_last_jpeg_buf = new_buf;
+                        cs->_last_jpeg_capacity = jpeg_size;
+                    }
+                }
+                if (cs->_last_jpeg_buf && cs->_last_jpeg_capacity >= jpeg_size) {
+                    memcpy(cs->_last_jpeg_buf, jpeg_data, jpeg_size);
+                    cs->_last_jpeg_size = jpeg_size;
+                }
+                xSemaphoreGive(cs->_last_jpeg_mutex);
+            }
+
+            /* Return V4L2 buffer before inference — buffer held only for encode (~200ms) */
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+
+            /* Run inference on the copy (no V4L2 buffer held) */
             cs->_run_inference(cs->_detect_in_buf, copy_sz);
             cs->_frame_count = cs->_frame_count + 1;
+            cs->_fps_frame_count = cs->_fps_frame_count + 1;
+            cs->_fps_total_bytes = cs->_fps_total_bytes + jpeg_size;
             vTaskDelay(pdMS_TO_TICKS(50));
             detection_run_this_frame = true;
         }
