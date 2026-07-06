@@ -194,15 +194,14 @@ void SystemMonitor::_sample(void)
         _min_free_psram.store(min_free_psram, std::memory_order_relaxed);
     }
 
-    /* ── 2. CPU usage via idle runtime counter (non-blocking).
-     * ulTaskGetIdleRunTimeCounter() sums idle task runtime across all cores
-     * without calling vTaskSuspendAll(), so it's safe to use alongside
-     * LVGL rendering on core 1. We compute busy CPU% from the idle delta:
-     *   idle_pct  = idle_delta / (wall_delta × num_cores)
-     *   busy_pct  = 100% - idle_pct
+    /* ── 2. CPU usage via per-core idle runtime (non-blocking).
+     * xTaskGetIdleTaskHandleForCore() + vTaskGetInfo() read each core's
+     * idle task runtime counter without calling vTaskSuspendAll(), so
+     * they're safe alongside LVGL rendering on core 1.
+     *   idle_pct  = idle_delta / wall_delta × 10000
+     *   busy_pct  = 10000 - idle_pct
      */
     UBaseType_t actual_count = uxTaskGetNumberOfTasks();
-    uint32_t idle_runtime = ulTaskGetIdleRunTimeCounter();
     int64_t now_us = esp_timer_get_time();
 
     /* ── 3. Build system_stats_s ── */
@@ -214,27 +213,48 @@ void SystemMonitor::_sample(void)
     stats.min_free_psram = min_free_psram;
     stats.task_count = (uint32_t)actual_count;
 
-    /* Compute busy CPU% from idle runtime delta */
+    /* Compute per-core and total busy CPU% from idle runtime deltas */
     if (_prev_timestamp_us > 0 && now_us > _prev_timestamp_us) {
         int64_t delta_us = now_us - _prev_timestamp_us;
-        /* Guard against ulTaskGetIdleRunTimeCounter() wraparound.
-         * With esp_timer (1μs) and uint32_t, wrap at ~71 min — unlikely
-         * at 5s intervals, but skip this sample if detected. */
-        if (idle_runtime >= _prev_idle_runtime) {
-            uint32_t idle_delta = idle_runtime - _prev_idle_runtime;
-            /* idle_pct = idle_delta / (delta_us × num_cores) × 10000
-             * busy_pct = 10000 - idle_pct */
-            int64_t max_runtime = delta_us * configNUMBER_OF_CORES;
-            if (max_runtime > 0) {
-                uint32_t idle_pct = (uint32_t)((uint64_t)idle_delta * 10000 / (uint64_t)max_runtime);
-                if (idle_pct > 10000) {
-                    idle_pct = 10000;
-                }
-                stats.total_cpu_pct = 10000 - idle_pct;
-            }
+
+        /* Read per-core idle task runtime via vTaskGetInfo (no scheduler suspend).
+         * Pass eReady as eState to avoid vTaskSuspendAll() path inside vTaskGetInfo
+         * (only triggered when eState==eInvalid for suspended tasks). */
+        TaskStatus_t idle_status;
+        uint32_t idle_runtime_core0 = 0;
+        uint32_t idle_runtime_core1 = 0;
+
+        TaskHandle_t idle0 = xTaskGetIdleTaskHandleForCore(0);
+        if (idle0) {
+            vTaskGetInfo(idle0, &idle_status, pdFALSE, eReady);
+            idle_runtime_core0 = idle_status.ulRunTimeCounter;
         }
+        TaskHandle_t idle1 = xTaskGetIdleTaskHandleForCore(1);
+        if (idle1) {
+            vTaskGetInfo(idle1, &idle_status, pdFALSE, eReady);
+            idle_runtime_core1 = idle_status.ulRunTimeCounter;
+        }
+
+        /* Per-core busy CPU% */
+        if (idle_runtime_core0 >= _prev_idle_runtime_core0 && delta_us > 0) {
+            uint32_t idle_delta = idle_runtime_core0 - _prev_idle_runtime_core0;
+            uint32_t idle_pct = (uint32_t)((uint64_t)idle_delta * 10000 / (uint64_t)delta_us);
+            if (idle_pct > 10000) idle_pct = 10000;
+            stats.core0_cpu_pct = 10000 - idle_pct;
+        }
+        if (idle_runtime_core1 >= _prev_idle_runtime_core1 && delta_us > 0) {
+            uint32_t idle_delta = idle_runtime_core1 - _prev_idle_runtime_core1;
+            uint32_t idle_pct = (uint32_t)((uint64_t)idle_delta * 10000 / (uint64_t)delta_us);
+            if (idle_pct > 10000) idle_pct = 10000;
+            stats.core1_cpu_pct = 10000 - idle_pct;
+        }
+
+        /* Total busy CPU% = average of per-core busy% */
+        stats.total_cpu_pct = (stats.core0_cpu_pct + stats.core1_cpu_pct) / configNUMBER_OF_CORES;
+
+        _prev_idle_runtime_core0 = idle_runtime_core0;
+        _prev_idle_runtime_core1 = idle_runtime_core1;
     }
-    _prev_idle_runtime = idle_runtime;
     _prev_timestamp_us = now_us;
 
     /* ── 4. Update latest snapshot (mutex-protected) ── */
@@ -285,11 +305,14 @@ void SystemMonitor::_log_summary(const system_stats_s &stats)
     ESP_LOGI(TAG, "  PSRAM:         %u KB free / %u KB total (%u%% used, min %u KB)",
              stats.free_psram / 1024, total_psram / 1024,
              used_pct_psram, stats.min_free_psram / 1024);
-    ESP_LOGI(TAG, "  Tasks: %u   CPU: %u.%02u%% (busy, %d-core)",
+    ESP_LOGI(TAG, "  Tasks: %u   CPU: %u.%02u%% (Core0: %u.%02u%%  Core1: %u.%02u%%)",
              stats.task_count,
              stats.total_cpu_pct / 100,
              stats.total_cpu_pct % 100,
-             configNUMBER_OF_CORES);
+             stats.core0_cpu_pct / 100,
+             stats.core0_cpu_pct % 100,
+             stats.core1_cpu_pct / 100,
+             stats.core1_cpu_pct % 100);
 }
 
 /*============================================================================

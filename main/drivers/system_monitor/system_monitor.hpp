@@ -4,9 +4,11 @@
  * Design:
  *   - Background task samples CPU usage (via ulTaskGetIdleRunTimeCounter)
  *     and heap memory (via heap_caps_get_free_size) at a configurable interval.
- *   - CPU% is computed from idle task runtime delta vs wall-clock delta:
+ *   - CPU% is computed per-core from idle task runtime delta vs wall-clock delta:
  *     busy_cpu_pct = 100% - idle_pct. This avoids uxTaskGetSystemState()
  *     which calls vTaskSuspendAll() and disrupts LVGL rendering.
+ *     Per-core idle runtime is read via xTaskGetIdleTaskHandleForCore() +
+ *     vTaskGetInfo() (no scheduler suspend).
  *   - Results are published as a uORB `system_stats` topic, enabling:
  *     * ULog persistence (SD card binary log)
  *     * ESP_LOG summary output (configurable level/interval)
@@ -30,10 +32,6 @@
  *   CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT      — CPU alert threshold (default 90)
  *   CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT      — Memory alert threshold (default 80)
  *   CONFIG_APP_SYS_MONITOR_ALERT_COOLDOWN_S   — Alert cooldown in seconds (default 30)
- *
- * Note: Per-task CPU% breakdown (top-N) is not available because
- * uxTaskGetSystemState() calls vTaskSuspendAll() which disrupts
- * LVGL rendering. Only aggregate busy CPU% is reported.
  */
 
 #pragma once
@@ -145,10 +143,11 @@ private:
     /** Sample counter for log throttling. */
     uint32_t _sample_count{0};
 
-    /** Previous idle runtime counter and timestamp for delta CPU% calculation.
-     * Uses ulTaskGetIdleRunTimeCounter() which does NOT call vTaskSuspendAll(),
-     * so it's safe to use alongside LVGL rendering on core 1. */
-    uint32_t _prev_idle_runtime{0};
+    /** Previous per-core idle runtime counters and timestamp for delta CPU% calculation.
+     * Uses xTaskGetIdleTaskHandleForCore() + vTaskGetInfo() which do NOT call
+     * vTaskSuspendAll(), so they're safe alongside LVGL rendering on core 1. */
+    uint32_t _prev_idle_runtime_core0{0};
+    uint32_t _prev_idle_runtime_core1{0};
     int64_t _prev_timestamp_us{0};
 
     static constexpr const char *TAG = "SysMonitor";

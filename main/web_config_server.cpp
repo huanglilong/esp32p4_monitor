@@ -1672,30 +1672,8 @@ static esp_err_t h_system_stats(httpd_req_t *req)
 
     cJSON_AddNumberToObject(root, "task_count", (double)stats.task_count);
     cJSON_AddNumberToObject(root, "cpu_pct", (double)stats.total_cpu_pct / 100.0);
-
-    /* Top tasks */
-    cJSON *tasks = cJSON_CreateArray();
-    struct {
-        const char *name;
-        uint32_t cpu_pct;
-        uint32_t stack_hwm;
-    } top[] = {
-        { stats.task_name_0, stats.task_cpu_pct_0, stats.task_stack_hwm_0 },
-        { stats.task_name_1, stats.task_cpu_pct_1, stats.task_stack_hwm_1 },
-        { stats.task_name_2, stats.task_cpu_pct_2, stats.task_stack_hwm_2 },
-        { stats.task_name_3, stats.task_cpu_pct_3, stats.task_stack_hwm_3 },
-        { stats.task_name_4, stats.task_cpu_pct_4, stats.task_stack_hwm_4 },
-        { stats.task_name_5, stats.task_cpu_pct_5, stats.task_stack_hwm_5 },
-    };
-    for (int i = 0; i < 6; i++) {
-        if (top[i].name[0] == '\0') break;
-        cJSON *t = cJSON_CreateObject();
-        cJSON_AddStringToObject(t, "name", top[i].name);
-        cJSON_AddNumberToObject(t, "cpu_pct", (double)top[i].cpu_pct / 100.0);
-        cJSON_AddNumberToObject(t, "stack_hwm", (double)top[i].stack_hwm);
-        cJSON_AddItemToArray(tasks, t);
-    }
-    cJSON_AddItemToObject(root, "top_tasks", tasks);
+    cJSON_AddNumberToObject(root, "core0_cpu_pct", (double)stats.core0_cpu_pct / 100.0);
+    cJSON_AddNumberToObject(root, "core1_cpu_pct", (double)stats.core1_cpu_pct / 100.0);
 
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
