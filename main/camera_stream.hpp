@@ -103,13 +103,19 @@ public:
     StackType_t                 *_model_load_stack;   /* PSRAM-allocated stack (8KB) */
     StaticTask_t                *_model_load_tcb;     /* TCB buffer for static task */
     PPAPreprocessor             *_ppa;                 /* PPA hardware preprocessor (resize + RGB565→BGR888) */
+    uint32_t                      _stream_enc_width;    /* JPEG encoder input width (PPA output or cam width) */
+    uint32_t                      _stream_enc_height;   /* JPEG encoder input height (PPA output or cam height) */
+    uint32_t                      _stream_enc_format;   /* JPEG encoder input pixel format */
     static constexpr float       PERSON_SCORE_THRESHOLD = 0.35f;
     static constexpr int         DETECT_INTERVAL_FRAMES = 3;
     static constexpr int         BOX_LINE_WIDTH = 2;
 
-    /* Draw helper */
+    /* Draw helpers */
     void _draw_box_on_buffer(uint8_t *buffer, uint32_t width, uint32_t height,
                              int x1, int y1, int x2, int y2, uint16_t color);
+    void _draw_box_on_bgr24(uint8_t *buffer, uint32_t width, uint32_t height,
+                            int x1, int y1, int x2, int y2,
+                            uint8_t b, uint8_t g, uint8_t r);
 
     /* Run detection inference on given buffer (same task, no mutex needed) */
     void _run_inference(uint8_t *buffer, uint32_t size);

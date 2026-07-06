@@ -396,19 +396,25 @@ Camera RGB565 (800×800)
         ├── resize: 800×800 → 300×300  (scale 0.375, 4-bit frac quantized from 0.4)
         └── format: RGB565LE → BGR888  (PPA outputs BGR24 in memory)
         ↓ _out_buf (BGR888, 300×300 contiguous, allocated for 320×320)
-   COCODetect internal (CPU):
-        ├── letterbox: 300×300 → 320×320 (10px gray border each side)
-        └── quantize: BGR888 → RGB888_QINT8  (R↔B swap + normalize)
-        ↓ model input tensor
-   YOLO11n inference (~560ms)
-        ↓ post-process
-   Rescale boxes: 300×300 → 800×800  (using actual_width/height)
+        ├──→ COCODetect internal (CPU):
+        │       ├── letterbox: 300×300 → 320×320 (10px gray border each side)
+        │       └── quantize: BGR888 → RGB888_QINT8  (R↔B swap + normalize)
+        │       ↓ model input tensor
+        │   YOLO11n inference (~560ms)
+        │       ↓ post-process
+        │   Rescale boxes: 300×300 → 800×800  (using actual_width/height)
+        │
+        └──→ JPEG encoder (hardware):
+                ├── input: 300×300 BGR24 (= JPEG_ENCODE_IN_FORMAT_RGB888)
+                └── encode: ~30ms (vs ~200ms for 800×800 RGB565)
 ```
 - PPA 将 resize + 格式转换从 CPU 卸载到硬件 (~1ms vs CPU ~30ms)
 - PPA 4-bit frac 量化: 0.4 → 0.375, 实际输出 300×300 (非 320×320)
 - PPA `pic_w/pic_h` 必须设为 actual 300×300 (非 requested 320×320), 否则行步长不匹配导致 COCODetect 读取错位数据
 - PPA 输出 BGR24 内存布局, 传给 COCODetect 为 `BGR888`, 预处理自动 R↔B swap
 - COCODetect letterbox 自动将 300×300 填充为 320×320 (10px 灰边框)
+- **PPA 输出复用**: 同一个 BGR24 buffer 同时供 COCODetect (检测) 和 JPEG 编码器 (推流), 无需二次 PPA 调用
+- **JPEG 编码优化**: PPA 输出 BGR24 = `JPEG_ENCODE_IN_FORMAT_RGB888` (ESP-IDF 定义), 编码器直接消费 PPA 输出, 编码时间 ~200ms → ~30ms, JPEG 体积 ~30-50KB → ~5-8KB
 - 自动降级: PPA 初始化失败时回退到 CPU 全流程 (RGB565→resize_nn→QINT8)
 
 **已知问题 (已修复)**:
@@ -566,7 +572,8 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 |------|------|
 | 传感器 | OV5647, VTS=9840 (~5fps) |
 | 编码 | **HW JPEG** (`CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER=y`, esp_driver_jpeg), CPU 几乎无负载 |
-| 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~14KB/帧) |
+| 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~5-8KB/帧 @ 300×300) |
+| 推流分辨率 | 300×300 BGR24 (PPA 输出, 非 800×800 RGB565) |
 | 帧率实测 | **~4fps** @ 5fps sensor, CPU 7% |
 | HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/capture_image`), 端口 81: MJPEG `/stream` |
 | Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块) |
@@ -579,7 +586,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: 两个并发客户端可同时触发延迟初始化。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护。
 - **JPEG 快照**: stream handler 每帧保存最新 JPEG 到 `_last_jpeg_buf` (mutex 保护), `/api/capture_image` 端点返回最新帧的 `image/jpeg`。
-- **内联人体检测**: CameraStream 在 stream_handler 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→RGB888 resize)，检测框直接绘制在 JPEG 帧上。模型在后台 task 加载 (`_model_load_task`)，加载完成后 `_model_ready` atomic flag 置位。
+- **内联人体检测**: CameraStream 在 stream_handler 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→BGR888 resize)，检测框直接绘制在 PPA BGR24 输出 buffer 上再编码为 JPEG。V4L2 buffer 在 PPA 处理后立即归还 (~1ms)，不再持有到编码完成。JPEG 编码器直接消费 PPA 输出 (300×300 BGR24)，编码时间从 ~200ms 降至 ~30ms。
 
 ### 15. esp_hosted (WiFi over SDIO) 稳定性
 

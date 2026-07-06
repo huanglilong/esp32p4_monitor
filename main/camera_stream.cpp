@@ -139,6 +139,7 @@ CameraStream::CameraStream() :
     _model_ready(false),
     _model_load_task(nullptr), _model_load_stack(nullptr), _model_load_tcb(nullptr),
     _ppa(nullptr),
+    _stream_enc_width(0), _stream_enc_height(0), _stream_enc_format(0),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _mdns_running(false)
@@ -430,10 +431,30 @@ bool CameraStream::_init_encoder(void)
         return true;
     }
 
+    /* Determine encoder input: if PPA is active, encode from PPA output
+     * (300×300 BGR24) instead of full 800×800 RGB565. This reduces:
+     *   - JPEG encode time: ~200ms → ~30ms
+     *   - JPEG size: ~30-50KB → ~5-8KB
+     *   - WiFi bandwidth: ~80% reduction
+     * PPA outputs BGR24 (PPA_SRM_COLOR_MODE_RGB888 = ESP_COLOR_FOURCC_BGR24),
+     * and JPEG encoder accepts JPEG_ENCODE_IN_FORMAT_RGB888 = BGR24 — perfect match. */
+#if CONFIG_SOC_PPA_SUPPORTED
+    if (_ppa && _ppa->is_initialized()) {
+        _stream_enc_width = _ppa->actual_width();
+        _stream_enc_height = _ppa->actual_height();
+        _stream_enc_format = V4L2_PIX_FMT_RGB24;  /* BGR24 in memory, matches PPA output */
+    } else
+#endif
+    {
+        _stream_enc_width = _cam_width;
+        _stream_enc_height = _cam_height;
+        _stream_enc_format = _cam_pixel_format;
+    }
+
     example_encoder_config_t enc_cfg = {
-        .width = _cam_width,
-        .height = _cam_height,
-        .pixel_format = _cam_pixel_format,
+        .width = _stream_enc_width,
+        .height = _stream_enc_height,
+        .pixel_format = _stream_enc_format,
         .quality = _jpeg_quality,
     };
 
@@ -442,8 +463,8 @@ bool CameraStream::_init_encoder(void)
      * other tasks free buffers (e.g., LVGL flush completes). */
     const int MAX_RETRIES = 3;
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        ESP_LOGI(TAG, "Encoder init attempt %d/%d: %" PRIu32 "x%" PRIu32 " quality=%d",
-                 attempt, MAX_RETRIES, _cam_width, _cam_height, _jpeg_quality);
+        ESP_LOGI(TAG, "Encoder init attempt %d/%d: %" PRIu32 "x%" PRIu32 " fmt=0x%08" PRIx32 " quality=%d",
+                 attempt, MAX_RETRIES, _stream_enc_width, _stream_enc_height, _stream_enc_format, _jpeg_quality);
 
         if (example_encoder_init(&enc_cfg, &_encoder_handle) == ESP_OK) {
             break;  // success
@@ -788,8 +809,47 @@ void CameraStream::_draw_box_on_buffer(uint8_t *buffer, uint32_t width, uint32_t
 }
 
 /*============================================================================
- * HTTP Handlers
+ * Draw helper: hollow rectangle directly on pixel buffer (BGR24 / RGB888)
  *============================================================================*/
+
+void CameraStream::_draw_box_on_bgr24(uint8_t *buffer, uint32_t width, uint32_t height,
+                                       int x1, int y1, int x2, int y2,
+                                       uint8_t b, uint8_t g, uint8_t r)
+{
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 >= (int)width) x2 = (int)width - 1;
+    if (y2 >= (int)height) y2 = (int)height - 1;
+    if (x1 > x2 || y1 > y2) return;
+
+    int stride = (int)width * 3;  /* 3 bytes per pixel (BGR24) */
+
+    /* Top and bottom horizontal lines */
+    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
+        int row_top = y1 + w;
+        int row_bot = y2 - w;
+        for (int x = x1; x <= x2; x++) {
+            uint8_t *px_top = buffer + row_top * stride + x * 3;
+            px_top[0] = b; px_top[1] = g; px_top[2] = r;
+            uint8_t *px_bot = buffer + row_bot * stride + x * 3;
+            px_bot[0] = b; px_bot[1] = g; px_bot[2] = r;
+        }
+    }
+
+    /* Left and right vertical lines */
+    int y_start = y1 + BOX_LINE_WIDTH;
+    int y_end = y2 - BOX_LINE_WIDTH;
+    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
+        int col_l = x1 + w;
+        int col_r = x2 - w;
+        for (int y = y_start; y <= y_end; y++) {
+            uint8_t *px_l = buffer + y * stride + col_l * 3;
+            px_l[0] = b; px_l[1] = g; px_l[2] = r;
+            uint8_t *px_r = buffer + y * stride + col_r * 3;
+            px_r[0] = b; px_r[1] = g; px_r[2] = r;
+        }
+    }
+}
 
 /** MJPEG stream handler (port 81) — continuous multipart JPEG stream */
 static esp_err_t stream_handler(httpd_req_t *req)
@@ -850,8 +910,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
         /* Every N frames: copy frame, encode+send JPEG, then run inference.
-         * The V4L2 buffer is held during encode (~200ms, same as non-detection path),
-         * but released before inference (~560ms) — no frame drops. */
+         * With PPA: V4L2 buffer is returned immediately after PPA process (~1ms),
+         * no longer held during encode (~30ms) or inference (~560ms). */
         bool detection_run_this_frame = false;
         if (cs->_detector && cs->_model_ready
             && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
@@ -859,20 +919,69 @@ static esp_err_t stream_handler(httpd_req_t *req)
             if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
             memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
 
-            /* Encode and send JPEG from the V4L2 buffer (same as non-detection path) */
+            /* Run PPA on the copy first (if available), then return V4L2 buffer */
+            bool ppa_ok = false;
+#if CONFIG_SOC_PPA_SUPPORTED
+            if (cs->_ppa && cs->_ppa->is_initialized()) {
+                ppa_ok = cs->_ppa->process(cs->_detect_in_buf);
+            }
+#endif
+
+            /* Return V4L2 buffer immediately — PPA output is independent */
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+
+            /* Encode JPEG from PPA output (300×300 BGR24) or V4L2 buffer (800×800 RGB565) */
             uint32_t jpeg_size;
             uint8_t *jpeg_data;
 
             if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+                /* JPEG sensor — no re-encoding needed, use raw data */
                 jpeg_data = cs->_v4l2_bufs[buf.index];
                 jpeg_size = buf.bytesused;
+            } else if (ppa_ok) {
+                /* PPA path: encode from PPA BGR24 output (300×300) */
+                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+                    continue;
+                }
+                /* Draw detection boxes on PPA output buffer (300×300 BGR24) */
+                if (cs->_detect_available && cs->_detect_mutex &&
+                    xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
+                    if (!cs->_detect_results.empty()) {
+                        for (auto &r : cs->_detect_results) {
+                            /* Rescale from camera coords to PPA output coords */
+                            int bx1 = (int)(r.box[0] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
+                            int by1 = (int)(r.box[1] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
+                            int bx2 = (int)(r.box[2] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
+                            int by2 = (int)(r.box[3] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
+                            cs->_draw_box_on_bgr24(cs->_ppa->out_buf(),
+                                                    cs->_ppa->actual_width(), cs->_ppa->actual_height(),
+                                                    bx1, by1, bx2, by2,
+                                                    0, 255, 0);  /* Green BGR */
+                        }
+                        esp_cache_msync(cs->_ppa->out_buf(), cs->_ppa->out_buf_size(),
+                                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                    }
+                    xSemaphoreGive(cs->_detect_mutex);
+                }
+                esp_err_t ret = example_encoder_process(cs->_encoder_handle,
+                                                         cs->_ppa->out_buf(),
+                                                         cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
+                                                         cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
+                if (ret != ESP_OK) {
+                    xSemaphoreGive(cs->_encoder_sem);
+                    continue;
+                }
+                jpeg_data = cs->_jpeg_out_buf;
             } else {
+                /* CPU fallback: PPA not active — encoder is configured for cam format.
+                 * Encode from _detect_in_buf (RGB565 copy of V4L2 buffer).
+                 * V4L2 buffer was NOT returned yet in this path. */
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
                     ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
                     continue;
                 }
                 esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                                         cs->_v4l2_bufs[buf.index], buf.bytesused,
+                                                         cs->_detect_in_buf, copy_sz,
                                                          cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
                 if (ret != ESP_OK) {
                     xSemaphoreGive(cs->_encoder_sem);
@@ -880,6 +989,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
                     continue;
                 }
                 jpeg_data = cs->_jpeg_out_buf;
+                /* Return V4L2 buffer after encoding */
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             }
 
             /* Send MJPEG part before inference so stream stays continuous */
@@ -892,7 +1003,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                     xSemaphoreGive(cs->_encoder_sem);
                 }
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                /* Note: V4L2 buffer already returned by PPA path above;
+                 * for JPEG sensor or CPU fallback, buffer was already returned too */
                 break;
             }
             if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
@@ -916,10 +1028,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 xSemaphoreGive(cs->_last_jpeg_mutex);
             }
 
-            /* Return V4L2 buffer before inference — buffer held only for encode (~200ms) */
-            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-
-            /* Run inference on the copy (no V4L2 buffer held) */
+            /* Run inference on the copy (V4L2 buffer already returned) */
             cs->_run_inference(cs->_detect_in_buf, copy_sz);
             cs->_frame_count = cs->_frame_count + 1;
             cs->_fps_frame_count = cs->_fps_frame_count + 1;
@@ -941,8 +1050,61 @@ static esp_err_t stream_handler(httpd_req_t *req)
             if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
                 jpeg_data = cs->_v4l2_bufs[buf.index];
                 jpeg_size = buf.bytesused;
-            } else {
-                /* Draw latest detection boxes on the V4L2 buffer before encoding */
+            }
+#if CONFIG_SOC_PPA_SUPPORTED
+            else if (cs->_ppa && cs->_ppa->is_initialized()) {
+                /* PPA path: copy V4L2 buffer → PPA process → JPEG encode from PPA output.
+                 * V4L2 buffer can be returned immediately after PPA process. */
+                uint32_t copy_sz = buf.bytesused;
+                if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
+                memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
+
+                if (cs->_ppa->process(cs->_detect_in_buf)) {
+                    /* Return V4L2 buffer immediately — PPA output is independent */
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+
+                    /* Draw detection boxes on PPA output buffer (300×300 BGR24) */
+                    if (cs->_detect_available && cs->_detect_mutex &&
+                        xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
+                        if (!cs->_detect_results.empty()) {
+                            for (auto &r : cs->_detect_results) {
+                                int bx1 = (int)(r.box[0] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
+                                int by1 = (int)(r.box[1] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
+                                int bx2 = (int)(r.box[2] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
+                                int by2 = (int)(r.box[3] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
+                                cs->_draw_box_on_bgr24(cs->_ppa->out_buf(),
+                                                        cs->_ppa->actual_width(), cs->_ppa->actual_height(),
+                                                        bx1, by1, bx2, by2,
+                                                        0, 255, 0);  /* Green BGR */
+                            }
+                            esp_cache_msync(cs->_ppa->out_buf(), cs->_ppa->out_buf_size(),
+                                            ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        }
+                        xSemaphoreGive(cs->_detect_mutex);
+                    }
+
+                    if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+                        continue;
+                    }
+                    esp_err_t ret = example_encoder_process(cs->_encoder_handle,
+                                                             cs->_ppa->out_buf(),
+                                                             cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
+                                                             cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
+                    if (ret != ESP_OK) {
+                        xSemaphoreGive(cs->_encoder_sem);
+                        continue;
+                    }
+                    jpeg_data = cs->_jpeg_out_buf;
+                } else {
+                    /* PPA failed — return V4L2 buffer, skip this frame */
+                    ESP_LOGW(TAG, "PPA process failed on non-detection frame");
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                    continue;
+                }
+            }
+#endif
+            else {
+                /* CPU fallback: draw boxes on V4L2 buffer, encode from 800×800 RGB565 */
                 if (cs->_detect_available && cs->_detect_mutex &&
                     xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
                     if (!cs->_detect_results.empty()) {
@@ -982,7 +1144,12 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                     xSemaphoreGive(cs->_encoder_sem);
                 }
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+#if CONFIG_SOC_PPA_SUPPORTED
+                if (!(cs->_ppa && cs->_ppa->is_initialized()))
+#endif
+                {
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                }
                 break;
             }
 
@@ -1006,9 +1173,13 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 xSemaphoreGive(cs->_encoder_sem);
             }
 
-
-            /* Return buffer */
-            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            /* Return V4L2 buffer if not already returned by PPA path */
+#if CONFIG_SOC_PPA_SUPPORTED
+            if (!(cs->_ppa && cs->_ppa->is_initialized()))
+#endif
+            {
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            }
 
             cs->_frame_count = cs->_frame_count + 1;
             cs->_fps_frame_count = cs->_fps_frame_count + 1;
@@ -1065,6 +1236,8 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     }
     cJSON_AddNumberToObject(root, "width", cs->_cam_width);
     cJSON_AddNumberToObject(root, "height", cs->_cam_height);
+    cJSON_AddNumberToObject(root, "stream_width", cs->_stream_enc_width);
+    cJSON_AddNumberToObject(root, "stream_height", cs->_stream_enc_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality);
     cJSON_AddNumberToObject(root, "frame_rate", 5);   /* ~5fps from VTS=9840 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
