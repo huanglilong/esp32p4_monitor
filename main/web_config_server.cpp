@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/param.h>
+#include <atomic>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
@@ -88,8 +89,8 @@ static const char *TAG = "WebConfig";
 
 static httpd_handle_t s_httpd = NULL;
 static TaskHandle_t   s_task_handle = NULL;
-static volatile bool  s_running = false;
-static bool           s_mdns_running = false;
+static std::atomic<bool>  s_running{false};
+static std::atomic<bool>  s_mdns_running{false};
 
 /*============================================================================
  * Audio state — lazy-init when camera stream is OFF
@@ -102,8 +103,8 @@ static bool           s_mdns_running = false;
 
 static bool           s_audio_inited = false;
 static TaskHandle_t   s_audio_task = NULL;
-static volatile bool  s_audio_running = false;
-static volatile bool  s_is_recording = false;
+static std::atomic<bool>  s_audio_running{false};
+static std::atomic<bool>  s_is_recording{false};
 static shine_t        s_shine = NULL;
 static int16_t       *s_pcm_buf = NULL;
 static int            s_pcm_count = 0;
@@ -114,10 +115,10 @@ static char           s_rec_path[128];
 
 /* Playback */
 static esp_asp_handle_t s_asp = NULL;
-static volatile bool    s_playing = false;
+static std::atomic<bool>    s_playing{false};
 
 /* Mutual exclusion flag — file manager sets this to block audio ops during download/delete */
-static volatile bool    s_fm_busy = false;
+static std::atomic<bool>    s_fm_busy{false};
 
 /* uORB recording_state publisher — notifies PhoneAppMusic when web recording is active */
 static orb_advert_t     s_rec_pub = ORB_ADVERT_INVALID;

@@ -2,6 +2,7 @@
 
 #include "esp_brookesia.hpp"
 #include "linux/videodev2.h"
+#include <atomic>
 
 class PhoneAppCamera : public ESP_Brookesia_PhoneApp {
 public:
@@ -39,6 +40,6 @@ private:
     /* Back button */
     lv_obj_t           *_btn_back;
 
-    volatile bool        _cam_running;
+    std::atomic<bool>     _cam_running;
     bool                 _video_initialized;
 };

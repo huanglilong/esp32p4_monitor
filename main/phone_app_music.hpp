@@ -5,6 +5,7 @@
 #include "esp_gmf_err.h"
 #include "uorb.h"
 #include "topics.h"
+#include <atomic>
 
 #define MAX_TRACKS 50
 
@@ -32,8 +33,8 @@ private:
     void _prev(void);
 
     /* Audio state */
-    volatile int        _current_track;   // -1 = stopped, >=0 = playing
-    volatile bool       _is_playing;
+    std::atomic<int>     _current_track;   // -1 = stopped, >=0 = playing
+    std::atomic<bool>    _is_playing;
     int                 _track_count;
     esp_asp_handle_t    _asp_handle;      // Audio simple player handle
 
@@ -50,7 +51,7 @@ private:
     lv_obj_t           *_label_no_files;
     lv_obj_t           *_slider_vol;
     lv_obj_t           *_label_vol;
-    volatile int         _volume;           // Current volume (0-100), cross-core access
+    std::atomic<int>      _volume;           // Current volume (0-100), cross-core access
     bool                 _nvs_dirty;         // NVS debounce flag
     lv_timer_t          *_nvs_save_timer;    // NVS debounce timer (500ms)
     lv_timer_t          *_vol_sync_timer;    // Volume sync timer (subscribes to uORB volume_state)
@@ -61,9 +62,9 @@ private:
     /* uORB recording_state subscriber — stops playback when Audio app is recording */
     orb_sub_t            _rec_sub;
     lv_timer_t          *_rec_check_timer;
-    volatile bool        _recording_active;  /* cached latest state, updated by _rec_check_timer_cb */
+    std::atomic<bool>     _recording_active;  /* cached latest state, updated by _rec_check_timer_cb */
 
     /* Deferred auto-next (avoids GMF re-entrancy from ASP event callback) */
-    volatile bool       _auto_next;
+    std::atomic<bool>    _auto_next;
     lv_timer_t         *_auto_next_timer;
 };

@@ -22,19 +22,19 @@ extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_1
 PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Music", &esp_brookesia_image_large_app_launcher_default_112_112,
                            true, use_status_bar, use_navigation_bar),
-    _current_track(-1), _is_playing(false), _track_count(0),
+    _current_track{-1}, _is_playing{false}, _track_count(0),
     _asp_handle(nullptr),
     _btn_back(nullptr), _label_title(nullptr), _label_status(nullptr),
     _btn_prev(nullptr), _btn_play(nullptr), _btn_next(nullptr),
     _list_tracks(nullptr), _label_no_files(nullptr),
     _slider_vol(nullptr), _label_vol(nullptr),
-    _volume(60),
+    _volume{60},
     _nvs_dirty(false), _nvs_save_timer(nullptr),
     _vol_sync_timer(nullptr),
     _vol_sub(ORB_ADVERT_INVALID),
     _rec_sub(ORB_ADVERT_INVALID), _rec_check_timer(nullptr),
-    _recording_active(false),
-    _auto_next(false), _auto_next_timer(nullptr)
+    _recording_active{false},
+    _auto_next{false}, _auto_next_timer(nullptr)
 {
     memset(_file_names, 0, sizeof(_file_names));
 }
@@ -80,7 +80,7 @@ PhoneAppMusic::~PhoneAppMusic()
         _nvs_dirty = false;
         nvs_handle_t nvs_h;
         if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, "volume", (int32_t)_volume);
+            nvs_set_i32(nvs_h, "volume", (int32_t)_volume.load());
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
@@ -161,11 +161,11 @@ bool PhoneAppMusic::run(void)
 
     lv_obj_add_event_cb(_slider_vol, [](lv_event_t *e) {
         PhoneAppMusic *app = (PhoneAppMusic *)lv_event_get_user_data(e);
-        app->_volume = (int)lv_slider_get_value(app->_slider_vol);
+        app->_volume.store((int)lv_slider_get_value(app->_slider_vol));
         char txt[16];
-        snprintf(txt, sizeof(txt), "Vol: %d", app->_volume);
+        snprintf(txt, sizeof(txt), "Vol: %d", app->_volume.load());
         lv_label_set_text(app->_label_vol, txt);
-        PeripheralManager::instance().set_volume(app->_volume);
+        PeripheralManager::instance().set_volume(app->_volume.load());
         /* Defer NVS write (debounce to avoid flash wear) */
         app->_nvs_dirty = true;
     }, LV_EVENT_VALUE_CHANGED, this);
@@ -222,16 +222,16 @@ bool PhoneAppMusic::run(void)
     {
         nvs_handle_t nvs_h;
         if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
-            int32_t saved_vol = (int32_t)_volume;
+            int32_t saved_vol = (int32_t)_volume.load();
             if (nvs_get_i32(nvs_h, "volume", &saved_vol) == ESP_OK) {
-                if (saved_vol >= 0 && saved_vol <= 100) _volume = (int)saved_vol;
+                if (saved_vol >= 0 && saved_vol <= 100) _volume.store((int)saved_vol);
             }
             nvs_close(nvs_h);
         }
     }
 
     /* Set initial volume on codec */
-    PeripheralManager::instance().set_volume(_volume);
+    PeripheralManager::instance().set_volume(_volume.load());
 
     /* Deferred auto-next timer: checks _auto_next flag to avoid GMF re-entrancy.
      * _asp_event_cb sets _auto_next=true instead of calling _next() directly. */
@@ -244,7 +244,7 @@ bool PhoneAppMusic::run(void)
         app->_nvs_dirty = false;
         nvs_handle_t nvs_h;
         if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, "volume", (int32_t)app->_volume);
+            nvs_set_i32(nvs_h, "volume", (int32_t)app->_volume.load());
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
@@ -263,8 +263,8 @@ bool PhoneAppMusic::run(void)
         if (orb_check(app->_vol_sub, &updated) == 0 && updated) {
             struct volume_state_s vs = {};
             orb_copy(ORB_ID(volume_state), app->_vol_sub, &vs);
-            if (vs.volume >= 0 && vs.volume <= 100 && vs.volume != (int32_t)app->_volume) {
-                app->_volume = vs.volume;
+            if (vs.volume >= 0 && vs.volume <= 100 && vs.volume != (int32_t)app->_volume.load()) {
+                app->_volume.store(vs.volume);
                 lv_slider_set_value(app->_slider_vol, vs.volume, LV_ANIM_OFF);
                 char txt[16];
                 snprintf(txt, sizeof(txt), "Vol: %d", (int)vs.volume);
@@ -341,7 +341,7 @@ bool PhoneAppMusic::close(void)
         _nvs_dirty = false;
         nvs_handle_t nvs_h;
         if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, "volume", (int32_t)_volume);
+            nvs_set_i32(nvs_h, "volume", (int32_t)_volume.load());
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }

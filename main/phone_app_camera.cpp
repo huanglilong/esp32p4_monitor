@@ -34,7 +34,7 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     _v4l2_buf_count(0),
     _cam_width(0), _cam_height(0), _cam_pixel_format(0),
     _cam_canvas(nullptr), _refresh_timer(nullptr), _btn_back(nullptr),
-    _cam_running(false),
+    _cam_running{false},
     _video_initialized(false)
 {
 }

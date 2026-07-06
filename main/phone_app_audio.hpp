@@ -3,6 +3,7 @@
 #include "esp_brookesia.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <atomic>
 #include <stdio.h>
 #include "uorb.h"
 #include "topics.h"
@@ -32,16 +33,16 @@ private:
 
     /* Audio state */
     TaskHandle_t       _task_handle;
-    volatile bool      _task_running;
+    std::atomic<bool>  _task_running;
 
     /* Recording state */
-    volatile bool      _is_recording;
+    std::atomic<bool>  _is_recording;
     shine_t            _encoder;
     FILE              *_record_file;
     int16_t           *_pcm_buffer;      // Accumulation buffer for 1152*2 samples
     int                _pcm_buf_count;   // Samples accumulated (per channel)
-    volatile uint32_t  _record_bytes_written;
-    volatile uint32_t  _record_start_ms;
+    std::atomic<uint32_t> _record_bytes_written;
+    std::atomic<uint32_t> _record_start_ms;
 
     /* uORB publisher: notifies other modules (e.g. Music) when recording is active */
     orb_advert_t       _rec_pub;
