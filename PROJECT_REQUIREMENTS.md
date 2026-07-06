@@ -195,18 +195,24 @@
 | S146 | **nvs_set_i32 rename** | 静态函数 `nvs_set_i32` 重命名为 `nvs_write_i32`，避免与 ESP-IDF API 名称冲突 (shadow warning) | ✅ |
 | S147 | **MJPEG stream + detection fix** | 检测帧绘制时 MJPEG 流暂停 + FPS 统计未发布。修复: 检测和流处理顺序正确化 | ✅ |
 | S148 | **Camera info JSON parsing** | Camera Stream Web UI JSON 解析错误修复 | ✅ |
+| S149 | **SystemMonitor CPU% 双核修正** | `uxTaskGetSystemState()` 返回 wall-clock 而非任务运行时间总和，导致双核 ESP32-P4 上 `total_cpu_pct` 始终≈50%。修复: 汇总各任务 `ulRunTimeCounter` delta 作为实际 CPU 时间，除以 `wall_delta × 2` | ✅ |
+| S150 | **SystemMonitor TOP_N 编译错误** | `fields[TOP_N]` 数组用 6 个初始化器但 TOP_N 可配置为 1-6，<6 时编译错误。修复: 改为固定 `fields[6]` | ✅ |
+| S151 | **SystemMonitor _task_handle 竞态** | `stop()` 和 `_monitor_task_func` 都写 `_task_handle`，快速 stop→start 可使新任务句柄被旧任务清空。修复: 任务不再写 `_task_handle`，由 `stop()` 独占管理 | ✅ |
+| S152 | **SystemMonitor _prev_tasks 泄漏** | 最后一次 `_sample()` 分配的 `_prev_tasks` 在任务退出时未释放。修复: `_monitor_task_func` 退出前 free | ✅ |
+| S153 | **SystemMonitor IDLE 任务排除** | IDLE0/IDLE1 占用高表示系统空闲而非负载高，导致 `total_cpu_pct` 始终≈100% 且 CPU 告警误触发。修复: `total_cpu_pct` 仅统计非 IDLE 任务 (busy CPU%)，top-N 排序也排除 IDLE 任务 | ✅ |
+| S154 | **SystemMonitor 单核兼容** | CPU% 计算硬编码 `×2`，单核平台无法使用。修复: 改用 `configNUMBER_OF_CORES` | ✅ |
 
 ### 2.3 系统性能监控
 
 | # | 需求 | 说明 | 状态 |
 |---|------|------|:----:|
 | M1 | **SystemMonitor 驱动** | `drivers/system_monitor/` — 周期性采样 FreeRTOS 任务 CPU% (`uxTaskGetSystemState`) + heap/PSRAM 内存，发布 uORB `system_stats` topic | ✅ |
-| M2 | **system_stats uORB topic** | `proto/system_stats.msg` — 内存 (free/min internal+PSRAM)、CPU%、任务数、Top-4 任务 CPU%/栈高水位 | ✅ |
-| M3 | **ESP_LOG 周期摘要** | 可配置间隔 (默认 60s) 输出 Top-4 CPU 消耗任务 + 内存摘要到 UART | ✅ |
+| M2 | **system_stats uORB topic** | `proto/system_stats.msg` — 内存 (free/min internal+PSRAM)、CPU%、任务数、Top-6 任务 CPU%/栈高水位 | ✅ |
+| M3 | **ESP_LOG 周期摘要** | 可配置间隔 (默认 60s) 输出 Top-6 CPU 消耗任务 + 内存摘要到 UART | ✅ |
 | M4 | **ULog 持久化** | system_stats 注册到 ULog writer，SD 卡 `.ulg` 文件记录完整性能历史 | ✅ |
 | M5 | **Web API `/api/system_stats`** | HTTP JSON 端点返回当前 CPU/内存/任务快照，供 Flutter App 或浏览器远程监控 | ✅ |
 | M6 | **Kconfig 可配置** | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` (采样间隔)、`LOG_INTERVAL` (日志频率)、`TOP_N`、`TASK_STACK` | ✅ |
-| M7 | **异常告警 — CPU 高负载** | CPU > 90% 时发布 `system_alert` uORB (CPU_HIGH)，ESP_LOGW 输出告警，包含 Top-1 任务名和 CPU% | ✅ |
+| M7 | **异常告警 — CPU 高负载** | CPU > 90% 时发布 `system_alert` uORB (CPU_HIGH)，ESP_LOGW 输出告警，包含 Top-1 任务名和 CPU%（绝对 CPU%，0-100% 单核） | ✅ |
 | M8 | **异常告警 — 内存高占用** | Internal SRAM 或 PSRAM 使用率 > 80% 时发布 `system_alert` uORB (MEM_INTERNAL_HIGH / MEM_PSRAM_HIGH) | ✅ |
 | M9 | **告警分级** | WARNING (阈值~+5%) / CRITICAL (阈值+10%) 两级严重度 | ✅ |
 | M10 | **告警冷却** | 同类型告警最小间隔 30s (可配置)，防止告警洪泛 | ✅ |
@@ -364,6 +370,9 @@
 | 2026-07-06 | +S129 SDCardDriver _initialized atomic: available() reads without mutex now thread-safe |
 | 2026-07-06 | +S130 AudioDriver _volume atomic: volume() read without lock now thread-safe |
 | 2026-07-06 | +S131 CameraDriver mutable _sub: removes const_cast, preserves const-correctness |
+| 2026-07-06 | +M1~M13 SystemMonitor 驱动: CPU/内存采样 + uORB (system_stats/system_alert) + ULog + HTTP API (/api/system_stats, /api/system_alerts) + Kconfig + 告警 |
+| 2026-07-06 | +S149~S152 SystemMonitor 代码审查修复: CPU% 双核修正 (wall-clock→sum_task_delta), TOP_N 编译错误 (fields[6]), _task_handle 竞态, _prev_tasks 泄漏 |
+| 2026-07-06 | +S153~S154 SystemMonitor IDLE 排除 + 单核兼容: total_cpu_pct 改为 busy CPU% (排除 IDLE 任务), top-N 排除 IDLE, ×2→configNUMBER_OF_CORES |
 | 2026-07-06 | +K5~K7 Code duplication in stream_handler (LOW), logger reentrancy (LOW), web s_audio_running race (LOW) — deferred |
 | 2026-07-02 | 初始创建，汇总 PROJECT.md + project_design.md 中所有需求和问题 |
 | 2026-07-02 | +R15 R16 R17 Web 音频录制/播放 + Camera Stream 互斥需求 |

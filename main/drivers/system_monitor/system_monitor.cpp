@@ -148,10 +148,17 @@ void SystemMonitor::stop(void)
         return;  /* Not running */
     }
 
-    /* Wait for task to exit */
+    /* Wait for task to exit. The monitor task checks _running each cycle
+     * and self-deletes via vTaskDelete(NULL). We wait one full interval
+     * plus a margin, then verify the task is truly gone via eTaskGetState(). */
     if (_task_handle) {
-        /* Task checks _running flag each cycle and exits when false */
+        TaskHandle_t handle = _task_handle;
         vTaskDelay(pdMS_TO_TICKS(CONFIG_APP_SYS_MONITOR_INTERVAL_MS + 500));
+        /* If the task still exists (shouldn't happen), force-delete it */
+        if (eTaskGetState(handle) != eDeleted) {
+            ESP_LOGW(TAG, "Monitor task did not exit gracefully, force-deleting");
+            vTaskDelete(handle);
+        }
         _task_handle = nullptr;
     }
 
@@ -172,8 +179,13 @@ void SystemMonitor::_monitor_task_func(void *arg)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_APP_SYS_MONITOR_INTERVAL_MS));
     }
 
-    /* Clean up and self-delete */
-    self->_task_handle = nullptr;
+    /* Clean up per-task snapshot and self-delete.
+     * Do NOT write _task_handle — the owner (stop()) manages it exclusively
+     * to avoid racing with a subsequent start() call. */
+    if (self->_prev_tasks) {
+        free(self->_prev_tasks);
+        self->_prev_tasks = nullptr;
+    }
     ESP_LOGI(TAG, "Monitor task exiting");
     vTaskDelete(NULL);
 }
@@ -233,33 +245,61 @@ void SystemMonitor::_sample(void)
 
     /* Compute total CPU% as delta from previous sample.
      *
-     * ESP32-P4 is dual-core. Runtime stats clock is esp_timer_get_time()
-     * (1MHz = microseconds) when CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y.
+     * On ESP-IDF with SMP FreeRTOS, uxTaskGetSystemState() stores
+     * esp_timer_get_time() (wall-clock) into total_run_time — NOT the
+     * sum of per-task runtimes. The sum of all tasks' ulRunTimeCounter
+     * ≈ wall-clock × num_cores.
      *
-     * total_cpu_pct = delta_runtime / (wall_time × num_cores) × 10000
-     * where wall_time is measured by esp_timer_get_time() directly,
-     * making the calculation independent of the runtime clock source. */
+     * We compute "busy CPU%" = time spent on non-IDLE tasks:
+     *   busy_cpu_pct = sum(non_idle_task_delta) / (wall_delta × num_cores)
+     * This correctly represents system load: IDLE high = system free.
+     */
     int64_t now_us = esp_timer_get_time();
-    uint32_t delta_total = 0;
+    uint32_t delta_wall = 0;
     if (_prev_total_run_time > 0 && total_run_time > _prev_total_run_time) {
-        delta_total = total_run_time - _prev_total_run_time;
+        delta_wall = total_run_time - _prev_total_run_time;
     }
-    if (delta_total > 0 && _prev_timestamp_us > 0 && now_us > _prev_timestamp_us) {
+
+    /* Sum per-task runtime deltas, separating IDLE from busy tasks */
+    uint32_t sum_idle_delta = 0;
+    uint32_t sum_task_delta = 0;
+    if (delta_wall > 0 && _prev_tasks && _prev_task_count > 0) {
+        for (UBaseType_t i = 0; i < actual_count; i++) {
+            uint32_t prev_rt = _find_prev_runtime(task_array[i].pcTaskName);
+            uint32_t cur_rt = task_array[i].ulRunTimeCounter;
+            if (cur_rt > prev_rt) {
+                uint32_t delta = cur_rt - prev_rt;
+                sum_task_delta += delta;
+                if (_is_idle_task(task_array[i].pcTaskName)) {
+                    sum_idle_delta += delta;
+                }
+            }
+        }
+    }
+
+    uint32_t busy_delta = sum_task_delta - sum_idle_delta;
+
+    if (sum_task_delta > 0 && _prev_timestamp_us > 0 && now_us > _prev_timestamp_us) {
         int64_t delta_us = now_us - _prev_timestamp_us;
-        /* 100% CPU on 2 cores = 2 × delta_us of runtime */
-        int64_t max_runtime = delta_us * 2;
+        /* Busy CPU% = non-idle runtime / available runtime × 10000
+         * Available runtime = wall_delta × num_cores */
+        int64_t max_runtime = delta_us * configNUMBER_OF_CORES;
         if (max_runtime > 0) {
-            stats.total_cpu_pct = (uint32_t)((uint64_t)delta_total * 10000 / (uint64_t)max_runtime);
+            stats.total_cpu_pct = (uint32_t)((uint64_t)busy_delta * 10000 / (uint64_t)max_runtime);
             if (stats.total_cpu_pct > 10000) {
                 stats.total_cpu_pct = 10000;
             }
         }
     }
     _prev_total_run_time = total_run_time;
-    _prev_timestamp_us = now_us;
+    /* Note: _prev_timestamp_us updated AFTER _fill_top_tasks uses delta_us */
 
     /* ── 4. Fill top-N tasks by delta CPU% ── */
-    _fill_top_tasks(stats, task_array, actual_count, delta_total);
+    int64_t delta_us = (_prev_timestamp_us > 0 && now_us > _prev_timestamp_us)
+                        ? (now_us - _prev_timestamp_us) : 0;
+    _fill_top_tasks(stats, task_array, actual_count, sum_task_delta, delta_us);
+
+    _prev_timestamp_us = now_us;
 
     /* ── 5. Store per-task snapshot for next delta (name-matched) ── */
     if (_prev_tasks) {
@@ -316,6 +356,13 @@ void SystemMonitor::_sample(void)
  * Top-N task sorting — delta-based CPU%
  *============================================================================*/
 
+bool SystemMonitor::_is_idle_task(const char *name) const
+{
+    if (!name) return false;
+    /* FreeRTOS IDLE tasks: "IDLE" (single-core), "IDLE0", "IDLE1", etc. */
+    return strncmp(name, "IDLE", 4) == 0;
+}
+
 uint32_t SystemMonitor::_find_prev_runtime(const char *name) const
 {
     if (!_prev_tasks || _prev_task_count == 0 || !name) {
@@ -332,7 +379,8 @@ uint32_t SystemMonitor::_find_prev_runtime(const char *name) const
 void SystemMonitor::_fill_top_tasks(system_stats_s &stats,
                                      TaskStatus_t *task_array,
                                      UBaseType_t task_count,
-                                     uint32_t delta_total_run_time)
+                                     uint32_t sum_task_delta,
+                                     int64_t delta_us)
 {
     struct TaskCpu {
         const char *name;
@@ -342,28 +390,33 @@ void SystemMonitor::_fill_top_tasks(system_stats_s &stats,
 
     const int MAX_SORT = 32;
     TaskCpu cpu_list[MAX_SORT];
-    int sort_count = (task_count > MAX_SORT) ? MAX_SORT : (int)task_count;
+    int sort_count = 0;  /* non-IDLE tasks only */
 
-    for (int i = 0; i < sort_count; i++) {
-        cpu_list[i].name = task_array[i].pcTaskName;
-        cpu_list[i].stack_hwm = task_array[i].usStackHighWaterMark * sizeof(StackType_t);
+    for (UBaseType_t i = 0; i < task_count && sort_count < MAX_SORT; i++) {
+        /* Skip IDLE tasks — they represent free CPU, not load */
+        if (_is_idle_task(task_array[i].pcTaskName)) {
+            continue;
+        }
 
-        if (delta_total_run_time > 0) {
-            /* Delta CPU%: (current_runtime - prev_runtime) / delta_total × 10000
-             * This gives the task's share of CPU time during the last interval. */
+        cpu_list[sort_count].name = task_array[i].pcTaskName;
+        cpu_list[sort_count].stack_hwm = task_array[i].usStackHighWaterMark * sizeof(StackType_t);
+
+        if (delta_us > 0 && sum_task_delta > 0) {
+            /* Absolute CPU%: task_delta / (wall_delta × num_cores) × 10000
+             * This represents actual CPU utilization (0-100% of one core). */
             uint32_t prev_rt = _find_prev_runtime(task_array[i].pcTaskName);
             uint32_t cur_rt = task_array[i].ulRunTimeCounter;
             if (cur_rt > prev_rt) {
-                cpu_list[i].cpu_pct = (uint32_t)(
-                    (uint64_t)(cur_rt - prev_rt) * 10000ULL / delta_total_run_time);
+                cpu_list[sort_count].cpu_pct = (uint32_t)(
+                    (uint64_t)(cur_rt - prev_rt) * 10000ULL / ((uint64_t)delta_us * configNUMBER_OF_CORES));
             } else {
-                cpu_list[i].cpu_pct = 0;
+                cpu_list[sort_count].cpu_pct = 0;
             }
         } else {
-            /* First sample — no previous data, use absolute share */
-            /* (fallback only, not the regular path) */
-            cpu_list[i].cpu_pct = 0;
+            /* First sample — no previous data */
+            cpu_list[sort_count].cpu_pct = 0;
         }
+        sort_count++;
     }
 
     /* Sort descending by CPU% (simple selection sort for small N) */
@@ -381,12 +434,12 @@ void SystemMonitor::_fill_top_tasks(system_stats_s &stats,
         }
     }
 
-    /* Fill top-N into stats struct */
+    /* Fill top-N into stats struct (always 6 slots in system_stats_s) */
     struct {
         char *name;
         uint32_t *cpu_pct;
         uint32_t *stack_hwm;
-    } fields[TOP_N] = {
+    } fields[6] = {
         { stats.task_name_0, &stats.task_cpu_pct_0, &stats.task_stack_hwm_0 },
         { stats.task_name_1, &stats.task_cpu_pct_1, &stats.task_stack_hwm_1 },
         { stats.task_name_2, &stats.task_cpu_pct_2, &stats.task_stack_hwm_2 },
@@ -430,12 +483,12 @@ void SystemMonitor::_log_summary(const system_stats_s &stats)
              stats.total_cpu_pct / 100,
              stats.total_cpu_pct % 100);
 
-    /* Log top-N tasks */
+    /* Log top-N tasks (always 6 slots in system_stats_s) */
     struct {
         const char *name;
         uint32_t cpu_pct;
         uint32_t stack_hwm;
-    } fields[TOP_N] = {
+    } fields[6] = {
         { stats.task_name_0, stats.task_cpu_pct_0, stats.task_stack_hwm_0 },
         { stats.task_name_1, stats.task_cpu_pct_1, stats.task_stack_hwm_1 },
         { stats.task_name_2, stats.task_cpu_pct_2, stats.task_stack_hwm_2 },

@@ -5,7 +5,7 @@ uint32  free_psram           # Free PSRAM (bytes)
 uint32  min_free_internal    # Historical minimum free internal SRAM (bytes)
 uint32  min_free_psram       # Historical minimum free PSRAM (bytes)
 uint32  task_count           # Current number of FreeRTOS tasks
-uint32  total_cpu_pct        # Total CPU utilization (0-10000 = 0-100.00%)
+uint32  total_cpu_pct        # Total busy CPU utilization (excludes IDLE), 0-10000 = 0-100.00%
 
 # Top-6 task CPU/stack snapshot (sorted by CPU usage descending)
 char[16] task_name_0         # Task name (0)

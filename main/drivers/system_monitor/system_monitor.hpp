@@ -9,8 +9,10 @@
  *     * ULog persistence (SD card binary log)
  *     * ESP_LOG summary output (configurable level/interval)
  *     * HTTP API (/api/system_stats) for remote monitoring
+ *   - Total CPU% excludes IDLE tasks: busy_cpu_pct represents actual
+ *     system load. High IDLE = system free, not busy.
  *   - Top-N tasks by CPU usage are captured in each sample, sorted
- *     descending.
+ *     descending (IDLE tasks excluded from top-N).
  *   - Historical minimum free heap is tracked per sampling period.
  *   - Alerts are published as uORB `system_alert` topic when:
  *     * Total CPU usage exceeds threshold (default 90%)
@@ -101,10 +103,14 @@ private:
     void _fill_top_tasks(system_stats_s &stats,
                          TaskStatus_t *task_array,
                          UBaseType_t task_count,
-                         uint32_t delta_total_run_time);
+                         uint32_t sum_task_delta,
+                         int64_t delta_us);
 
     /** Look up a task's previous runtime by name. Returns 0 if not found. */
     uint32_t _find_prev_runtime(const char *name) const;
+
+    /** Check if a task is an IDLE task (IDLE, IDLE0, IDLE1, ...). */
+    bool _is_idle_task(const char *name) const;
 
     /** Check alert thresholds and publish alerts. */
     void _check_alerts(const system_stats_s &stats);
