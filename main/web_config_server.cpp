@@ -1273,7 +1273,7 @@ static esp_err_t h_play(httpd_req_t *req) {
         audio_lock();
     }
     s_playing = false;
-    esp_asp_cfg_t c={.out={.cb=_asp_out},.task_prio=3,.task_stack=8192,.task_core=1};
+    esp_asp_cfg_t c={.out={.cb=_asp_out},.task_prio=3,.task_stack=8192,.task_core=1,.task_stack_in_ext=true};
     if(esp_audio_simple_player_new(&c,&s_asp)!=ESP_GMF_ERR_OK||!s_asp){ audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     esp_audio_simple_player_set_event(s_asp,_asp_evt,NULL);
     esp_gmf_err_t ret = esp_audio_simple_player_run(s_asp, uri, NULL);
@@ -1813,6 +1813,7 @@ static void web_config_task(void *arg)
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
     config.max_uri_handlers = 27;  /* 5 core + 6 audio + 3 file mgr + 4 CORS + 5 ULog + 2 system + 2 spare */
+    config.max_open_sockets = 3;   /* Limit concurrent connections (default 7 is excessive for 3 httpd instances) */
     config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
                                       stack vars + ESP_LOGI → uart_write → recursive mutex
                                       needs deep call chain; logger vprintf hook adds more */

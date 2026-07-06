@@ -726,21 +726,23 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 > **2026-07-07 优化**: 关闭 LVGL IRAM (`CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，IRAM 从 156 KB 降至 92 KB，释放 ~64 KB。
 
 运行时 Heap ~234 KB 主要消耗者：
-- WiFi/LWIP 缓冲区: ~30-50 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096，pbufs 等小块走 PSRAM)
-- FreeRTOS 任务栈: ~40-50 KB (detect 16KB, audio 12KB, etc.)
+- WiFi/LWIP 缓冲区: ~20-30 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096, TCP_SND/WND=32768, pbufs 走 PSRAM)
+- FreeRTOS 任务栈: ~30-40 KB (detect 16KB PSRAM, ASP 8KB PSRAM, audio 12KB internal)
 - 系统服务 (mDNS/NVS/esp_netif): ~10-20 KB
 - DMA 描述符/USB: ~5-10 KB
 - 剩余可用: **~180 KB** (优化后，原 ~90 KB)
 
 **最近优化**:
 - **2026-07-07**: 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，释放 **~64 KB** IRAM
+- **2026-07-07**: ASP 音频任务栈 8KB 移至 PSRAM (`task_stack_in_ext=true` — GMF 内部用 WithCaps 处理), 共省 **~8 KB**
+- **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 共省 **~30 KB** pbuf 头部
 - **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
 - **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
 - **2026-07-06**: detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)
 - **2026-07-06**: CameraStream model_load task 8KB 栈移入 PSRAM (`xTaskCreateStatic`)
 - **2026-07-06**: `SPIRAM_TRY_ALLOCATE_DMA_BUFFER` 在 IDF v6.x 中已不存在，`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` 已覆盖 DMA 分配
 
-> **⚠️ 已知问题**: Camera Stream (MJPEG 推流 + inline detection) 与 Music Play (GMF 音频管道) 同时运行时，internal SRAM 消耗 >80%，可能导致音频播放卡顿。需进一步分析 GMF 音频管道缓冲区和 HTTPD 缓冲区的 PSRAM 迁移机会。
+> **✅ 已解决**: Camera Stream + Music 播放时 internal SRAM >80% 导致音频卡顿。主要通过 LVGL IRAM→PSRAM XIP (-64KB) 解决，辅以 ASP 栈→PSRAM (-8KB) 和 LWIP TCP 缓冲区缩小 (-30KB)。
 
 ## 构建和烧录
 

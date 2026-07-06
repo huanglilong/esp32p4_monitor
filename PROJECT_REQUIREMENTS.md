@@ -211,6 +211,7 @@
 | S154 | **SystemMonitor 单核兼容** | CPU% 计算硬编码 `×2`，单核平台无法使用。修复: 改用 `configNUMBER_OF_CORES` | ✅ |
 | P1 | **PPA 硬件加速检测预处理** | `PPAPreprocessor` 类: PPA SRM client 执行 RGB565LE→BGR888 resize (800×800→300×300, PPA 4-bit frac 量化 0.4→0.375, pic_w=actual_w 确保行步长连续), COCODetect 内部 BGR888→letterbox→RGB888_QINT8 (含 R↔B swap); PhoneAppCamera + CameraStream 均启用; 自动降级 CPU fallback; 检测框按 actual_width/height rescale | ✅ |
 | S155 | **SystemMonitor 导致 LCD 闪烁** | 根因: `_sample()` 每 5s 调用 `uxTaskGetSystemState()` → `vTaskSuspendAll()` 暂停两核 FreeRTOS 调度器 → LVGL task 的 `ulTaskNotifyTake()` 无法 block → `lv_timer_handler()` 异常高频调用 + `xTaskResumeAll()` 恢复时上下文切换爆发 → 画面闪烁。修复: ① 移除 `heap_caps_print_heap_info()` ② **核心修复: 用 `xTaskGetIdleTaskHandleForCore()` + `vTaskGetInfo()` 替代 `uxTaskGetSystemState()`** — 前者仅读取每核 idle task 累计运行时间，不暂停调度器，无闪烁。per-core busy CPU% = 100% - idle%。③ 移除死代码 (静态 buffer、`_fill_top_tasks`、`_find_prev_runtime`、`_is_idle_task` 等 ~2.4KB SRAM 回收) ④ `system_stats.msg` 移除 top-6 task 字段，新增 `core0_cpu_pct` / `core1_cpu_pct` ⑤ 启用 `CONFIG_FREERTOS_INCLUDE_xTaskGetIdleTaskHandle=y` | ✅ |
+| S156 | **音乐卡顿 — 内部 SRAM 不足** | Camera Stream + 音乐播放时 `ESP_GMF_ASMP_DEC: Not enough memory for out` + 内部 SRAM 85.76% (54KB free / 386KB)。根因: LVGL IRAM 占用 ~64KB 内部 SRAM + LWIP 22 sockets × 64KB TCP 缓冲区 pbuf 链头占 ~60KB。修复: ① 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → 代码移至 PSRAM XIP, 释放 **~64KB** (主要修复) ② `task_stack_in_ext=true` 将 ASP 任务栈移至 PSRAM (-8KB) ③ LWIP `TCP_SND_BUF/WND` 65535→32768, httpd `max_open_sockets` 7→3/2/3 (-30KB pbuf 头部) | ✅ |
 
 ### 2.3 系统性能监控
 

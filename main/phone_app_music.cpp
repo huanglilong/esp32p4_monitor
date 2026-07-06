@@ -469,6 +469,7 @@ void PhoneAppMusic::_play(int index)
         .task_prio = 3,
         .task_stack = 8192,
         .task_core = 1,
+        .task_stack_in_ext = true,  /* Allocate 8KB task stack in PSRAM to save internal SRAM */
     };
     if (esp_audio_simple_player_new(&asp_cfg, &_asp_handle) != ESP_GMF_ERR_OK || !_asp_handle) {
         ESP_LOGE(TAG, "Failed to create player");

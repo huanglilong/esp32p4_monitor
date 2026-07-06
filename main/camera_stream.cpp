@@ -1455,6 +1455,10 @@ static esp_err_t index_handler(httpd_req_t *req)
 bool CameraStream::_start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    /* Limit concurrent connections to save LWIP sockets (internal SRAM).
+     * Default is 7 — too many for 3 httpd instances. 3 is sufficient for
+     * 1 browser tab (parallel API + resource requests). */
+    config.max_open_sockets = 3;
     /* All registered URIs are exact paths — use default exact-match
      * instead of wildcard matching (faster, more secure). */
 
@@ -1482,6 +1486,7 @@ bool CameraStream::_start_http_server(void)
     config.server_port += 1;   // 80 → 81 (matches reference: config.server_port += 1)
     config.ctrl_port += 1;     // Must differ from port 80's ctrl port
     config.stack_size = 1024 * 6;
+    config.max_open_sockets = 2;  /* MJPEG stream: typically 1-2 clients */
     ESP_LOGI(TAG, "Starting MJPEG stream server on port 81");
     if (httpd_start(&_httpd_81, &config) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server port 81 start failed");
