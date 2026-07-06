@@ -871,13 +871,116 @@ void CameraStream::_draw_box_on_bgr24(uint8_t *buffer, uint32_t width, uint32_t 
     }
 }
 
+/*============================================================================
+ * Stream handler helpers — extracted from stream_handler for readability
+ *============================================================================*/
+
+/* Draw detection boxes on PPA BGR24 output buffer + cache msync */
+void CameraStream::_draw_detection_boxes_on_ppa(void)
+{
+    if (!_detect_available || !_detect_mutex ||
+        xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
+    if (!_detect_results.empty()) {
+        for (auto &r : _detect_results) {
+            int bx1 = (int)(r.box[0] * (float)_ppa->actual_width() / (float)_cam_width);
+            int by1 = (int)(r.box[1] * (float)_ppa->actual_height() / (float)_cam_height);
+            int bx2 = (int)(r.box[2] * (float)_ppa->actual_width() / (float)_cam_width);
+            int by2 = (int)(r.box[3] * (float)_ppa->actual_height() / (float)_cam_height);
+            _draw_box_on_bgr24(_ppa->out_buf(), _ppa->actual_width(), _ppa->actual_height(),
+                               bx1, by1, bx2, by2, 0, 255, 0);
+        }
+        esp_cache_msync(_ppa->out_buf(), _ppa->out_buf_size(), ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    }
+    xSemaphoreGive(_detect_mutex);
+}
+
+/* Draw detection boxes on RGB565 V4L2 buffer + cache msync */
+void CameraStream::_draw_detection_boxes_on_rgb565(uint8_t *buf, uint32_t len)
+{
+    if (!_detect_available || !_detect_mutex ||
+        xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
+    if (!_detect_results.empty()) {
+        for (auto &r : _detect_results) {
+            _draw_box_on_buffer(buf, _cam_width, _cam_height,
+                                r.box[0], r.box[1], r.box[2], r.box[3], 0x07E0);
+        }
+        esp_cache_msync(buf, len, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    }
+    xSemaphoreGive(_detect_mutex);
+}
+
+/* Send MJPEG boundary + part header + JPEG data.
+ * Returns true on success, false on client disconnect (caller should break). */
+bool CameraStream::_send_mjpeg_part(httpd_req_t *req, uint8_t *jpeg_data, uint32_t jpeg_size,
+                                     char *part_buf, size_t part_buf_size)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    int hlen = snprintf(part_buf, part_buf_size, STREAM_PART, jpeg_size,
+                        (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
+    if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK ||
+        httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
+        httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
+        return false;
+    }
+    return true;
+}
+
+/* Save latest JPEG snapshot for /api/capture_image endpoint */
+void CameraStream::_save_jpeg_snapshot(uint8_t *jpeg_data, uint32_t jpeg_size)
+{
+    if (!_last_jpeg_mutex || xSemaphoreTake(_last_jpeg_mutex, 0) != pdTRUE) return;
+    if (_last_jpeg_capacity < jpeg_size) {
+        uint8_t *new_buf = (uint8_t *)realloc(_last_jpeg_buf, jpeg_size);
+        if (new_buf) {
+            _last_jpeg_buf = new_buf;
+            _last_jpeg_capacity = jpeg_size;
+        }
+    }
+    if (_last_jpeg_buf && _last_jpeg_capacity >= jpeg_size) {
+        memcpy(_last_jpeg_buf, jpeg_data, jpeg_size);
+        _last_jpeg_size = jpeg_size;
+    }
+    xSemaphoreGive(_last_jpeg_mutex);
+}
+
+/* Update FPS counters and publish uORB stats every FPS_LOG_INTERVAL_S seconds */
+void CameraStream::_update_fps_stats(uint32_t jpeg_size)
+{
+    _frame_count = _frame_count + 1;
+    _fps_frame_count = _fps_frame_count + 1;
+    _fps_total_bytes = _fps_total_bytes + jpeg_size;
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double elapsed = (now.tv_sec - _fps_window_start.tv_sec) +
+                     (now.tv_nsec - _fps_window_start.tv_nsec) / 1e9;
+    if (elapsed >= FPS_LOG_INTERVAL_S) {
+        float fps = (float)_fps_frame_count / (float)elapsed;
+        orb_advert_t expected = ORB_ADVERT_INVALID;
+        _fps_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(fps_stats)),
+                std::memory_order_acq_rel, std::memory_order_acquire);
+        if (_fps_pub >= 0) {
+            struct fps_stats_s fps_msg = {};
+            fps_msg.timestamp      = esp_timer_get_time();
+            fps_msg.frame_count    = _frame_count;
+            fps_msg.fps_total_bytes = _fps_total_bytes;
+            fps_msg.fps            = fps;
+            orb_publish(ORB_ID(fps_stats), _fps_pub, &fps_msg);
+        }
+        ESP_LOGI(TAG, "FPS: %.1f, bytes/s: %.0f", fps, (float)_fps_total_bytes / elapsed);
+        _fps_window_start = now;
+        _fps_frame_count = 0;
+        _fps_total_bytes = 0;
+    }
+}
+
 /** MJPEG stream handler (port 81) — continuous multipart JPEG stream */
 static esp_err_t stream_handler(httpd_req_t *req)
 {
     CameraStream *cs = (CameraStream *)req->user_ctx;
     char part_buf[128];
     struct v4l2_buffer buf;
-    struct timespec ts;
 
     /* Lazy-init JPEG encoder on first MJPEG client connection.
      * This defers the internal-SRAM-heavy DMA descriptor allocation
@@ -968,25 +1071,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
                     continue;
                 }
                 /* Draw detection boxes on PPA output buffer (300×300 BGR24) */
-                if (cs->_detect_available && cs->_detect_mutex &&
-                    xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
-                    if (!cs->_detect_results.empty()) {
-                        for (auto &r : cs->_detect_results) {
-                            /* Rescale from camera coords to PPA output coords */
-                            int bx1 = (int)(r.box[0] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
-                            int by1 = (int)(r.box[1] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
-                            int bx2 = (int)(r.box[2] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
-                            int by2 = (int)(r.box[3] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
-                            cs->_draw_box_on_bgr24(cs->_ppa->out_buf(),
-                                                    cs->_ppa->actual_width(), cs->_ppa->actual_height(),
-                                                    bx1, by1, bx2, by2,
-                                                    0, 255, 0);  /* Green BGR */
-                        }
-                        esp_cache_msync(cs->_ppa->out_buf(), cs->_ppa->out_buf_size(),
-                                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                    }
-                    xSemaphoreGive(cs->_detect_mutex);
-                }
+                cs->_draw_detection_boxes_on_ppa();
                 esp_err_t ret = example_encoder_process(cs->_encoder_handle,
                                                          cs->_ppa->out_buf(),
                                                          cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
@@ -1018,12 +1103,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             }
 
             /* Send MJPEG part before inference so stream stays continuous */
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            int hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, jpeg_size,
-                                (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
-            if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK ||
-                httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
-                httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
+            if (!cs->_send_mjpeg_part(req, jpeg_data, jpeg_size, part_buf, sizeof(part_buf))) {
                 if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                     xSemaphoreGive(cs->_encoder_sem);
                 }
@@ -1036,27 +1116,11 @@ static esp_err_t stream_handler(httpd_req_t *req)
             }
 
             /* Save JPEG snapshot for /api/capture_image */
-            if (cs->_last_jpeg_mutex &&
-                xSemaphoreTake(cs->_last_jpeg_mutex, 0) == pdTRUE) {
-                if (cs->_last_jpeg_capacity < jpeg_size) {
-                    uint8_t *new_buf = (uint8_t *)realloc(cs->_last_jpeg_buf, jpeg_size);
-                    if (new_buf) {
-                        cs->_last_jpeg_buf = new_buf;
-                        cs->_last_jpeg_capacity = jpeg_size;
-                    }
-                }
-                if (cs->_last_jpeg_buf && cs->_last_jpeg_capacity >= jpeg_size) {
-                    memcpy(cs->_last_jpeg_buf, jpeg_data, jpeg_size);
-                    cs->_last_jpeg_size = jpeg_size;
-                }
-                xSemaphoreGive(cs->_last_jpeg_mutex);
-            }
+            cs->_save_jpeg_snapshot(jpeg_data, jpeg_size);
 
             /* Run inference — PPA output already available, _run_inference reuses it */
             cs->_run_inference(nullptr, 0);
-            cs->_frame_count = cs->_frame_count + 1;
-            cs->_fps_frame_count = cs->_fps_frame_count + 1;
-            cs->_fps_total_bytes = cs->_fps_total_bytes + jpeg_size;
+            cs->_update_fps_stats(jpeg_size);
             vTaskDelay(pdMS_TO_TICKS(50));
             detection_run_this_frame = true;
         }
@@ -1084,24 +1148,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
                     ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
 
                     /* Draw detection boxes on PPA output buffer (300×300 BGR24) */
-                    if (cs->_detect_available && cs->_detect_mutex &&
-                        xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
-                        if (!cs->_detect_results.empty()) {
-                            for (auto &r : cs->_detect_results) {
-                                int bx1 = (int)(r.box[0] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
-                                int by1 = (int)(r.box[1] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
-                                int bx2 = (int)(r.box[2] * (float)cs->_ppa->actual_width() / (float)cs->_cam_width);
-                                int by2 = (int)(r.box[3] * (float)cs->_ppa->actual_height() / (float)cs->_cam_height);
-                                cs->_draw_box_on_bgr24(cs->_ppa->out_buf(),
-                                                        cs->_ppa->actual_width(), cs->_ppa->actual_height(),
-                                                        bx1, by1, bx2, by2,
-                                                        0, 255, 0);  /* Green BGR */
-                            }
-                            esp_cache_msync(cs->_ppa->out_buf(), cs->_ppa->out_buf_size(),
-                                            ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                        }
-                        xSemaphoreGive(cs->_detect_mutex);
-                    }
+                    cs->_draw_detection_boxes_on_ppa();
 
                     if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
                         continue;
@@ -1125,20 +1172,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
 #endif
             else {
                 /* CPU fallback: draw boxes on V4L2 buffer, encode from 800×800 RGB565 */
-                if (cs->_detect_in_buf && cs->_detect_available && cs->_detect_mutex &&
-                    xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
-                    if (!cs->_detect_results.empty()) {
-                        for (auto &r : cs->_detect_results) {
-                            cs->_draw_box_on_buffer(cs->_v4l2_bufs[buf.index],
-                                                    cs->_cam_width, cs->_cam_height,
-                                                    r.box[0], r.box[1], r.box[2], r.box[3],
-                                                    0x07E0);  // Green in RGB565
-                        }
-                        esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
-                                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-                    }
-                    xSemaphoreGive(cs->_detect_mutex);
-                }
+                cs->_draw_detection_boxes_on_rgb565(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index]);
 
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
                     ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
@@ -1156,11 +1190,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             }
 
             /* Send part header + JPEG data */
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            int hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, jpeg_size,
-                                (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
-            if (httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
-                httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
+            if (!cs->_send_mjpeg_part(req, jpeg_data, jpeg_size, part_buf, sizeof(part_buf))) {
                 if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                     xSemaphoreGive(cs->_encoder_sem);
                 }
@@ -1174,21 +1204,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
             }
 
             /* Save latest JPEG snapshot for /api/capture_image endpoint */
-            if (cs->_last_jpeg_mutex &&
-                xSemaphoreTake(cs->_last_jpeg_mutex, 0) == pdTRUE) {
-                if (cs->_last_jpeg_capacity < jpeg_size) {
-                    uint8_t *new_buf = (uint8_t *)realloc(cs->_last_jpeg_buf, jpeg_size);
-                    if (new_buf) {
-                        cs->_last_jpeg_buf = new_buf;
-                        cs->_last_jpeg_capacity = jpeg_size;
-                    }
-                }
-                if (cs->_last_jpeg_buf && cs->_last_jpeg_capacity >= jpeg_size) {
-                    memcpy(cs->_last_jpeg_buf, jpeg_data, jpeg_size);
-                    cs->_last_jpeg_size = jpeg_size;
-                }
-                xSemaphoreGive(cs->_last_jpeg_mutex);
-            }
+            cs->_save_jpeg_snapshot(jpeg_data, jpeg_size);
+
             if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                 xSemaphoreGive(cs->_encoder_sem);
             }
@@ -1201,39 +1218,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             }
 
-            cs->_frame_count = cs->_frame_count + 1;
-            cs->_fps_frame_count = cs->_fps_frame_count + 1;
-            cs->_fps_total_bytes = cs->_fps_total_bytes + jpeg_size;
-
-            /* Compute and publish FPS stats via uORB every FPS_LOG_INTERVAL_S seconds */
-            {
-                struct timespec now;
-                clock_gettime(CLOCK_MONOTONIC, &now);
-                double elapsed = (now.tv_sec - cs->_fps_window_start.tv_sec) +
-                                 (now.tv_nsec - cs->_fps_window_start.tv_nsec) / 1e9;
-                if (elapsed >= cs->FPS_LOG_INTERVAL_S) {
-                    float fps = (float)cs->_fps_frame_count / (float)elapsed;
-                    /* Atomic lazy-advertise: prevent double-advertise race
-                     * (same pattern as AudioDriver::_vol_pub) */
-                    orb_advert_t expected = ORB_ADVERT_INVALID;
-                    cs->_fps_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(fps_stats)),
-                            std::memory_order_acq_rel, std::memory_order_acquire);
-                    if (cs->_fps_pub >= 0) {
-                        struct fps_stats_s fps_msg = {};
-                        fps_msg.timestamp      = esp_timer_get_time();
-                        fps_msg.frame_count    = cs->_frame_count;
-                        fps_msg.fps_total_bytes = cs->_fps_total_bytes;
-                        fps_msg.fps            = fps;
-                        orb_publish(ORB_ID(fps_stats), cs->_fps_pub, &fps_msg);
-                    }
-                    ESP_LOGI(TAG, "FPS: %.1f, bytes/s: %.0f", fps,
-                             (float)cs->_fps_total_bytes / elapsed);
-                    /* Reset FPS window */
-                    cs->_fps_window_start = now;
-                    cs->_fps_frame_count = 0;
-                    cs->_fps_total_bytes = 0;
-                }
-            }
+            cs->_update_fps_stats(jpeg_size);
 
             /* Yield CPU to prevent SDIO/WiFi starvation */
             vTaskDelay(pdMS_TO_TICKS(50));

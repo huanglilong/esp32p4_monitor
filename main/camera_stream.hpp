@@ -117,6 +117,17 @@ public:
                             int x1, int y1, int x2, int y2,
                             uint8_t b, uint8_t g, uint8_t r);
 
+    /* Stream handler helpers — extracted from stream_handler for readability */
+    void _draw_detection_boxes_on_ppa(void);      /* Draw boxes on PPA BGR24 output + cache msync */
+    void _draw_detection_boxes_on_rgb565(uint8_t *buf, uint32_t len);  /* Draw boxes on RGB565 buffer + cache msync */
+    bool _encode_and_send_jpeg(httpd_req_t *req, uint8_t *src, uint32_t src_size,
+                               uint32_t &out_jpeg_size, uint8_t *&out_jpeg_data,
+                               bool v4l2_buf_consumed);  /* Encode JPEG, return false on error (break) */
+    bool _send_mjpeg_part(httpd_req_t *req, uint8_t *jpeg_data, uint32_t jpeg_size,
+                          char *part_buf, size_t part_buf_size);  /* Send MJPEG boundary+part, return false on error */
+    void _save_jpeg_snapshot(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Cache latest JPEG for /api/capture_image */
+    void _update_fps_stats(uint32_t jpeg_size);   /* Update FPS counters and publish uORB */
+
     /* Run detection inference on given buffer (same task, no mutex needed) */
     void _run_inference(uint8_t *buffer, uint32_t size);
 
