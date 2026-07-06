@@ -13,8 +13,6 @@
 #include "freertos/task.h"
 #include "topics.h"
 #include <cstring>
-#include <algorithm>
-#include <cstdlib>
 
 /* Kconfig defaults — can be overridden in Kconfig.projbuild */
 #ifndef CONFIG_APP_SYS_MONITOR_INTERVAL_MS
@@ -48,6 +46,10 @@
 
 /* Number of top tasks to track (must match system_stats.msg structure) */
 static constexpr int TOP_N = CONFIG_APP_SYS_MONITOR_TOP_N;
+
+/* Static buffer sizes for periodic sampling — avoid heap alloc every sample.
+ * heap_caps_malloc/free every 5s causes PSRAM cache maintenance + heap lock
+ * contention, which interferes with LVGL DMA (PSRAM draw buffers → display). */
 
 /*============================================================================
  * Singleton
@@ -91,10 +93,6 @@ bool SystemMonitor::init(void)
     _min_free_psram.store(free_psram, std::memory_order_relaxed);
 
     _initialized.store(true, std::memory_order_release);
-
-    /* Print detailed heap region info once at init for debugging SRAM allocation */
-    ESP_LOGI(TAG, "── Heap Region Details ──");
-    heap_caps_print_heap_info(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     ESP_LOGI(TAG, "Initialized (interval=%dms, log_every=%d samples, top_n=%d, "
              "cpu_alert=%d%%, mem_alert=%d%%, cooldown=%ds)",
@@ -179,13 +177,9 @@ void SystemMonitor::_monitor_task_func(void *arg)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_APP_SYS_MONITOR_INTERVAL_MS));
     }
 
-    /* Clean up per-task snapshot and self-delete.
+    /* Clean up and self-delete.
      * Do NOT write _task_handle — the owner (stop()) manages it exclusively
      * to avoid racing with a subsequent start() call. */
-    if (self->_prev_tasks) {
-        free(self->_prev_tasks);
-        self->_prev_tasks = nullptr;
-    }
     ESP_LOGI(TAG, "Monitor task exiting");
     vTaskDelete(NULL);
 }
@@ -211,28 +205,10 @@ void SystemMonitor::_sample(void)
         _min_free_psram.store(min_free_psram, std::memory_order_relaxed);
     }
 
-    /* ── 2. Task CPU stats ── */
-    UBaseType_t task_count = uxTaskGetNumberOfTasks();
-
-    /* Allocate array for task status. Use PSRAM if available to save SRAM. */
-    size_t array_size = sizeof(TaskStatus_t) * task_count;
-    TaskStatus_t *task_array = nullptr;
-
-    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > array_size + 4096) {
-        task_array = static_cast<TaskStatus_t *>(
-            heap_caps_malloc(array_size, MALLOC_CAP_SPIRAM));
-    }
-    if (!task_array) {
-        task_array = static_cast<TaskStatus_t *>(
-            heap_caps_malloc(array_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    }
-    if (!task_array) {
-        ESP_LOGW(TAG, "Cannot allocate task array (%u tasks)", (unsigned)task_count);
-        return;
-    }
-
-    uint32_t total_run_time = 0;
-    UBaseType_t actual_count = uxTaskGetSystemState(task_array, task_count, &total_run_time);
+    /* ── 2. Task count only (CPU sampling via uxTaskGetSystemState()
+     * calls vTaskSuspendAll() which disrupts LVGL rendering on core 1.
+     * CPU% monitoring is disabled to prevent display flickering. */
+    UBaseType_t actual_count = uxTaskGetNumberOfTasks();
 
     /* ── 3. Build system_stats_s ── */
     system_stats_s stats = {};
@@ -243,90 +219,17 @@ void SystemMonitor::_sample(void)
     stats.min_free_psram = min_free_psram;
     stats.task_count = (uint32_t)actual_count;
 
-    /* Compute total CPU% as delta from previous sample.
-     *
-     * On ESP-IDF with SMP FreeRTOS, uxTaskGetSystemState() stores
-     * esp_timer_get_time() (wall-clock) into total_run_time — NOT the
-     * sum of per-task runtimes. The sum of all tasks' ulRunTimeCounter
-     * ≈ wall-clock × num_cores.
-     *
-     * We compute "busy CPU%" = time spent on non-IDLE tasks:
-     *   busy_cpu_pct = sum(non_idle_task_delta) / (wall_delta × num_cores)
-     * This correctly represents system load: IDLE high = system free.
-     */
-    int64_t now_us = esp_timer_get_time();
-    uint32_t delta_wall = 0;
-    if (_prev_total_run_time > 0 && total_run_time > _prev_total_run_time) {
-        delta_wall = total_run_time - _prev_total_run_time;
-    }
+    /* CPU% disabled: uxTaskGetSystemState() calls vTaskSuspendAll() which
+     * disrupts LVGL rendering on core 1. Memory stats only for now. */
+    stats.total_cpu_pct = 0;
 
-    /* Sum per-task runtime deltas, separating IDLE from busy tasks */
-    uint32_t sum_idle_delta = 0;
-    uint32_t sum_task_delta = 0;
-    if (delta_wall > 0 && _prev_tasks && _prev_task_count > 0) {
-        for (UBaseType_t i = 0; i < actual_count; i++) {
-            uint32_t prev_rt = _find_prev_runtime(task_array[i].pcTaskName);
-            uint32_t cur_rt = task_array[i].ulRunTimeCounter;
-            if (cur_rt > prev_rt) {
-                uint32_t delta = cur_rt - prev_rt;
-                sum_task_delta += delta;
-                if (_is_idle_task(task_array[i].pcTaskName)) {
-                    sum_idle_delta += delta;
-                }
-            }
-        }
-    }
-
-    uint32_t busy_delta = sum_task_delta - sum_idle_delta;
-
-    if (sum_task_delta > 0 && _prev_timestamp_us > 0 && now_us > _prev_timestamp_us) {
-        int64_t delta_us = now_us - _prev_timestamp_us;
-        /* Busy CPU% = non-idle runtime / available runtime × 10000
-         * Available runtime = wall_delta × num_cores */
-        int64_t max_runtime = delta_us * configNUMBER_OF_CORES;
-        if (max_runtime > 0) {
-            stats.total_cpu_pct = (uint32_t)((uint64_t)busy_delta * 10000 / (uint64_t)max_runtime);
-            if (stats.total_cpu_pct > 10000) {
-                stats.total_cpu_pct = 10000;
-            }
-        }
-    }
-    _prev_total_run_time = total_run_time;
-    /* Note: _prev_timestamp_us updated AFTER _fill_top_tasks uses delta_us */
-
-    /* ── 4. Fill top-N tasks by delta CPU% ── */
-    int64_t delta_us = (_prev_timestamp_us > 0 && now_us > _prev_timestamp_us)
-                        ? (now_us - _prev_timestamp_us) : 0;
-    _fill_top_tasks(stats, task_array, actual_count, sum_task_delta, delta_us);
-
-    _prev_timestamp_us = now_us;
-
-    /* ── 5. Store per-task snapshot for next delta (name-matched) ── */
-    if (_prev_tasks) {
-        free(_prev_tasks);
-        _prev_tasks = nullptr;
-    }
-    _prev_tasks = static_cast<TaskSnapshot *>(
-        malloc(sizeof(TaskSnapshot) * actual_count));
-    if (_prev_tasks) {
-        for (UBaseType_t i = 0; i < actual_count; i++) {
-            strncpy(_prev_tasks[i].name, task_array[i].pcTaskName,
-                    configMAX_TASK_NAME_LEN - 1);
-            _prev_tasks[i].name[configMAX_TASK_NAME_LEN - 1] = '\0';
-            _prev_tasks[i].run_time = task_array[i].ulRunTimeCounter;
-        }
-        _prev_task_count = actual_count;
-    }
-
-    free(task_array);
-
-    /* ── 6. Update latest snapshot (mutex-protected) ── */
+    /* ── 4. Update latest snapshot (mutex-protected) ── */
     if (_latest_mutex && xSemaphoreTake(_latest_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         _latest = stats;
         xSemaphoreGive(_latest_mutex);
     }
 
-    /* ── 7. Publish via uORB ── */
+    /* ── 5. Publish via uORB ── */
     orb_advert_t pub = _pub.load(std::memory_order_acquire);
     if (pub == ORB_ADVERT_INVALID) {
         orb_advert_t new_pub = orb_advertise(ORB_ID(system_stats));
@@ -341,14 +244,14 @@ void SystemMonitor::_sample(void)
         orb_publish(ORB_ID(system_stats), pub, &stats);
     }
 
-    /* ── 8. Periodic ESP_LOG summary ── */
+    /* ── 6. Periodic ESP_LOG summary ── */
     _sample_count++;
     if (CONFIG_APP_SYS_MONITOR_LOG_INTERVAL > 0 &&
         (_sample_count % CONFIG_APP_SYS_MONITOR_LOG_INTERVAL) == 0) {
         _log_summary(stats);
     }
 
-    /* ── 9. Check alert thresholds ── */
+    /* ── 7. Check alert thresholds ── */
     _check_alerts(stats);
 }
 
@@ -365,12 +268,12 @@ bool SystemMonitor::_is_idle_task(const char *name) const
 
 uint32_t SystemMonitor::_find_prev_runtime(const char *name) const
 {
-    if (!_prev_tasks || _prev_task_count == 0 || !name) {
+    if (_prev_task_count == 0 || !name) {
         return 0;
     }
     for (UBaseType_t i = 0; i < _prev_task_count; i++) {
-        if (strncmp(_prev_tasks[i].name, name, configMAX_TASK_NAME_LEN) == 0) {
-            return _prev_tasks[i].run_time;
+        if (strncmp(_prev_task_snapshots[i].name, name, configMAX_TASK_NAME_LEN) == 0) {
+            return _prev_task_snapshots[i].run_time;
         }
     }
     return 0;  /* Task not in previous snapshot (newly created) */

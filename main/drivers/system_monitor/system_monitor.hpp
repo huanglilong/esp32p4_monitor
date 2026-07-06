@@ -46,6 +46,10 @@
 #include "generated/system_stats.h"
 #include "generated/system_alert.h"
 
+/* Max tasks the monitor can track. Static buffer size used to avoid per-sample
+ * heap allocations that interfere with LVGL DMA (PSRAM cache maintenance). */
+#define SYS_MONITOR_MAX_TASKS 32
+
 /* Alert types — must match system_alert.msg alert_type field */
 #define SYS_ALERT_CPU_HIGH          0
 #define SYS_ALERT_MEM_INTERNAL_HIGH 1
@@ -168,8 +172,11 @@ private:
         char name[configMAX_TASK_NAME_LEN];
         uint32_t run_time;
     };
-    TaskSnapshot *_prev_tasks{nullptr};
+    TaskSnapshot _prev_task_snapshots[SYS_MONITOR_MAX_TASKS]{};  /* static buffer, avoids heap alloc per sample */
     UBaseType_t _prev_task_count{0};
+
+    /** Static buffer for uxTaskGetSystemState output (avoids heap alloc per sample). */
+    TaskStatus_t _task_array[SYS_MONITOR_MAX_TASKS]{};
 
     static constexpr const char *TAG = "SysMonitor";
 };

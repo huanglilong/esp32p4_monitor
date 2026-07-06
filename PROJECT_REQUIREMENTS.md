@@ -202,6 +202,7 @@
 | S153 | **SystemMonitor IDLE 任务排除** | IDLE0/IDLE1 占用高表示系统空闲而非负载高，导致 `total_cpu_pct` 始终≈100% 且 CPU 告警误触发。修复: `total_cpu_pct` 仅统计非 IDLE 任务 (busy CPU%)，top-N 排序也排除 IDLE 任务 | ✅ |
 | S154 | **SystemMonitor 单核兼容** | CPU% 计算硬编码 `×2`，单核平台无法使用。修复: 改用 `configNUMBER_OF_CORES` | ✅ |
 | P1 | **PPA 硬件加速检测预处理** | `PPAPreprocessor` 类: PPA SRM client 执行 RGB565LE→BGR888 resize (800×800→300×300, PPA 4-bit frac 量化 0.4→0.375, pic_w=actual_w 确保行步长连续), COCODetect 内部 BGR888→letterbox→RGB888_QINT8 (含 R↔B swap); PhoneAppCamera + CameraStream 均启用; 自动降级 CPU fallback; 检测框按 actual_width/height rescale | ✅ |
+| S155 | **SystemMonitor 导致 LCD 闪烁** | 根因: `_sample()` 每 5s 调用 `uxTaskGetSystemState()` → `vTaskSuspendAll()` 暂停两核 FreeRTOS 调度器 → LVGL task 的 `ulTaskNotifyTake()` 无法 block → `lv_timer_handler()` 异常高频调用 + `xTaskResumeAll()` 恢复时上下文切换爆发 → 画面闪烁。次要: `heap_caps_print_heap_info()` init 时持堆锁 + 周期 `heap_caps_malloc/free` 造成 PSRAM cache 维护争用。修复: ① 移除 `heap_caps_print_heap_info()` ② `task_array`/`_prev_tasks` 改用静态 buffer 消除周期堆分配 ③ **核心修复: 禁用 `uxTaskGetSystemState()`，_sample() 改为 memory-only 监控 (task 计数 + heap stats + alerts)** | ✅ |
 
 ### 2.3 系统性能监控
 
