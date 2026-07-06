@@ -198,6 +198,14 @@
 | S149 | **SystemMonitor CPU% 双核修正** | `uxTaskGetSystemState()` 返回 wall-clock 而非任务运行时间总和，导致双核 ESP32-P4 上 `total_cpu_pct` 始终≈50%。修复: 汇总各任务 `ulRunTimeCounter` delta 作为实际 CPU 时间，除以 `wall_delta × 2` | ✅ |
 | S150 | **SystemMonitor TOP_N 编译错误** | `fields[TOP_N]` 数组用 6 个初始化器但 TOP_N 可配置为 1-6，<6 时编译错误。修复: 改为固定 `fields[6]` | ✅ |
 | S151 | **SystemMonitor _task_handle 竞态** | `stop()` 和 `_monitor_task_func` 都写 `_task_handle`，快速 stop→start 可使新任务句柄被旧任务清空。修复: 任务不再写 `_task_handle`，由 `stop()` 独占管理 | ✅ |
+| S152 | **volatile → std::atomic 全面迁移** | PhoneAppAudio/Music/Camera 和 web_config_server 中 `volatile bool/int/uint32_t` 替换为 `std::atomic`，双核 ESP32-P4 上 volatile 不保证原子性和内存序 | ✅ |
+| S153 | **CameraStream stop() CAS 保护** | `stop()` 使用 `compare_exchange_strong()` 防止并发双重清理，匹配 `start()` 的模式 | ✅ |
+| S154 | **CameraStream _jpeg_quality atomic** | JPEG 质量从 `uint8_t` 改为 `std::atomic<uint8_t>`，HTTP API 和 stream handler 跨核访问 | ✅ |
+| S155 | **PhoneAppCamera _cleanup_camera_init 防护** | 添加 `_video_initialized` 检查，避免未初始化时调用 `example_video_deinit()` | ✅ |
+| S156 | **NVS 共享键定义** | NVS namespace 和 key 宏统一定义在 `example_config.h` (`NVS_NAMESPACE_SETTINGS`, `NVS_KEY_*`)，消除跨文件重复 | ✅ |
+| S157 | **I2S/SD SPI 引脚宏化** | AudioDriver I2S GPIO 和 SDCardDriver SPI GPIO 改用 `example_config.h` 宏，消除硬编码 | ✅ |
+| S158 | **Logger 丢弃策略优化** | 缓冲区满时立即丢弃日志行，替代 100ms 轮询等待，避免阻塞 LVGL/WiFi 任务 | ✅ |
+| S159 | **CameraStream stream_handler 重构** | 提取辅助方法减少代码重复，改善可维护性 | ✅ |
 | S152 | **SystemMonitor _prev_tasks 泄漏** | 最后一次 `_sample()` 分配的 `_prev_tasks` 在任务退出时未释放。修复: `_monitor_task_func` 退出前 free | ✅ |
 | S153 | **SystemMonitor IDLE 任务排除** | IDLE0/IDLE1 占用高表示系统空闲而非负载高，导致 `total_cpu_pct` 始终≈100% 且 CPU 告警误触发。修复: `total_cpu_pct` 仅统计非 IDLE 任务 (busy CPU%)，top-N 排序也排除 IDLE 任务 | ✅ |
 | S154 | **SystemMonitor 单核兼容** | CPU% 计算硬编码 `×2`，单核平台无法使用。修复: 改用 `configNUMBER_OF_CORES` | ✅ |
@@ -287,7 +295,7 @@
 | K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已生效** | 所有 6 个端点均已加 `__cam_running()` 检查 (2026-07-02) |
 | K5 | 🟢 低 | CameraStream stream_handler 代码重复 | 检测和流处理逻辑混合，可提取为独立函数 |
 | K6 | 🟢 低 | Logger 重入风险 | esp_log_set_vprintf 回调中调用 ESP_LOG 可能递归 |
-| K7 | 🟢 低 | Web `s_audio_running` 跨核竞态 | HTTP handler 和 audio task 并发访问，非原子 bool |
+| K7 | ✅ 已修复 | Web `s_audio_running` 跨核竞态 | `volatile bool` → `std::atomic<bool>` (v2.4) |
 
 ---
 

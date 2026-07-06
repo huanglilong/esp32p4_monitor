@@ -852,3 +852,13 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - **CameraDriver owner-tracked claim/release** (S127): `claim(caller_id)/release(caller_id)` 支持 owner tracking, 同 caller_id 可重入, 不同 caller_id 互斥
   - **Music 播放失败清理** (S128): `_play()` 失败时销毁半初始化 ASP handle + UI 复位
   - **Brookesia 初始化失败清理** (S129): 失败时删除临时 `ESP_Brookesia_Phone` 对象
+- [x] **代码质量与模块化改进** (v2.4):
+  - **volatile → std::atomic 迁移**: PhoneAppAudio/Music/Camera 和 web_config_server 中所有 `volatile bool/int/uint32_t` 替换为 `std::atomic<bool/int/uint32_t>`，双核 ESP32-P4 上 `volatile` 不保证原子性和内存序
+  - **CameraStream stop() CAS 保护**: `stop()` 使用 `compare_exchange_strong()` 防止并发双重清理，匹配 `start()` 的模式
+  - **CameraStream _jpeg_quality atomic**: HTTP API handler 和 stream handler 跨核访问的 JPEG 质量改为 `std::atomic<uint8_t>`
+  - **PhoneAppCamera _cleanup_camera_init 防护**: 添加 `_video_initialized` 检查，避免未初始化时调用 `example_video_deinit()`
+  - **NVS 共享键定义**: NVS 命名空间和键 (`NVS_NAMESPACE_SETTINGS`, `NVS_KEY_*`) 统一定义在 `example_config.h`，消除跨文件重复
+  - **MAX_TRACKS 去重**: 移除 `phone_app_music.cpp` 中重复的 `#define MAX_TRACKS 50`
+  - **I2S/SD SPI 引脚宏化**: AudioDriver 中 I2S GPIO 和 SDCardDriver 中 SPI GPIO 改用 `example_config.h` 宏 (`AUDIO_I2S_*`, `AUDIO_PA_GPIO`, `SD_SPI_*`)
+  - **Logger 丢弃策略优化**: 缓冲区满时立即丢弃日志行，替代 100ms 轮询等待，避免阻塞 LVGL/WiFi 任务
+  - **CameraStream stream_handler 重构**: 提取 `_draw_detection_boxes_on_ppa()`, `_draw_detection_boxes_on_rgb565()`, `_send_mjpeg_part()`, `_save_jpeg_snapshot()`, `_update_fps_stats()` 辅助方法，减少代码重复
