@@ -157,15 +157,6 @@ menu "Monitor Example Configuration"
             every N sampling cycles. Set to 0 to disable periodic
             logging (stats are still available via uORB / HTTP API).
 
-    config APP_SYS_MONITOR_TOP_N
-        int "Number of top CPU-consuming tasks to track"
-        default 6
-        range 1 6
-        help
-            How many of the highest-CPU tasks to include in each
-            system_stats sample. Maximum 6 (limited by uORB topic
-            structure).
-
     config APP_SYS_MONITOR_TASK_STACK
         int "Monitor task stack size (bytes)"
         default 4096

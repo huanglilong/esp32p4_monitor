@@ -2,17 +2,15 @@
  * SystemMonitor — Periodic system performance sampling and reporting.
  *
  * Design:
- *   - Background task samples FreeRTOS task CPU usage (via
- *     uxTaskGetSystemState) and heap memory (via heap_caps_get_free_size)
- *     at a configurable interval.
+ *   - Background task samples CPU usage (via ulTaskGetIdleRunTimeCounter)
+ *     and heap memory (via heap_caps_get_free_size) at a configurable interval.
+ *   - CPU% is computed from idle task runtime delta vs wall-clock delta:
+ *     busy_cpu_pct = 100% - idle_pct. This avoids uxTaskGetSystemState()
+ *     which calls vTaskSuspendAll() and disrupts LVGL rendering.
  *   - Results are published as a uORB `system_stats` topic, enabling:
  *     * ULog persistence (SD card binary log)
  *     * ESP_LOG summary output (configurable level/interval)
  *     * HTTP API (/api/system_stats) for remote monitoring
- *   - Total CPU% excludes IDLE tasks: busy_cpu_pct represents actual
- *     system load. High IDLE = system free, not busy.
- *   - Top-N tasks by CPU usage are captured in each sample, sorted
- *     descending (IDLE tasks excluded from top-N).
  *   - Historical minimum free heap is tracked per sampling period.
  *   - Alerts are published as uORB `system_alert` topic when:
  *     * Total CPU usage exceeds threshold (default 90%)
@@ -28,11 +26,14 @@
  * Configuration (Kconfig):
  *   CONFIG_APP_SYS_MONITOR_INTERVAL_MS        — sampling interval (default 5000)
  *   CONFIG_APP_SYS_MONITOR_LOG_INTERVAL       — log summary every N samples (default 12 = 60s)
- *   CONFIG_APP_SYS_MONITOR_TOP_N              — number of top tasks to track (default 4)
  *   CONFIG_APP_SYS_MONITOR_TASK_STACK         — monitor task stack size (default 4096)
  *   CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT      — CPU alert threshold (default 90)
  *   CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT      — Memory alert threshold (default 80)
  *   CONFIG_APP_SYS_MONITOR_ALERT_COOLDOWN_S   — Alert cooldown in seconds (default 30)
+ *
+ * Note: Per-task CPU% breakdown (top-N) is not available because
+ * uxTaskGetSystemState() calls vTaskSuspendAll() which disrupts
+ * LVGL rendering. Only aggregate busy CPU% is reported.
  */
 
 #pragma once
@@ -45,10 +46,6 @@
 #include "uorb.h"
 #include "generated/system_stats.h"
 #include "generated/system_alert.h"
-
-/* Max tasks the monitor can track. Static buffer size used to avoid per-sample
- * heap allocations that interfere with LVGL DMA (PSRAM cache maintenance). */
-#define SYS_MONITOR_MAX_TASKS 32
 
 /* Alert types — must match system_alert.msg alert_type field */
 #define SYS_ALERT_CPU_HIGH          0
@@ -103,19 +100,6 @@ private:
     /** Perform one sampling cycle. */
     void _sample(void);
 
-    /** Sort tasks by CPU usage descending, fill top-N into stats. */
-    void _fill_top_tasks(system_stats_s &stats,
-                         TaskStatus_t *task_array,
-                         UBaseType_t task_count,
-                         uint32_t sum_task_delta,
-                         int64_t delta_us);
-
-    /** Look up a task's previous runtime by name. Returns 0 if not found. */
-    uint32_t _find_prev_runtime(const char *name) const;
-
-    /** Check if a task is an IDLE task (IDLE, IDLE0, IDLE1, ...). */
-    bool _is_idle_task(const char *name) const;
-
     /** Check alert thresholds and publish alerts. */
     void _check_alerts(const system_stats_s &stats);
 
@@ -161,22 +145,11 @@ private:
     /** Sample counter for log throttling. */
     uint32_t _sample_count{0};
 
-    /** Previous total run time (for delta calculation). */
-    uint32_t _prev_total_run_time{0};
-
-    /** Previous wall-clock timestamp for delta CPU% (esp_timer_get_time). */
+    /** Previous idle runtime counter and timestamp for delta CPU% calculation.
+     * Uses ulTaskGetIdleRunTimeCounter() which does NOT call vTaskSuspendAll(),
+     * so it's safe to use alongside LVGL rendering on core 1. */
+    uint32_t _prev_idle_runtime{0};
     int64_t _prev_timestamp_us{0};
-
-    /** Previous per-task snapshot for delta CPU% (name-matched). */
-    struct TaskSnapshot {
-        char name[configMAX_TASK_NAME_LEN];
-        uint32_t run_time;
-    };
-    TaskSnapshot _prev_task_snapshots[SYS_MONITOR_MAX_TASKS]{};  /* static buffer, avoids heap alloc per sample */
-    UBaseType_t _prev_task_count{0};
-
-    /** Static buffer for uxTaskGetSystemState output (avoids heap alloc per sample). */
-    TaskStatus_t _task_array[SYS_MONITOR_MAX_TASKS]{};
 
     static constexpr const char *TAG = "SysMonitor";
 };

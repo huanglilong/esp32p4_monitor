@@ -188,7 +188,7 @@ SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独
 | AudioDriver | `drivers/audio/` | I2S channel + ES8311/ES7210 codec init/deinit, volume/mic_gain/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
 | SDCardDriver | `drivers/sdcard/` | SDSPI init-once (LDO VO4 power-cycle), never unmount | _init_mutex |
 | CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API with owner tracking | _mutex |
-| SystemMonitor | `drivers/system_monitor/` | FreeRTOS task CPU% + heap/PSRAM 采样, system_stats uORB, ESP_LOG 摘要, Web API, 资源异常告警 (CPU>90% / Memory>80%), delta-based CPU% (name-matched) | _latest_mutex + _alert_mutex |
+| SystemMonitor | `drivers/system_monitor/` | CPU busy% (via `ulTaskGetIdleRunTimeCounter`, no scheduler suspend) + heap/PSRAM 采样, system_stats uORB, ESP_LOG 摘要, Web API, 资源异常告警 (CPU>90% / Memory>80%) | _latest_mutex + _alert_mutex |
 
 **设计要点**:
 - PeripheralManager API 完全不变，app 模块无需修改

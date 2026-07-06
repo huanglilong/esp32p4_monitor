@@ -1,8 +1,9 @@
 /*
  * SystemMonitor — Implementation.
  *
- * Samples FreeRTOS task CPU usage and heap memory at a configurable
- * interval, publishes results via uORB system_stats topic.
+ * Samples CPU usage (via ulTaskGetIdleRunTimeCounter, no scheduler suspend)
+ * and heap memory at a configurable interval, publishes results via uORB
+ * system_stats topic.
  */
 
 #include "system_monitor.hpp"
@@ -23,10 +24,6 @@
 #define CONFIG_APP_SYS_MONITOR_LOG_INTERVAL 12
 #endif
 
-#ifndef CONFIG_APP_SYS_MONITOR_TOP_N
-#define CONFIG_APP_SYS_MONITOR_TOP_N 6
-#endif
-
 #ifndef CONFIG_APP_SYS_MONITOR_TASK_STACK
 #define CONFIG_APP_SYS_MONITOR_TASK_STACK 4096
 #endif
@@ -43,13 +40,6 @@
 #ifndef CONFIG_APP_SYS_MONITOR_ALERT_COOLDOWN_S
 #define CONFIG_APP_SYS_MONITOR_ALERT_COOLDOWN_S 10
 #endif
-
-/* Number of top tasks to track (must match system_stats.msg structure) */
-static constexpr int TOP_N = CONFIG_APP_SYS_MONITOR_TOP_N;
-
-/* Static buffer sizes for periodic sampling — avoid heap alloc every sample.
- * heap_caps_malloc/free every 5s causes PSRAM cache maintenance + heap lock
- * contention, which interferes with LVGL DMA (PSRAM draw buffers → display). */
 
 /*============================================================================
  * Singleton
@@ -94,11 +84,10 @@ bool SystemMonitor::init(void)
 
     _initialized.store(true, std::memory_order_release);
 
-    ESP_LOGI(TAG, "Initialized (interval=%dms, log_every=%d samples, top_n=%d, "
+    ESP_LOGI(TAG, "Initialized (interval=%dms, log_every=%d samples, "
              "cpu_alert=%d%%, mem_alert=%d%%, cooldown=%ds)",
              CONFIG_APP_SYS_MONITOR_INTERVAL_MS,
              CONFIG_APP_SYS_MONITOR_LOG_INTERVAL,
-             TOP_N,
              CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT,
              CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT,
              CONFIG_APP_SYS_MONITOR_ALERT_COOLDOWN_S);
@@ -205,10 +194,16 @@ void SystemMonitor::_sample(void)
         _min_free_psram.store(min_free_psram, std::memory_order_relaxed);
     }
 
-    /* ── 2. Task count only (CPU sampling via uxTaskGetSystemState()
-     * calls vTaskSuspendAll() which disrupts LVGL rendering on core 1.
-     * CPU% monitoring is disabled to prevent display flickering. */
+    /* ── 2. CPU usage via idle runtime counter (non-blocking).
+     * ulTaskGetIdleRunTimeCounter() sums idle task runtime across all cores
+     * without calling vTaskSuspendAll(), so it's safe to use alongside
+     * LVGL rendering on core 1. We compute busy CPU% from the idle delta:
+     *   idle_pct  = idle_delta / (wall_delta × num_cores)
+     *   busy_pct  = 100% - idle_pct
+     */
     UBaseType_t actual_count = uxTaskGetNumberOfTasks();
+    uint32_t idle_runtime = ulTaskGetIdleRunTimeCounter();
+    int64_t now_us = esp_timer_get_time();
 
     /* ── 3. Build system_stats_s ── */
     system_stats_s stats = {};
@@ -219,9 +214,28 @@ void SystemMonitor::_sample(void)
     stats.min_free_psram = min_free_psram;
     stats.task_count = (uint32_t)actual_count;
 
-    /* CPU% disabled: uxTaskGetSystemState() calls vTaskSuspendAll() which
-     * disrupts LVGL rendering on core 1. Memory stats only for now. */
-    stats.total_cpu_pct = 0;
+    /* Compute busy CPU% from idle runtime delta */
+    if (_prev_timestamp_us > 0 && now_us > _prev_timestamp_us) {
+        int64_t delta_us = now_us - _prev_timestamp_us;
+        /* Guard against ulTaskGetIdleRunTimeCounter() wraparound.
+         * With esp_timer (1μs) and uint32_t, wrap at ~71 min — unlikely
+         * at 5s intervals, but skip this sample if detected. */
+        if (idle_runtime >= _prev_idle_runtime) {
+            uint32_t idle_delta = idle_runtime - _prev_idle_runtime;
+            /* idle_pct = idle_delta / (delta_us × num_cores) × 10000
+             * busy_pct = 10000 - idle_pct */
+            int64_t max_runtime = delta_us * configNUMBER_OF_CORES;
+            if (max_runtime > 0) {
+                uint32_t idle_pct = (uint32_t)((uint64_t)idle_delta * 10000 / (uint64_t)max_runtime);
+                if (idle_pct > 10000) {
+                    idle_pct = 10000;
+                }
+                stats.total_cpu_pct = 10000 - idle_pct;
+            }
+        }
+    }
+    _prev_idle_runtime = idle_runtime;
+    _prev_timestamp_us = now_us;
 
     /* ── 4. Update latest snapshot (mutex-protected) ── */
     if (_latest_mutex && xSemaphoreTake(_latest_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -256,116 +270,6 @@ void SystemMonitor::_sample(void)
 }
 
 /*============================================================================
- * Top-N task sorting — delta-based CPU%
- *============================================================================*/
-
-bool SystemMonitor::_is_idle_task(const char *name) const
-{
-    if (!name) return false;
-    /* FreeRTOS IDLE tasks: "IDLE" (single-core), "IDLE0", "IDLE1", etc. */
-    return strncmp(name, "IDLE", 4) == 0;
-}
-
-uint32_t SystemMonitor::_find_prev_runtime(const char *name) const
-{
-    if (_prev_task_count == 0 || !name) {
-        return 0;
-    }
-    for (UBaseType_t i = 0; i < _prev_task_count; i++) {
-        if (strncmp(_prev_task_snapshots[i].name, name, configMAX_TASK_NAME_LEN) == 0) {
-            return _prev_task_snapshots[i].run_time;
-        }
-    }
-    return 0;  /* Task not in previous snapshot (newly created) */
-}
-
-void SystemMonitor::_fill_top_tasks(system_stats_s &stats,
-                                     TaskStatus_t *task_array,
-                                     UBaseType_t task_count,
-                                     uint32_t sum_task_delta,
-                                     int64_t delta_us)
-{
-    struct TaskCpu {
-        const char *name;
-        uint32_t cpu_pct;      /* 0-10000 = 0-100.00% */
-        uint32_t stack_hwm;    /* bytes */
-    };
-
-    const int MAX_SORT = 32;
-    TaskCpu cpu_list[MAX_SORT];
-    int sort_count = 0;  /* non-IDLE tasks only */
-
-    for (UBaseType_t i = 0; i < task_count && sort_count < MAX_SORT; i++) {
-        /* Skip IDLE tasks — they represent free CPU, not load */
-        if (_is_idle_task(task_array[i].pcTaskName)) {
-            continue;
-        }
-
-        cpu_list[sort_count].name = task_array[i].pcTaskName;
-        cpu_list[sort_count].stack_hwm = task_array[i].usStackHighWaterMark * sizeof(StackType_t);
-
-        if (delta_us > 0 && sum_task_delta > 0) {
-            /* Absolute CPU%: task_delta / (wall_delta × num_cores) × 10000
-             * This represents actual CPU utilization (0-100% of one core). */
-            uint32_t prev_rt = _find_prev_runtime(task_array[i].pcTaskName);
-            uint32_t cur_rt = task_array[i].ulRunTimeCounter;
-            if (cur_rt > prev_rt) {
-                cpu_list[sort_count].cpu_pct = (uint32_t)(
-                    (uint64_t)(cur_rt - prev_rt) * 10000ULL / ((uint64_t)delta_us * configNUMBER_OF_CORES));
-            } else {
-                cpu_list[sort_count].cpu_pct = 0;
-            }
-        } else {
-            /* First sample — no previous data */
-            cpu_list[sort_count].cpu_pct = 0;
-        }
-        sort_count++;
-    }
-
-    /* Sort descending by CPU% (simple selection sort for small N) */
-    for (int i = 0; i < sort_count - 1; i++) {
-        int max_idx = i;
-        for (int j = i + 1; j < sort_count; j++) {
-            if (cpu_list[j].cpu_pct > cpu_list[max_idx].cpu_pct) {
-                max_idx = j;
-            }
-        }
-        if (max_idx != i) {
-            TaskCpu tmp = cpu_list[i];
-            cpu_list[i] = cpu_list[max_idx];
-            cpu_list[max_idx] = tmp;
-        }
-    }
-
-    /* Fill top-N into stats struct (always 6 slots in system_stats_s) */
-    struct {
-        char *name;
-        uint32_t *cpu_pct;
-        uint32_t *stack_hwm;
-    } fields[6] = {
-        { stats.task_name_0, &stats.task_cpu_pct_0, &stats.task_stack_hwm_0 },
-        { stats.task_name_1, &stats.task_cpu_pct_1, &stats.task_stack_hwm_1 },
-        { stats.task_name_2, &stats.task_cpu_pct_2, &stats.task_stack_hwm_2 },
-        { stats.task_name_3, &stats.task_cpu_pct_3, &stats.task_stack_hwm_3 },
-        { stats.task_name_4, &stats.task_cpu_pct_4, &stats.task_stack_hwm_4 },
-        { stats.task_name_5, &stats.task_cpu_pct_5, &stats.task_stack_hwm_5 },
-    };
-
-    for (int i = 0; i < TOP_N; i++) {
-        if (i < sort_count) {
-            strncpy(fields[i].name, cpu_list[i].name ? cpu_list[i].name : "???", 15);
-            fields[i].name[15] = '\0';
-            *(fields[i].cpu_pct) = cpu_list[i].cpu_pct;
-            *(fields[i].stack_hwm) = cpu_list[i].stack_hwm;
-        } else {
-            memset(fields[i].name, 0, 16);
-            *(fields[i].cpu_pct) = 0;
-            *(fields[i].stack_hwm) = 0;
-        }
-    }
-}
-
-/*============================================================================
  * Log Summary
  *============================================================================*/
 void SystemMonitor::_log_summary(const system_stats_s &stats)
@@ -381,35 +285,11 @@ void SystemMonitor::_log_summary(const system_stats_s &stats)
     ESP_LOGI(TAG, "  PSRAM:         %u KB free / %u KB total (%u%% used, min %u KB)",
              stats.free_psram / 1024, total_psram / 1024,
              used_pct_psram, stats.min_free_psram / 1024);
-    ESP_LOGI(TAG, "  Tasks: %u   CPU: %u.%02u%%",
+    ESP_LOGI(TAG, "  Tasks: %u   CPU: %u.%02u%% (busy, %d-core)",
              stats.task_count,
              stats.total_cpu_pct / 100,
-             stats.total_cpu_pct % 100);
-
-    /* Log top-N tasks (always 6 slots in system_stats_s) */
-    struct {
-        const char *name;
-        uint32_t cpu_pct;
-        uint32_t stack_hwm;
-    } fields[6] = {
-        { stats.task_name_0, stats.task_cpu_pct_0, stats.task_stack_hwm_0 },
-        { stats.task_name_1, stats.task_cpu_pct_1, stats.task_stack_hwm_1 },
-        { stats.task_name_2, stats.task_cpu_pct_2, stats.task_stack_hwm_2 },
-        { stats.task_name_3, stats.task_cpu_pct_3, stats.task_stack_hwm_3 },
-        { stats.task_name_4, stats.task_cpu_pct_4, stats.task_stack_hwm_4 },
-        { stats.task_name_5, stats.task_cpu_pct_5, stats.task_stack_hwm_5 },
-    };
-
-    for (int i = 0; i < TOP_N; i++) {
-        if (fields[i].name[0] != '\0') {
-            ESP_LOGI(TAG, "  #%d %-15s  CPU %u.%02u%%  stack HWM %u B",
-                     i + 1,
-                     fields[i].name,
-                     fields[i].cpu_pct / 100,
-                     fields[i].cpu_pct % 100,
-                     fields[i].stack_hwm);
-        }
-    }
+             stats.total_cpu_pct % 100,
+             configNUMBER_OF_CORES);
 }
 
 /*============================================================================
@@ -429,21 +309,18 @@ void SystemMonitor::_check_alerts(const system_stats_s &stats)
                                ? SYS_ALERT_SEVERITY_CRITICAL
                                : SYS_ALERT_SEVERITY_WARNING;
 
-            /* Identify the top CPU-consuming task */
-            const char *top_task = stats.task_name_0;
-            uint32_t top_cpu = stats.task_cpu_pct_0;
-
+            /* Per-task breakdown not available (uxTaskGetSystemState() would
+             * cause display flickering), so report aggregate only. */
             _publish_alert(SYS_ALERT_CPU_HIGH, severity,
                            stats.total_cpu_pct, cpu_threshold,
-                           top_task, top_cpu,
+                           "", 0,
                            stats.free_internal, stats.free_psram);
 
             _last_alert_cpu_us = now_us;
 
-            ESP_LOGW(TAG, "⚠ CPU ALERT: %u.%02u%% exceeds %d%% threshold (top task: %s %u.%02u%%)",
+            ESP_LOGW(TAG, "⚠ CPU ALERT: %u.%02u%% exceeds %d%% threshold",
                      stats.total_cpu_pct / 100, stats.total_cpu_pct % 100,
-                     CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT,
-                     top_task, top_cpu / 100, top_cpu % 100);
+                     CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT);
         }
     }
 
