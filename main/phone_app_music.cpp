@@ -17,7 +17,7 @@ static const char *TAG = "MusicApp";
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
 #define MUSIC_DIR  "/sdcard"
-#define MAX_TRACKS 50
+/* MAX_TRACKS defined in phone_app_music.hpp */
 
 PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Music", &esp_brookesia_image_large_app_launcher_default_112_112,
