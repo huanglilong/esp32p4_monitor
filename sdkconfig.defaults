@@ -29,7 +29,7 @@ CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 # LVGL logging disabled — printf blocks the renderer (causes task_wdt)
 # CONFIG_LV_USE_LOG is not set
-CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
+# CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM is not set
 # Fonts: only enable sizes actually used (saves ~560KB Flash vs enabling all 18)
 CONFIG_LV_FONT_MONTSERRAT_10=y
 CONFIG_LV_FONT_MONTSERRAT_12=y

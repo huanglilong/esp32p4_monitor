@@ -718,26 +718,27 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 | 用途 | 大小 | 占比 | 类型 |
 |------|------|------|------|
 | L2 Cache (CONFIG_CACHE_L2_CACHE_SIZE) | 256 KB | 33.3% | 不可用 |
-| IRAM 代码 (flash操作/中断安全代码) | 152 KB | 19.8% | 静态 |
+| IRAM 代码 (flash操作/中断安全代码) | **92 KB** | **20.9%** | 静态 |
 | ROM 保留 (ROM BSS/Data/Stack) | 81 KB | 10.5% | 不可用 |
-| DRAM .data + .bss (全局变量) | 44 KB | 5.7% | 静态 |
-| Heap (动态分配) | ~234 KB | 30.5% | 动态 |
+| DRAM .data + .bss (全局变量) | 45 KB | 10.2% | 静态 |
+| Heap (动态分配) | **~234 KB** | **53.0%** | 动态 |
+
+> **2026-07-07 优化**: 关闭 LVGL IRAM (`CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，IRAM 从 156 KB 降至 92 KB，释放 ~64 KB。
 
 运行时 Heap ~234 KB 主要消耗者：
 - WiFi/LWIP 缓冲区: ~30-50 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096，pbufs 等小块走 PSRAM)
 - FreeRTOS 任务栈: ~40-50 KB (detect 16KB, audio 12KB, etc.)
 - 系统服务 (mDNS/NVS/esp_netif): ~10-20 KB
 - DMA 描述符/USB: ~5-10 KB
-- 剩余可用: ~120 KB (优化后预估，原 ~90 KB)
+- 剩余可用: **~180 KB** (优化后，原 ~90 KB)
 
-**最近优化 (2026-07-06)**:
-- `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
-- Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
-- detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)
-- CameraStream model_load task 8KB 栈移入 PSRAM (`xTaskCreateStatic`)
-- `SPIRAM_TRY_ALLOCATE_DMA_BUFFER` 在 IDF v6.x 中已不存在，`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` 已覆盖 DMA 分配
-
-优化方向：大栈任务分配到 PSRAM、减少 IRAM 代码量。
+**最近优化**:
+- **2026-07-07**: 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，释放 **~64 KB** IRAM
+- **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
+- **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
+- **2026-07-06**: detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)
+- **2026-07-06**: CameraStream model_load task 8KB 栈移入 PSRAM (`xTaskCreateStatic`)
+- **2026-07-06**: `SPIRAM_TRY_ALLOCATE_DMA_BUFFER` 在 IDF v6.x 中已不存在，`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` 已覆盖 DMA 分配
 
 > **⚠️ 已知问题**: Camera Stream (MJPEG 推流 + inline detection) 与 Music Play (GMF 音频管道) 同时运行时，internal SRAM 消耗 >80%，可能导致音频播放卡顿。需进一步分析 GMF 音频管道缓冲区和 HTTPD 缓冲区的 PSRAM 迁移机会。
 
