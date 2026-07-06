@@ -967,7 +967,7 @@ void CameraStream::_update_fps_stats(uint32_t jpeg_size)
             fps_msg.fps            = fps;
             orb_publish(ORB_ID(fps_stats), _fps_pub, &fps_msg);
         }
-        ESP_LOGI(TAG, "FPS: %.1f, bytes/s: %.0f", fps, (float)_fps_total_bytes / elapsed);
+        ESP_LOGD(TAG, "FPS: %.1f, bytes/s: %.0f", fps, (float)_fps_total_bytes / elapsed);
         _fps_window_start = now;
         _fps_frame_count = 0;
         _fps_total_bytes = 0;
