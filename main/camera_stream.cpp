@@ -136,7 +136,7 @@ CameraStream::CameraStream() :
     _detect_mutex(nullptr),
     _detect_available(false),
     _model_ready(false),
-    _model_load_task(nullptr),
+    _model_load_task(nullptr), _model_load_stack(nullptr), _model_load_tcb(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _mdns_running(false)
@@ -571,11 +571,24 @@ bool CameraStream::_init_detection(void)
     _model_ready = false;
 
     /* Start background task to load model asynchronously.
-     * This keeps CameraStream::start() fast and the stream loop unblocked. */
-    BaseType_t ret = xTaskCreate(
-        _model_load_task_fn, "model_load", 8 * 1024, this, 1, &_model_load_task);
-    if (ret != pdPASS) {
+     * This keeps CameraStream::start() fast and the stream loop unblocked.
+     * Use static allocation to place the 8KB stack in PSRAM. */
+    const uint32_t load_stack_words = 8 * 1024 / sizeof(StackType_t);
+    _model_load_stack = (StackType_t *)heap_caps_malloc(8 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    _model_load_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!_model_load_stack || !_model_load_tcb) {
+        ESP_LOGE(TAG, "Failed to allocate model_load task stack in PSRAM or TCB");
+        if (_model_load_stack) { heap_caps_free(_model_load_stack); _model_load_stack = nullptr; }
+        if (_model_load_tcb) { heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr; }
+        heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr;
+        return false;
+    }
+    _model_load_task = xTaskCreateStatic(
+        _model_load_task_fn, "model_load", load_stack_words, this, 1, _model_load_stack, _model_load_tcb);
+    if (_model_load_task == nullptr) {
         ESP_LOGE(TAG, "Failed to create model load task");
+        heap_caps_free(_model_load_stack); _model_load_stack = nullptr;
+        heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr;
         heap_caps_free(_detect_in_buf);
         _detect_in_buf = nullptr;
         return false;
@@ -589,13 +602,27 @@ void CameraStream::_deinit_detection(void)
 {
     /* Stop background model-loading task if still running.
      * The task self-deletes and clears _model_load_task on completion.
-     * Since the task clears the handle before vTaskDelete(NULL), we can
-     * just check the handle — no need for eTaskGetState() which races
-     * with the idle task reclaiming the TCB. */
+     * Since the task clears the handle before vTaskDelete(NULL), there's a
+     * small window where the handle is null but the task hasn't finished
+     * executing on its stack. */
     if (_model_load_task) {
         TaskHandle_t t = _model_load_task;
         _model_load_task = nullptr;
         vTaskDelete(t);
+    } else {
+        /* Handle already cleared by the task — yield to let any in-flight
+         * vTaskDelete(NULL) complete before freeing the stack below. */
+        vTaskDelay(1);
+    }
+
+    /* Free statically-allocated task stack (PSRAM) and TCB */
+    if (_model_load_stack) {
+        heap_caps_free(_model_load_stack);
+        _model_load_stack = nullptr;
+    }
+    if (_model_load_tcb) {
+        heap_caps_free(_model_load_tcb);
+        _model_load_tcb = nullptr;
     }
 
     if (_detector) {

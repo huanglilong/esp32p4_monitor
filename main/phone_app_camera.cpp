@@ -48,7 +48,7 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     _video_initialized(false),
     _detector(nullptr),
     _detect_in_buf(nullptr), _detect_in_size(0),
-    _detect_available(false), _detect_task_handle(nullptr), _detect_mutex(nullptr)
+    _detect_available(false), _detect_task_handle(nullptr), _detect_stack(nullptr), _detect_tcb(nullptr), _detect_mutex(nullptr)
 {
 }
 
@@ -422,15 +422,27 @@ bool PhoneAppCamera::_init_detection(void)
     }
     _detector->set_score_thr(PERSON_SCORE_THRESHOLD);
 
-    /* Create detection task on core 0 (high-performance core for NPU inference) */
-    BaseType_t ret = xTaskCreatePinnedToCore(
-        _detection_task, "detect", 16 * 1024, this, 2, &_detect_task_handle, 0);
-    if (ret != pdPASS) {
+    /* Create detection task on core 0 (high-performance core for NPU inference).
+     * Use static allocation to place the 16KB stack in PSRAM, freeing internal SRAM. */
+    const uint32_t detect_stack_words = 16 * 1024 / sizeof(StackType_t);
+    _detect_stack = (StackType_t *)heap_caps_malloc(16 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    _detect_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!_detect_stack || !_detect_tcb) {
+        ESP_LOGE(TAG, "Failed to allocate detect task stack in PSRAM or TCB");
+        if (_detect_stack) { heap_caps_free(_detect_stack); _detect_stack = nullptr; }
+        if (_detect_tcb) { heap_caps_free(_detect_tcb); _detect_tcb = nullptr; }
+        delete _detector; _detector = nullptr;
+        vSemaphoreDelete(_detect_mutex); _detect_mutex = nullptr;
+        return false;
+    }
+    _detect_task_handle = xTaskCreateStaticPinnedToCore(
+        _detection_task, "detect", detect_stack_words, this, 2, _detect_stack, _detect_tcb, 0);
+    if (_detect_task_handle == nullptr) {
         ESP_LOGE(TAG, "Failed to create detection task");
-        delete _detector;
-        _detector = nullptr;
-        vSemaphoreDelete(_detect_mutex);
-        _detect_mutex = nullptr;
+        heap_caps_free(_detect_stack); _detect_stack = nullptr;
+        heap_caps_free(_detect_tcb); _detect_tcb = nullptr;
+        delete _detector; _detector = nullptr;
+        vSemaphoreDelete(_detect_mutex); _detect_mutex = nullptr;
         return false;
     }
 
@@ -441,8 +453,20 @@ bool PhoneAppCamera::_init_detection(void)
 void PhoneAppCamera::_deinit_detection(void)
 {
     /* Detection task should already be stopped by close() via _cam_running=false.
-     * Just clean up resources here. */
+     * Just clean up resources here.
+     * Yield to let any in-flight vTaskDelete(NULL) complete before freeing stack. */
     _detect_task_handle = nullptr;
+    vTaskDelay(1);
+
+    /* Free statically-allocated task stack (PSRAM) and TCB */
+    if (_detect_stack) {
+        heap_caps_free(_detect_stack);
+        _detect_stack = nullptr;
+    }
+    if (_detect_tcb) {
+        heap_caps_free(_detect_tcb);
+        _detect_tcb = nullptr;
+    }
 
     /* Reset uORB publisher handle for clean re-init lifecycle */
     s_detect_pub = ORB_ADVERT_INVALID;

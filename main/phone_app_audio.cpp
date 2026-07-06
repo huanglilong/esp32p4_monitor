@@ -238,7 +238,9 @@ bool PhoneAppAudio::close(void)
 void PhoneAppAudio::_audio_task(void *arg)
 {
     PhoneAppAudio *app = (PhoneAppAudio *)arg;
-    int16_t *buf = (int16_t *)heap_caps_calloc(1, AUDIO_BUF_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    /* Use PSRAM: ESP32-P4 PSRAM is DMA-capable (200MHz octal), I2S DMA can access it.
+     * This frees ~1.9KB internal SRAM per instance. */
+    int16_t *buf = (int16_t *)heap_caps_calloc(1, AUDIO_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate audio buffer");
         app->_task_running = false;
@@ -316,11 +318,10 @@ void PhoneAppAudio::_start_recording(void)
 
     ESP_LOGI(TAG, "Starting MP3 recording...");
 
-    /* Allocate PCM accumulation buffer (1152 samples * 2 channels interleaved).
-     * Use internal SRAM: buffer is small (4608 bytes) and accessed every 10ms.
-     * PSRAM access latency (~40-80ns) is unnecessary for this size/frequency. */
+    /* Allocate PCM accumulation buffer (1152 samples * 2 channels interleaved = 4608 bytes).
+     * Use PSRAM: ESP32-P4 PSRAM is DMA-capable, freeing internal SRAM for critical allocations. */
     _pcm_buffer = (int16_t *)heap_caps_calloc(1, PCM_BUF_SAMPLES * sizeof(int16_t),
-                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!_pcm_buffer) {
         ESP_LOGE(TAG, "Failed to allocate PCM buffer");
         return;

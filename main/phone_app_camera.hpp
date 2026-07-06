@@ -58,6 +58,8 @@ private:
     std::list<dl::detect::result_t> _detect_results; // Latest detection results
     volatile bool               _detect_available;   // New results available? (cross-core)
     TaskHandle_t                _detect_task_handle; // Detection FreeRTOS task
+    StackType_t                *_detect_stack;      // PSRAM-allocated task stack (16KB)
+    StaticTask_t               *_detect_tcb;        // TCB buffer for static task
     SemaphoreHandle_t           _detect_mutex;       // Mutex for results
     static constexpr float      PERSON_SCORE_THRESHOLD = 0.35f;
     static constexpr int        DETECT_INTERVAL_MS = 600;

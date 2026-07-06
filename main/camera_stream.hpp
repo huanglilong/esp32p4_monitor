@@ -99,6 +99,8 @@ public:
     mutable bool                 _detect_available;   /* Non-volatile: same task */
     std::atomic<bool>            _model_ready;         /* Model loaded and ready for inference (cross-task: loader→handler) */
     TaskHandle_t                 _model_load_task;     /* Background task that loads the model */
+    StackType_t                 *_model_load_stack;   /* PSRAM-allocated stack (8KB) */
+    StaticTask_t                *_model_load_tcb;     /* TCB buffer for static task */
     static constexpr float       PERSON_SCORE_THRESHOLD = 0.35f;
     static constexpr int         DETECT_INTERVAL_FRAMES = 3;
     static constexpr int         BOX_LINE_WIDTH = 2;
