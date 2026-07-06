@@ -561,15 +561,36 @@ void CameraStream::_model_load_task_fn(void *arg)
     cs->_detector.load()->set_score_thr(cs->PERSON_SCORE_THRESHOLD);
 
     /* Warm-up inference: trigger model loading now so the stream loop
-     * isn't blocked later. Uses a dummy small image. */
+     * isn't blocked later. PPA output buffer (all zeros) is used as
+     * dummy input — COCODetect just needs any valid img to trigger load.
+     * Without PPA, allocate a small dummy buffer temporarily. */
     ESP_LOGI(TAG, "Loading model (warmup inference)...");
-    dl::image::img_t img = {
-        .data = cs->_detect_in_buf,
-        .width = (uint16_t)cs->_cam_width,
-        .height = (uint16_t)cs->_cam_height,
-        .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
-    };
-    cs->_detector.load()->run(img);  /* First call loads model (~11s) */
+    {
+        dl::image::img_t img = {};
+        uint8_t *dummy_buf = nullptr;
+#if CONFIG_SOC_PPA_SUPPORTED
+        if (cs->_ppa && cs->_ppa->is_initialized()) {
+            img = {
+                .data = cs->_ppa->out_buf(),
+                .width = cs->_ppa->actual_width(),
+                .height = cs->_ppa->actual_height(),
+                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_BGR888,
+            };
+        } else
+#endif
+        {
+            dummy_buf = (uint8_t *)heap_caps_calloc(1, cs->_cam_width * cs->_cam_height * 2,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            img = {
+                .data = dummy_buf,
+                .width = (uint16_t)cs->_cam_width,
+                .height = (uint16_t)cs->_cam_height,
+                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
+            };
+        }
+        cs->_detector.load()->run(img);  /* First call loads model (~11s) */
+        if (dummy_buf) heap_caps_free(dummy_buf);
+    }
     cs->_model_ready = true;
     cs->_detect_available = false;
 
@@ -580,21 +601,10 @@ void CameraStream::_model_load_task_fn(void *arg)
 
 bool CameraStream::_init_detection(void)
 {
-    /* Allocate frame buffer for inference copy (same size as V4L2 buffer).
-     * Since Camera App and Camera Stream are mutually exclusive, this PSRAM
-     * allocation is naturally reused when switching between apps. */
-    _detect_in_size = _cam_width * _cam_height * 2;  // RGB565
-    _detect_in_buf = (uint8_t *)heap_caps_aligned_alloc(128, _detect_in_size,
-                                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!_detect_in_buf) {
-        ESP_LOGE(TAG, "Failed to allocate detect buffer (%" PRIu32 " bytes)", _detect_in_size);
-        return false;
-    }
-
-    /* Initialize PPA hardware preprocessor for resize + RGB565→RGB888.
-     * YOLO11N_320_S8_V1 model input is 320×320.
-     * PPA offloads resize + color conversion from CPU (~1ms vs ~30ms CPU).
-     * COCODetect internal preprocess then only does quantization (RGB888→QINT8). */
+    /* With PPA active: V4L2 mmap buffer is passed directly to PPA (DMA read),
+     * so no separate copy buffer is needed. PPA output (BGR24) is used for
+     * both COCODetect and JPEG encoding.
+     * Without PPA: allocate _detect_in_buf for CPU fallback path. */
 #if CONFIG_SOC_PPA_SUPPORTED
     _ppa = new (std::nothrow) PPAPreprocessor();
     if (_ppa) {
@@ -603,12 +613,24 @@ bool CameraStream::_init_detection(void)
             delete _ppa;
             _ppa = nullptr;
         } else {
-            ESP_LOGI(TAG, "PPA preprocessing enabled: %d×%d RGB565 → 320×320 RGB888", _cam_width, _cam_height);
+            ESP_LOGI(TAG, "PPA preprocessing enabled: %d×%d RGB565 → %d×%d BGR888",
+                     _cam_width, _cam_height, _ppa->actual_width(), _ppa->actual_height());
         }
     } else {
         ESP_LOGW(TAG, "PPA alloc failed, falling back to CPU preprocessing");
     }
+
+    if (!_ppa)
 #endif
+    {
+        _detect_in_size = _cam_width * _cam_height * 2;  // RGB565
+        _detect_in_buf = (uint8_t *)heap_caps_aligned_alloc(128, _detect_in_size,
+                                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!_detect_in_buf) {
+            ESP_LOGE(TAG, "Failed to allocate detect buffer (%" PRIu32 " bytes)", _detect_in_size);
+            return false;
+        }
+    }
 
     _model_ready = false;
 
@@ -694,35 +716,30 @@ void CameraStream::_deinit_detection(void)
 
 void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
 {
-    if (!_detector || !_model_ready || !_detect_in_buf) return;
-
-    /* Copy frame to detection buffer (we'll Q the V4L2 buf back quickly). */
-    uint32_t copy_sz = (size < _detect_in_size) ? size : _detect_in_size;
-    memcpy(_detect_in_buf, buffer, copy_sz);
+    if (!_detector || !_model_ready) return;
 
     dl::image::img_t img = {};
     bool ppa_ok = false;
 
 #if CONFIG_SOC_PPA_SUPPORTED
-    /* PPA path: hardware resize + RGB565→RGB888 conversion.
-     * COCODetect internal preprocess then only does quantization (RGB888→QINT8). */
+    /* PPA path: PPA was already called by stream_handler on the V4L2 buffer.
+     * Re-use PPA output directly — no need to re-process. */
     if (_ppa && _ppa->is_initialized()) {
-        if (_ppa->process(_detect_in_buf)) {
-            img = {
-                .data = _ppa->out_buf(),
-                .width = _ppa->actual_width(),
-                .height = _ppa->actual_height(),
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_BGR888,
-            };
-            ppa_ok = true;
-        } else {
-            ESP_LOGW(TAG, "PPA process failed, falling back to CPU");
-        }
+        img = {
+            .data = _ppa->out_buf(),
+            .width = _ppa->actual_width(),
+            .height = _ppa->actual_height(),
+            .pix_type = dl::image::DL_IMAGE_PIX_TYPE_BGR888,
+        };
+        ppa_ok = true;
     }
 #endif
 
     /* CPU fallback: pass RGB565 directly, COCODetect does full preprocess */
     if (!ppa_ok) {
+        if (!buffer || !_detect_in_buf) return;
+        uint32_t copy_sz = (size < _detect_in_size) ? size : _detect_in_size;
+        memcpy(_detect_in_buf, buffer, copy_sz);
         img = {
             .data = _detect_in_buf,
             .width = (uint16_t)_cam_width,
@@ -909,25 +926,29 @@ static esp_err_t stream_handler(httpd_req_t *req)
         esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Every N frames: copy frame, encode+send JPEG, then run inference.
-         * With PPA: V4L2 buffer is returned immediately after PPA process (~1ms),
-         * no longer held during encode (~30ms) or inference (~560ms). */
+        /* Every N frames: PPA process + encode JPEG + run inference.
+         * With PPA: V4L2 buffer is passed directly to PPA (DMA read, ~1ms),
+         * then returned. No copy buffer needed. */
         bool detection_run_this_frame = false;
         if (cs->_detector && cs->_model_ready
             && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
-            uint32_t copy_sz = buf.bytesused;
-            if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
-            memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
 
-            /* Run PPA on the copy first (if available), then return V4L2 buffer */
+            /* Run PPA directly on V4L2 mmap buffer (if available) */
             bool ppa_ok = false;
 #if CONFIG_SOC_PPA_SUPPORTED
             if (cs->_ppa && cs->_ppa->is_initialized()) {
-                ppa_ok = cs->_ppa->process(cs->_detect_in_buf);
+                ppa_ok = cs->_ppa->process(cs->_v4l2_bufs[buf.index]);
             }
 #endif
 
-            /* Return V4L2 buffer immediately — PPA output is independent */
+            /* Copy V4L2 buffer for CPU fallback (PPA output is independent of V4L2) */
+            if (!ppa_ok && cs->_detect_in_buf) {
+                uint32_t copy_sz = buf.bytesused;
+                if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
+                memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
+            }
+
+            /* Return V4L2 buffer immediately after PPA (or copy) */
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
 
             /* Encode JPEG from PPA output (300×300 BGR24) or V4L2 buffer (800×800 RGB565) */
@@ -974,12 +995,12 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 jpeg_data = cs->_jpeg_out_buf;
             } else {
                 /* CPU fallback: PPA not active — encoder is configured for cam format.
-                 * Encode from _detect_in_buf (RGB565 copy of V4L2 buffer).
-                 * V4L2 buffer was NOT returned yet in this path. */
+                 * Encode from _detect_in_buf (RGB565 copy of V4L2 buffer). */
+                if (!cs->_detect_in_buf) continue;
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
                     continue;
                 }
+                uint32_t copy_sz = cs->_detect_in_size;
                 esp_err_t ret = example_encoder_process(cs->_encoder_handle,
                                                          cs->_detect_in_buf, copy_sz,
                                                          cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
@@ -1028,8 +1049,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 xSemaphoreGive(cs->_last_jpeg_mutex);
             }
 
-            /* Run inference on the copy (V4L2 buffer already returned) */
-            cs->_run_inference(cs->_detect_in_buf, copy_sz);
+            /* Run inference — PPA output already available, _run_inference reuses it */
+            cs->_run_inference(nullptr, 0);
             cs->_frame_count = cs->_frame_count + 1;
             cs->_fps_frame_count = cs->_fps_frame_count + 1;
             cs->_fps_total_bytes = cs->_fps_total_bytes + jpeg_size;
@@ -1053,13 +1074,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
             }
 #if CONFIG_SOC_PPA_SUPPORTED
             else if (cs->_ppa && cs->_ppa->is_initialized()) {
-                /* PPA path: copy V4L2 buffer → PPA process → JPEG encode from PPA output.
-                 * V4L2 buffer can be returned immediately after PPA process. */
-                uint32_t copy_sz = buf.bytesused;
-                if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
-                memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
-
-                if (cs->_ppa->process(cs->_detect_in_buf)) {
+                /* PPA path: pass V4L2 buffer directly to PPA (DMA read, ~1ms),
+                 * then return V4L2 buffer. No copy needed. */
+                if (cs->_ppa->process(cs->_v4l2_bufs[buf.index])) {
                     /* Return V4L2 buffer immediately — PPA output is independent */
                     ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
 
@@ -1105,7 +1122,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
 #endif
             else {
                 /* CPU fallback: draw boxes on V4L2 buffer, encode from 800×800 RGB565 */
-                if (cs->_detect_available && cs->_detect_mutex &&
+                if (cs->_detect_in_buf && cs->_detect_available && cs->_detect_mutex &&
                     xSemaphoreTake(cs->_detect_mutex, 0) == pdTRUE) {
                     if (!cs->_detect_results.empty()) {
                         for (auto &r : cs->_detect_results) {

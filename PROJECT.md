@@ -16,7 +16,7 @@
 
 | App | 类名 | 功能 |
 |-----|------|------|
-| 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, V4L2 (esp_video) 驱动, 800×800 → 720×720 显示, **PPA 硬件加速检测** |
+| 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, V4L2 (esp_video) 驱动, 800×800 → 720×720 显示 (纯预览, 检测已移至 CameraStream) |
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
@@ -64,7 +64,7 @@ esp32p4_monitor/
 │   ├── web_config_server.hpp       # Web 配置服务器头文件
 │   ├── web_config_server.cpp       # Web 配置服务器 (HTTP :8080, WiFi/音量设置)
 │   ├── phone_app_camera.hpp        # Camera App 头文件
-│   ├── phone_app_camera.cpp    # Camera App (V4L2 + OV5647 sensor + ESP-DL 人体检测)
+│   ├── phone_app_camera.cpp    # Camera App (V4L2 + OV5647 sensor, 纯预览)
 │   ├── phone_app_audio.hpp     # Audio App 头文件
 │   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + MP3 录音)
 │   ├── phone_app_music.hpp     # Music App 头文件
@@ -377,21 +377,15 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 - SCCB 链接: ESL 头文件需 `extern "C"` 包裹
 - 音量振荡: 移除 mic→speaker 回声功能
 
-### 7. Camera App 人体检测 (ESP-DL + YOLO11n + PPA 硬件加速)
+### 7. PPA 硬件加速 + 人体检测 (CameraStream 专用)
 
-`PhoneAppCamera` 新增人体检测功能，使用 ESP-DL 框架 + COCODetect (YOLO11n 320×320)：
+> **⚠️ 架构变更**: 人体检测已从 PhoneAppCamera (Camera App) 完全移除, Camera App 现在是纯预览应用。
+> 所有检测逻辑集中在 CameraStream, PPA 输出同时供 COCODetect 推理和 JPEG 编码, 避免重复处理。
 
-| 项目 | 配置 |
-|------|------|
-| 输入源 | Camera buffer (`_cam_width`×`_cam_height` RGB565LE) |
-| 预处理 (PPA) | PPA SRM: RGB565LE → RGB888 resize (800×800 → 320×320), ~1ms |
-| 预处理 (CPU) | COCODetect 内部: RGB888 → RGB888_QINT8 量化, ~5ms |
-| 坐标处理 | PPA 输出 320×320, 检测框 rescale 回 camera 分辨率 |
-
-**PPA 硬件加速架构** (`PPAPreprocessor` 类):
+**PPA 硬件加速架构** (`PPAPreprocessor` 类, CameraStream 使用):
 ```
-Camera RGB565 (800×800)
-        ↓ memcpy to _detect_in_buf
+V4L2 buffer RGB565 (800×800)
+        ↓ PPA DMA 直接读取 (无需 memcpy)
    PPA SRM (hardware):
         ├── resize: 800×800 → 300×300  (scale 0.375, 4-bit frac quantized from 0.4)
         └── format: RGB565LE → BGR888  (PPA outputs BGR24 in memory)
@@ -415,7 +409,8 @@ Camera RGB565 (800×800)
 - COCODetect letterbox 自动将 300×300 填充为 320×320 (10px 灰边框)
 - **PPA 输出复用**: 同一个 BGR24 buffer 同时供 COCODetect (检测) 和 JPEG 编码器 (推流), 无需二次 PPA 调用
 - **JPEG 编码优化**: PPA 输出 BGR24 = `JPEG_ENCODE_IN_FORMAT_RGB888` (ESP-IDF 定义), 编码器直接消费 PPA 输出, 编码时间 ~200ms → ~30ms, JPEG 体积 ~30-50KB → ~5-8KB
-- 自动降级: PPA 初始化失败时回退到 CPU 全流程 (RGB565→resize_nn→QINT8)
+- **V4L2 buffer 直接 DMA**: PPA 直接从 V4L2 mmap buffer DMA 读取, 无需 memcpy 到中间缓冲区, V4L2 buffer 持有时间从 ~200ms 降至 ~1ms
+- 自动降级: PPA 初始化失败时回退到 CPU 全流程 (RGB565→resize_nn→QINT8), 此时才分配 `_detect_in_buf`
 
 **已知问题 (已修复)**:
 - ~~检测框不缩放 → 太小~~ (COCODetect 内部已缩放，手动 scale 会双重缩放导致过大)
@@ -425,17 +420,10 @@ Camera RGB565 (800×800)
 - ~~Rescale 用 800/320=2.5~~ (已改用 800/300=2.667 基于 actual_width)
 - ~~PPA pic_w=320 导致行步长错位~~ (PPA 输出 320 像素行步长但 COCODetect 按 300 像素行步长读取, 数据错位。已改为 `pic_w=actual_w=300` 使 PPA 输出连续紧凑数据)
 
-**工作流程**:
-1. Camera 30fps 正常预览 (ISP DMA → PSRAM → LVGL canvas)
-2. detect task 每 600ms: 快照 RGB565 buffer → memcpy → PPA resize+convert → COCODetect::run(RGB888 320×320) → rescale boxes → filter person
-3. LVGL timer 检测到结果后: 画绿色矩形 + 置信度标签
-
-**注意**: `_detect_in_buf` 是独立分配的私有缓冲区，检测任务在 mutex 内 memcpy 后立即释放 mutex，推理在无锁状态下进行，避免与 LVGL timer 帧更新冲突。
-
-**TODO/优化**:
-- 置信度标签带绿色背景框提升可读性
-- 检测框平滑 (EMA 或 Kalman filter 减少抖动)
-- ROI 区域检测 (只检测画面中心区域减少误报)
+**PhoneAppCamera (Camera App) — 纯预览模式**:
+- Camera App 不再运行任何检测, 仅做 V4L2 DQBUF → memcpy → canvas 显示
+- 移除了: COCODetect, PPAPreprocessor, _detect_in_buf (1.28MB PSRAM), _detect_mutex, _detect_task, _draw_box_on_canvas, uORB detection_result
+- 简化了: _frame_update_timer_cb 不再需要 mutex 同步和检测框绘制, 直接 memcpy + cache sync + invalidate
 
 ### 8. Camera 红绿通道修正（Bayer + 字节序）
 
@@ -776,7 +764,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] CSI/ISP 正确释放 (stop→disable→del 顺序)
 - [x] Camera 在 LCD 显示有问题, 红色显示成绿色 — 修复: ISP `byte_swap_en=1`
 - [x] Camera App 关闭后重新挂载 SD 卡
-- [x] **Camera App 人体检测 (ESP-DL + YOLO11n 320x320 ≈ 1.8fps)**
+- [x] **Camera App 人体检测 (ESP-DL + YOLO11n 320x320 ≈ 1.8fps)** — 已迁移至 CameraStream, Camera App 改为纯预览
 - [x] **Camera App 迁移到 V4L2 (esp_video) 统一接口**
 - [x] **Camera Stream WiFi 推流 (HTTP MJPEG + mDNS)**
 - [x] **Camera Stream App 独立分离 + Web UI 优化 + HW JPEG 编码**
@@ -825,7 +813,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - CameraStream 在 MJPEG stream_handler 中每 3 帧运行 COCODetect 推理
   - 检测框直接绘制在 JPEG 帧上 (RGB565 buffer → draw box → JPEG encode)
   - 模型在后台 task 加载，不阻塞 stream 启动
-  - 与 PhoneAppCamera 的检测共享相同的 COCODetect 模型和阈值
+  - 与 PhoneAppCamera 共享相同的 COCODetect 模型和阈值 (Camera App 已移除检测, 现仅 CameraStream 运行)
 - [x] **Web Audio 录制↔播放互斥补全** (v2.1):
   - **问题**: 之前的录制↔播放互斥仅在 PhoneAppAudio → PhoneAppMusic 方向生效, Web 服务器的录制和播放相互不知情
   - **修复**:
