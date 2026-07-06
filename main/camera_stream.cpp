@@ -217,7 +217,10 @@ bool CameraStream::start(void)
 
 void CameraStream::stop(void)
 {
-    if (!_running) return;
+    /* Use CAS to prevent double-cleanup — compare_exchange_strong ensures
+     * only one caller transitions from running→stopped, matching start()'s pattern. */
+    bool expected = true;
+    if (!_running.compare_exchange_strong(expected, false)) return;
 
     /* Signal stream handler to exit loop BEFORE stopping HTTP server.
      * httpd_stop() waits for active connections to close — if the MJPEG
