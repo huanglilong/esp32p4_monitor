@@ -324,40 +324,22 @@ static void _logger_push(const char *data, int len)
             xSemaphoreGive(s_log.data_sem);
             break;
         } else if (avail > 0) {
-            /* Partial write: fill available space, then retry for the rest */
+            /* Partial write: fill available space, then drop remainder.
+             * This avoids blocking the caller (which may be LVGL or WiFi
+             * event handler) with a polling loop. */
             for (size_t i = 0; i < avail; i++) {
                 s_log.buf[s_log.head] = (uint8_t)data[written++];
                 s_log.head = (s_log.head + 1) % s_log.buf_size;
             }
             xSemaphoreGive(s_log.buf_mutex);
             xSemaphoreGive(s_log.data_sem);
+            /* Drop remainder — better to lose a log line than freeze
+             * a time-critical task for 100ms. */
+            break;
         } else {
-            /* Buffer completely full — yield and retry */
+            /* Buffer completely full — drop entire remaining data */
             xSemaphoreGive(s_log.buf_mutex);
-        }
-
-        if (written < len) {
-            /* Buffer was full (or became full during partial write).
-             * Yield briefly to let the writer drain, up to 100ms total. */
-            int wait_ms = 0;
-            while (wait_ms < 100 && written < len) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-                wait_ms++;
-                /* Check if writer freed some space: peek without locking first */
-                xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
-                size_t check = (s_log.buf_size - 1) -
-                               ((s_log.head + s_log.buf_size - s_log.tail) % s_log.buf_size);
-                xSemaphoreGive(s_log.buf_mutex);
-                if (check > 0) break;
-            }
-            if (wait_ms >= 100) {
-                /* Buffer full for 100ms — drop the rest of this line */
-                break;
-            }
-            /* Writer may have just drained and gone back to waiting on
-             * data_sem (500ms timeout).  Signal it now so it wakes
-             * promptly to consume the data we're about to write. */
-            xSemaphoreGive(s_log.data_sem);
+            break;
         }
     }
 }
