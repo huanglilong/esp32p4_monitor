@@ -1125,11 +1125,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
         }
 
         if (!detection_run_this_frame) {
-            /* Send boundary */
-            if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK) {
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                break;
-            }
+            /* boundary is sent by _send_mjpeg_part() below */
 
             uint32_t jpeg_size;
             uint8_t *jpeg_data;
