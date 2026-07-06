@@ -52,6 +52,16 @@ extern "C" {
 /* SD Card */
 #define SDMMC_MOUNT_POINT     "/sdcard"
 
+/* NVS shared keys — used by PhoneAppSettings, PhoneAppMusic, web_config_server.
+ * All settings use NVS namespace "settings". Keys must match across modules. */
+#define NVS_NAMESPACE_SETTINGS        "settings"
+#define NVS_KEY_WIFI_EN               "wifi_en"
+#define NVS_KEY_WIFI_SSID             "ssid"
+#define NVS_KEY_WIFI_PASS             "pass"
+#define NVS_KEY_VOLUME                "volume"
+#define NVS_KEY_BRIGHTNESS            "brightness"
+#define NVS_KEY_CAM_STREAM            "cam_stream"
+
 /* Shared mDNS initialization guard with reference counting.
  * Both CameraStream and web_config_server use mDNS.
  * - shared_mdns_mutex_init() must be called once from app_main before

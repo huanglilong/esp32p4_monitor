@@ -71,12 +71,9 @@ static const char *TAG = "WebConfig";
 
 #define WEB_CONFIG_PORT         8080
 
-#define NVS_NAMESPACE           "settings"
-#define NVS_KEY_WIFI_EN         "wifi_en"
-#define NVS_KEY_WIFI_SSID       "ssid"
-#define NVS_KEY_WIFI_PASS       "pass"
-#define NVS_KEY_VOLUME          "volume"
-#define NVS_KEY_CAM_STREAM      "cam_stream"
+/* NVS keys now defined in example_config.h (NVS_NAMESPACE_SETTINGS, NVS_KEY_*) */
+/* Backward-compatible local aliases for brevity in this file */
+#define NVS_NAMESPACE           NVS_NAMESPACE_SETTINGS
 
 #define VOLUME_MIN              0
 #define VOLUME_MAX              100
@@ -85,6 +82,7 @@ static const char *TAG = "WebConfig";
 #define TASK_STACK_SIZE         (4 * 1024)
 #define TASK_PRIORITY           1
 #define WIFI_CONNECT_TIMEOUT_MS 15000  /* Max wait for STA connection before giving up */
+/* WiFi event group bits (local to this module's event group) */
 #define WIFI_CONNECTED_BIT      BIT0
 
 static httpd_handle_t s_httpd = NULL;

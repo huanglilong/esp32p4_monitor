@@ -79,8 +79,8 @@ PhoneAppMusic::~PhoneAppMusic()
     if (_nvs_dirty) {
         _nvs_dirty = false;
         nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, "volume", (int32_t)_volume.load());
+        if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, NVS_KEY_VOLUME, (int32_t)_volume.load());
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
@@ -221,9 +221,9 @@ bool PhoneAppMusic::run(void)
     /* Restore NVS volume */
     {
         nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+        if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READONLY, &nvs_h) == ESP_OK) {
             int32_t saved_vol = (int32_t)_volume.load();
-            if (nvs_get_i32(nvs_h, "volume", &saved_vol) == ESP_OK) {
+            if (nvs_get_i32(nvs_h, NVS_KEY_VOLUME, &saved_vol) == ESP_OK) {
                 if (saved_vol >= 0 && saved_vol <= 100) _volume.store((int)saved_vol);
             }
             nvs_close(nvs_h);
@@ -243,8 +243,8 @@ bool PhoneAppMusic::run(void)
         if (!app || !app->_nvs_dirty) return;
         app->_nvs_dirty = false;
         nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, "volume", (int32_t)app->_volume.load());
+        if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, NVS_KEY_VOLUME, (int32_t)app->_volume.load());
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
@@ -340,8 +340,8 @@ bool PhoneAppMusic::close(void)
     if (_nvs_dirty) {
         _nvs_dirty = false;
         nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_i32(nvs_h, "volume", (int32_t)_volume.load());
+        if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_i32(nvs_h, NVS_KEY_VOLUME, (int32_t)_volume.load());
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }

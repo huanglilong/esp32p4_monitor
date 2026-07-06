@@ -68,12 +68,9 @@ static void publish_wifi_state(bool connected, bool scanning, int8_t rssi, const
     }
 }
 
-#define NVS_NAMESPACE            "settings"
-#define NVS_KEY_WIFI_EN          "wifi_en"
-#define NVS_KEY_WIFI_SSID        "ssid"
-#define NVS_KEY_WIFI_PASS        "pass"
-#define NVS_KEY_VOLUME           "volume"
-#define NVS_KEY_BRIGHTNESS       "brightness"
+/* NVS keys now defined in example_config.h (NVS_NAMESPACE_SETTINGS, NVS_KEY_*) */
+/* Backward-compatible local aliases for brevity in this file */
+#define NVS_NAMESPACE            NVS_NAMESPACE_SETTINGS
 #define WIFI_CONNECTED_BIT      BIT0
 #define WIFI_INIT_DONE_BIT      BIT1
 /*============================================================================
