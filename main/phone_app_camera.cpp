@@ -16,6 +16,7 @@ extern "C" {
 #include "coco_detect.hpp"
 #include "camera_stream.hpp"
 #include "dl_image_define.hpp"
+#include "ppa_preprocessor.hpp"
 
 /* uORB */
 #include "uorb.h"
@@ -48,7 +49,8 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
     _video_initialized(false),
     _detector(nullptr),
     _detect_in_buf(nullptr), _detect_in_size(0),
-    _detect_available(false), _detect_task_handle(nullptr), _detect_stack(nullptr), _detect_tcb(nullptr), _detect_mutex(nullptr)
+    _detect_available(false), _detect_task_handle(nullptr), _detect_stack(nullptr), _detect_tcb(nullptr), _detect_mutex(nullptr),
+    _ppa(nullptr)
 {
 }
 
@@ -422,6 +424,27 @@ bool PhoneAppCamera::_init_detection(void)
     }
     _detector->set_score_thr(PERSON_SCORE_THRESHOLD);
 
+    /* Initialize PPA hardware preprocessor for resize + RGB565→BGR888.
+     * YOLO11N_320_S8_V1 model input is 320×320.
+     * PPA offloads resize + color conversion from CPU (~1ms vs ~30ms CPU).
+     * COCODetect internal preprocess then only does quantization (BGR888→QINT8). */
+#if CONFIG_SOC_PPA_SUPPORTED
+    _ppa = new (std::nothrow) PPAPreprocessor();
+    if (_ppa) {
+        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 320, 320)) {
+            ESP_LOGW(TAG, "PPA init failed, falling back to CPU preprocessing");
+            delete _ppa;
+            _ppa = nullptr;
+        } else {
+            ESP_LOGI(TAG, "PPA preprocessing enabled: %d×%d RGB565 → 320×320 BGR888", _cam_width, _cam_height);
+        }
+    } else {
+        ESP_LOGW(TAG, "PPA alloc failed, falling back to CPU preprocessing");
+    }
+#else
+    ESP_LOGI(TAG, "PPA not supported on this SoC, using CPU preprocessing");
+#endif
+
     /* Create detection task on core 0 (high-performance core for NPU inference).
      * Use static allocation to place the 16KB stack in PSRAM, freeing internal SRAM. */
     const uint32_t detect_stack_words = 16 * 1024 / sizeof(StackType_t);
@@ -431,6 +454,9 @@ bool PhoneAppCamera::_init_detection(void)
         ESP_LOGE(TAG, "Failed to allocate detect task stack in PSRAM or TCB");
         if (_detect_stack) { heap_caps_free(_detect_stack); _detect_stack = nullptr; }
         if (_detect_tcb) { heap_caps_free(_detect_tcb); _detect_tcb = nullptr; }
+#if CONFIG_SOC_PPA_SUPPORTED
+        if (_ppa) { delete _ppa; _ppa = nullptr; }
+#endif
         delete _detector; _detector = nullptr;
         vSemaphoreDelete(_detect_mutex); _detect_mutex = nullptr;
         return false;
@@ -441,12 +467,15 @@ bool PhoneAppCamera::_init_detection(void)
         ESP_LOGE(TAG, "Failed to create detection task");
         heap_caps_free(_detect_stack); _detect_stack = nullptr;
         heap_caps_free(_detect_tcb); _detect_tcb = nullptr;
+#if CONFIG_SOC_PPA_SUPPORTED
+        if (_ppa) { delete _ppa; _ppa = nullptr; }
+#endif
         delete _detector; _detector = nullptr;
         vSemaphoreDelete(_detect_mutex); _detect_mutex = nullptr;
         return false;
     }
 
-    ESP_LOGI(TAG, "Detection initialized (YOLO11n 320x320)");
+    ESP_LOGI(TAG, "Detection initialized (YOLO11n 320x320, PPA=%s)", _ppa ? "ON" : "OFF");
     return true;
 }
 
@@ -470,6 +499,14 @@ void PhoneAppCamera::_deinit_detection(void)
 
     /* Reset uORB publisher handle for clean re-init lifecycle */
     s_detect_pub = ORB_ADVERT_INVALID;
+
+    /* Delete PPA preprocessor */
+#if CONFIG_SOC_PPA_SUPPORTED
+    if (_ppa) {
+        delete _ppa;
+        _ppa = nullptr;
+    }
+#endif
 
     /* Delete detector */
     if (_detector) {
@@ -514,6 +551,7 @@ void PhoneAppCamera::_detection_task(void *arg)
          * running 560ms inference. This prevents frame tearing: the LVGL
          * timer can write to _cam_buffer while we inference on our private copy. */
         dl::image::img_t img = {};  /* Declared outside if-block for scope */
+        bool frame_ready = false;
         if (app->_detect_mutex &&
             xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             esp_cache_msync(app->_cam_buffer, app->_cam_buf_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
@@ -523,13 +561,33 @@ void PhoneAppCamera::_detection_task(void *arg)
 
             xSemaphoreGive(app->_detect_mutex);
 
-            /* Set up image descriptor pointing to our private copy */
-            img = {
-                .data = app->_detect_in_buf,
-                .width = (uint16_t)app->_cam_width,
-                .height = (uint16_t)app->_cam_height,
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
-            };
+#if CONFIG_SOC_PPA_SUPPORTED
+            /* PPA path: hardware resize + RGB565→RGB888 conversion.
+             * COCODetect internal preprocess then only does quantization. */
+            if (app->_ppa && app->_ppa->is_initialized()) {
+                if (app->_ppa->process(app->_detect_in_buf)) {
+                    img = {
+                        .data = app->_ppa->out_buf(),
+                        .width = app->_ppa->actual_width(),
+                        .height = app->_ppa->actual_height(),
+                        .pix_type = dl::image::DL_IMAGE_PIX_TYPE_BGR888,
+                    };
+                    frame_ready = true;
+                } else {
+                    ESP_LOGW(TAG, "PPA process failed, falling back to CPU");
+                }
+            }
+#endif
+            /* CPU fallback: pass RGB565 directly, COCODetect does full preprocess */
+            if (!frame_ready) {
+                img = {
+                    .data = app->_detect_in_buf,
+                    .width = (uint16_t)app->_cam_width,
+                    .height = (uint16_t)app->_cam_height,
+                    .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
+                };
+                frame_ready = true;
+            }
         } else {
             /* Skip this detection cycle if mutex unavailable */
             vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(DETECT_INTERVAL_MS));
@@ -540,14 +598,31 @@ void PhoneAppCamera::_detection_task(void *arg)
         std::list<dl::detect::result_t> &results = app->_detector->run(img);
 
         /* Filter for person class (COCO class 0).
-         * COCODetect::run() internally handles coordinate scaling from model
-         * space to input image size, so results are already in camera resolution. */
+         * With PPA path, COCODetect sees 320×320 input, so result coordinates
+         * are in 320×320 space. We need to rescale to camera resolution for
+         * drawing detection boxes on the 800×800 canvas.
+         * With CPU fallback path, coordinates are already in camera resolution. */
         int person_count = 0;
+#if CONFIG_SOC_PPA_SUPPORTED
+        const bool need_rescale = (app->_ppa && app->_ppa->is_initialized());
+        const float rescale_x = need_rescale ? (float)app->_cam_width / (float)app->_ppa->actual_width() : 1.0f;
+        const float rescale_y = need_rescale ? (float)app->_cam_height / (float)app->_ppa->actual_height() : 1.0f;
+#endif
         if (xSemaphoreTake(app->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             app->_detect_results.clear();
             for (auto &r : results) {
                 if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
-                    app->_detect_results.push_back(r);
+                    dl::detect::result_t scaled_r = r;
+#if CONFIG_SOC_PPA_SUPPORTED
+                    if (need_rescale) {
+                        /* Rescale box coordinates from PPA output space to camera resolution */
+                        scaled_r.box[0] = (int)(r.box[0] * rescale_x);
+                        scaled_r.box[1] = (int)(r.box[1] * rescale_y);
+                        scaled_r.box[2] = (int)(r.box[2] * rescale_x);
+                        scaled_r.box[3] = (int)(r.box[3] * rescale_y);
+                    }
+#endif
+                    app->_detect_results.push_back(scaled_r);
                     person_count++;
                 }
             }

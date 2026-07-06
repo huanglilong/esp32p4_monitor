@@ -99,6 +99,7 @@ idf_component_register(
          "phone_app_music.cpp" "phone_app_settings.cpp"
          "phone_app_camera_stream.cpp" "camera_stream.cpp"
          "web_config_server.cpp"
+         "ppa_preprocessor.cpp"
          "generated/fps_stats.cpp"
          "generated/detection_result.cpp"
          "generated/wifi_state.cpp"
@@ -111,7 +112,7 @@ idf_component_register(
          "generated/system_alert.cpp"
          "generated/uORBTopics.cpp"
     INCLUDE_DIRS "." "generated" "drivers/audio" "drivers/sdcard" "drivers/camera" "drivers/system_monitor" "logger"
-    REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c fatfs
+    REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c esp_driver_ppa fatfs
              shine_encoder nvs_flash esp_wifi coco_detect esp_video
              esp_new_jpeg mdns cjson esp_http_server example_video_common
              esp_audio_simple_player uorb ulog

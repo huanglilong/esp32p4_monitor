@@ -10,6 +10,7 @@
 #include <atomic>
 
 class COCODetect;  // Forward declaration
+class PPAPreprocessor;  // Forward declaration
 
 #ifdef __cplusplus
 extern "C" {
@@ -101,6 +102,7 @@ public:
     TaskHandle_t                 _model_load_task;     /* Background task that loads the model */
     StackType_t                 *_model_load_stack;   /* PSRAM-allocated stack (8KB) */
     StaticTask_t                *_model_load_tcb;     /* TCB buffer for static task */
+    PPAPreprocessor             *_ppa;                 /* PPA hardware preprocessor (resize + RGB565→BGR888) */
     static constexpr float       PERSON_SCORE_THRESHOLD = 0.35f;
     static constexpr int         DETECT_INTERVAL_FRAMES = 3;
     static constexpr int         BOX_LINE_WIDTH = 2;

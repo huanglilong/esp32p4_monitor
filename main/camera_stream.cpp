@@ -19,6 +19,7 @@
 #include "driver/i2c_master.h"
 #include "coco_detect.hpp"
 #include "dl_image_define.hpp"
+#include "ppa_preprocessor.hpp"
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -137,6 +138,7 @@ CameraStream::CameraStream() :
     _detect_available(false),
     _model_ready(false),
     _model_load_task(nullptr), _model_load_stack(nullptr), _model_load_tcb(nullptr),
+    _ppa(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _mdns_running(false)
@@ -568,6 +570,25 @@ bool CameraStream::_init_detection(void)
         return false;
     }
 
+    /* Initialize PPA hardware preprocessor for resize + RGB565→RGB888.
+     * YOLO11N_320_S8_V1 model input is 320×320.
+     * PPA offloads resize + color conversion from CPU (~1ms vs ~30ms CPU).
+     * COCODetect internal preprocess then only does quantization (RGB888→QINT8). */
+#if CONFIG_SOC_PPA_SUPPORTED
+    _ppa = new (std::nothrow) PPAPreprocessor();
+    if (_ppa) {
+        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 320, 320)) {
+            ESP_LOGW(TAG, "PPA init failed, falling back to CPU preprocessing");
+            delete _ppa;
+            _ppa = nullptr;
+        } else {
+            ESP_LOGI(TAG, "PPA preprocessing enabled: %d×%d RGB565 → 320×320 RGB888", _cam_width, _cam_height);
+        }
+    } else {
+        ESP_LOGW(TAG, "PPA alloc failed, falling back to CPU preprocessing");
+    }
+#endif
+
     _model_ready = false;
 
     /* Start background task to load model asynchronously.
@@ -589,12 +610,15 @@ bool CameraStream::_init_detection(void)
         ESP_LOGE(TAG, "Failed to create model load task");
         heap_caps_free(_model_load_stack); _model_load_stack = nullptr;
         heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr;
+#if CONFIG_SOC_PPA_SUPPORTED
+        if (_ppa) { delete _ppa; _ppa = nullptr; }
+#endif
         heap_caps_free(_detect_in_buf);
         _detect_in_buf = nullptr;
         return false;
     }
 
-    ESP_LOGI(TAG, "Detection init done — model loading in background");
+    ESP_LOGI(TAG, "Detection init done — model loading in background (PPA=%s)", _ppa ? "ON" : "OFF");
     return true;
 }
 
@@ -625,6 +649,13 @@ void CameraStream::_deinit_detection(void)
         _model_load_tcb = nullptr;
     }
 
+#if CONFIG_SOC_PPA_SUPPORTED
+    if (_ppa) {
+        delete _ppa;
+        _ppa = nullptr;
+    }
+#endif
+
     if (_detector) {
         delete _detector;
         _detector = nullptr;
@@ -644,27 +675,71 @@ void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
 {
     if (!_detector || !_model_ready || !_detect_in_buf) return;
 
-    /* Copy frame to detection buffer (we'll Q the V4L2 buf back quickly).
-     * COCODetect will preprocess (resize + format convert) from this buffer. */
+    /* Copy frame to detection buffer (we'll Q the V4L2 buf back quickly). */
     uint32_t copy_sz = (size < _detect_in_size) ? size : _detect_in_size;
     memcpy(_detect_in_buf, buffer, copy_sz);
 
-    dl::image::img_t img = {
-        .data = _detect_in_buf,
-        .width = (uint16_t)_cam_width,
-        .height = (uint16_t)_cam_height,
-        .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
-    };
+    dl::image::img_t img = {};
+    bool ppa_ok = false;
+
+#if CONFIG_SOC_PPA_SUPPORTED
+    /* PPA path: hardware resize + RGB565→RGB888 conversion.
+     * COCODetect internal preprocess then only does quantization (RGB888→QINT8). */
+    if (_ppa && _ppa->is_initialized()) {
+        if (_ppa->process(_detect_in_buf)) {
+            img = {
+                .data = _ppa->out_buf(),
+                .width = _ppa->actual_width(),
+                .height = _ppa->actual_height(),
+                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_BGR888,
+            };
+            ppa_ok = true;
+        } else {
+            ESP_LOGW(TAG, "PPA process failed, falling back to CPU");
+        }
+    }
+#endif
+
+    /* CPU fallback: pass RGB565 directly, COCODetect does full preprocess */
+    if (!ppa_ok) {
+        img = {
+            .data = _detect_in_buf,
+            .width = (uint16_t)_cam_width,
+            .height = (uint16_t)_cam_height,
+            .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
+        };
+    }
 
     /* Run detection. First call loads model (~11s), subsequent ~560ms.
      * Filter for person class (COCO class 0). */
     std::list<dl::detect::result_t> &results = _detector.load()->run(img);
+
+#if CONFIG_SOC_PPA_SUPPORTED
+    /* With PPA path, COCODetect sees actual_w×actual_h input (e.g. 300×300),
+     * so result coordinates are in that space. Rescale to camera resolution. */
+    const bool need_rescale = ppa_ok;
+    const float rescale_x = need_rescale ? (float)_cam_width / (float)_ppa->actual_width() : 1.0f;
+    const float rescale_y = need_rescale ? (float)_cam_height / (float)_ppa->actual_height() : 1.0f;
+#endif
+
     if (_detect_mutex &&
         xSemaphoreTake(_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         _detect_results.clear();
         for (auto &r : results) {
             if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
-                _detect_results.push_back(r);
+#if CONFIG_SOC_PPA_SUPPORTED
+                if (need_rescale) {
+                    dl::detect::result_t scaled_r = r;
+                    scaled_r.box[0] = (int)(r.box[0] * rescale_x);
+                    scaled_r.box[1] = (int)(r.box[1] * rescale_y);
+                    scaled_r.box[2] = (int)(r.box[2] * rescale_x);
+                    scaled_r.box[3] = (int)(r.box[3] * rescale_y);
+                    _detect_results.push_back(scaled_r);
+                } else
+#endif
+                {
+                    _detect_results.push_back(r);
+                }
             }
         }
         _detect_available = true;

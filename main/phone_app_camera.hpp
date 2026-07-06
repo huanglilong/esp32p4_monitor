@@ -6,6 +6,7 @@
 #include <list>
 
 class COCODetect;  // Forward declaration
+class PPAPreprocessor;  // Forward declaration
 
 class PhoneAppCamera : public ESP_Brookesia_PhoneApp {
 public:
@@ -61,6 +62,7 @@ private:
     StackType_t                *_detect_stack;      // PSRAM-allocated task stack (16KB)
     StaticTask_t               *_detect_tcb;        // TCB buffer for static task
     SemaphoreHandle_t           _detect_mutex;       // Mutex for results
+    PPAPreprocessor            *_ppa;                // PPA hardware preprocessor (resize + RGB565→RGB888)
     static constexpr float      PERSON_SCORE_THRESHOLD = 0.35f;
     static constexpr int        DETECT_INTERVAL_MS = 600;
     static constexpr int        BOX_LINE_WIDTH = 2;

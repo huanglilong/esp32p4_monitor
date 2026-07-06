@@ -16,11 +16,11 @@
 
 | App | 类名 | 功能 |
 |-----|------|------|
-| 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, V4L2 (esp_video) 驱动, 800×800 → 720×720 显示 (**V4L2 重构**) |
+| 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, V4L2 (esp_video) 驱动, 800×800 → 720×720 显示, **PPA 硬件加速检测** |
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
-| 🌐 **Camera Stream** | `PhoneAppCameraStream` | WiFi 启动后通过浏览器实时查看 MJPEG 摄像头流, mDNS 发现, 带 CPU/PSRAM 监控 |
+| 🌐 **Camera Stream** | `PhoneAppCameraStream` | WiFi 启动后通过浏览器实时查看 MJPEG 摄像头流, mDNS 发现, **PPA 硬件加速检测**, CPU/PSRAM 监控 |
 | ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi** (WiFi 后台运行, 退出 App 保持连接) |
 
 ## 开发环境
@@ -75,6 +75,8 @@ esp32p4_monitor/
 │   ├── phone_app_camera_stream.cpp # Camera Stream App (WiFi状态 + MJPEG切换 + 系统监控)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件
 │   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → HTTP MJPEG + mDNS)
+│   ├── ppa_preprocessor.hpp       # PPA 硬件预处理 (RGB565→RGB888 resize)
+│   └── ppa_preprocessor.cpp       # PPA SRM client: 缩放+格式转换, CPU 仅做量化
 ├── proto/                                    # uORB .msg 消息定义
 │   ├── fps_stats.msg
 │   ├── detection_result.msg
@@ -375,23 +377,52 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 - SCCB 链接: ESL 头文件需 `extern "C"` 包裹
 - 音量振荡: 移除 mic→speaker 回声功能
 
-### 7. Camera App 人体检测 (ESP-DL + YOLO11n)
+### 7. Camera App 人体检测 (ESP-DL + YOLO11n + PPA 硬件加速)
 
 `PhoneAppCamera` 新增人体检测功能，使用 ESP-DL 框架 + COCODetect (YOLO11n 320×320)：
 
 | 项目 | 配置 |
 |------|------|
 | 输入源 | Camera buffer (`_cam_width`×`_cam_height` RGB565LE) |
-| 坐标处理 | COCODetect::run() 内部通过 ImagePreprocessor 自动缩放 → 无需手动 scale |
+| 预处理 (PPA) | PPA SRM: RGB565LE → RGB888 resize (800×800 → 320×320), ~1ms |
+| 预处理 (CPU) | COCODetect 内部: RGB888 → RGB888_QINT8 量化, ~5ms |
+| 坐标处理 | PPA 输出 320×320, 检测框 rescale 回 camera 分辨率 |
+
+**PPA 硬件加速架构** (`PPAPreprocessor` 类):
+```
+Camera RGB565 (800×800)
+        ↓ memcpy to _detect_in_buf
+   PPA SRM (hardware):
+        ├── resize: 800×800 → 300×300  (scale 0.375, 4-bit frac quantized from 0.4)
+        └── format: RGB565LE → BGR888  (PPA outputs BGR24 in memory)
+        ↓ _out_buf (BGR888, 300×300 contiguous, allocated for 320×320)
+   COCODetect internal (CPU):
+        ├── letterbox: 300×300 → 320×320 (10px gray border each side)
+        └── quantize: BGR888 → RGB888_QINT8  (R↔B swap + normalize)
+        ↓ model input tensor
+   YOLO11n inference (~560ms)
+        ↓ post-process
+   Rescale boxes: 300×300 → 800×800  (using actual_width/height)
+```
+- PPA 将 resize + 格式转换从 CPU 卸载到硬件 (~1ms vs CPU ~30ms)
+- PPA 4-bit frac 量化: 0.4 → 0.375, 实际输出 300×300 (非 320×320)
+- PPA `pic_w/pic_h` 必须设为 actual 300×300 (非 requested 320×320), 否则行步长不匹配导致 COCODetect 读取错位数据
+- PPA 输出 BGR24 内存布局, 传给 COCODetect 为 `BGR888`, 预处理自动 R↔B swap
+- COCODetect letterbox 自动将 300×300 填充为 320×320 (10px 灰边框)
+- 自动降级: PPA 初始化失败时回退到 CPU 全流程 (RGB565→resize_nn→QINT8)
 
 **已知问题 (已修复)**:
 - ~~检测框不缩放 → 太小~~ (COCODetect 内部已缩放，手动 scale 会双重缩放导致过大)
-- RGB565LE → PPA 不支持，改 CPU resize
+- ~~RGB565LE → PPA 不支持~~ (已通过直接调用 `ppa_do_scale_rotate_mirror` 绕过 ESP-DL `resize_ppa()` 限制)
+- ~~PPA 输出 320×320 但实际只有 300×300 有效像素~~ (已改用 `actual_width/height` 跟踪 PPA 实际输出, 传给 COCODetect 300×300 使 letterbox 正确计算 10px padding)
+- ~~PPA RGB888 输出实为 BGR24~~ (已改用 `DL_IMAGE_PIX_TYPE_BGR888`, COCODetect 预处理自动 R↔B swap)
+- ~~Rescale 用 800/320=2.5~~ (已改用 800/300=2.667 基于 actual_width)
+- ~~PPA pic_w=320 导致行步长错位~~ (PPA 输出 320 像素行步长但 COCODetect 按 300 像素行步长读取, 数据错位。已改为 `pic_w=actual_w=300` 使 PPA 输出连续紧凑数据)
 
 **工作流程**:
 1. Camera 30fps 正常预览 (ISP DMA → PSRAM → LVGL canvas)
-2. detect task 每 600ms: 快照 RGB565 buffer → memcpy 到私有 `_detect_in_buf` → 释放 mutex → COCODetect::run() → filter person
-3. LVGL timer 检测到结果后: lv_canvas_init_layer → 画绿色矩形 + 置信度 % 标签 → lv_canvas_finish_layer
+2. detect task 每 600ms: 快照 RGB565 buffer → memcpy → PPA resize+convert → COCODetect::run(RGB888 320×320) → rescale boxes → filter person
+3. LVGL timer 检测到结果后: 画绿色矩形 + 置信度标签
 
 **注意**: `_detect_in_buf` 是独立分配的私有缓冲区，检测任务在 mutex 内 memcpy 后立即释放 mutex，推理在无锁状态下进行，避免与 LVGL timer 帧更新冲突。
 
@@ -514,7 +545,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - 自动停止: Toggle OFF / WiFi 断开 / 退出 Settings App
 - **不持久化**: 重启后默认 OFF
 - **JPEG 快照**: `/api/capture_image` 返回最新帧 (stream handler 每帧缓存)
-- **内联人体检测**: 每 3 帧运行 COCODetect, 检测框绘制在 JPEG 帧上
+- **内联人体检测**: 每 3 帧运行 COCODetect (PPA 加速预处理), 检测框绘制在 JPEG 帧上
 
 **NVS 命名空间**: `"settings"`
 
@@ -548,7 +579,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: 两个并发客户端可同时触发延迟初始化。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护。
 - **JPEG 快照**: stream handler 每帧保存最新 JPEG 到 `_last_jpeg_buf` (mutex 保护), `/api/capture_image` 端点返回最新帧的 `image/jpeg`。
-- **内联人体检测**: CameraStream 在 stream_handler 中每 3 帧运行一次 COCODetect 推理，检测框直接绘制在 JPEG 帧上。模型在后台 task 加载 (`_model_load_task`)，加载完成后 `_model_ready` atomic flag 置位。
+- **内联人体检测**: CameraStream 在 stream_handler 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→RGB888 resize)，检测框直接绘制在 JPEG 帧上。模型在后台 task 加载 (`_model_load_task`)，加载完成后 `_model_ready` atomic flag 置位。
 
 ### 15. esp_hosted (WiFi over SDIO) 稳定性
 
