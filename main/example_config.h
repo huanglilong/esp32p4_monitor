@@ -48,6 +48,7 @@ extern "C" {
 #define AUDIO_I2S_WS_IO       CONFIG_EXAMPLE_I2S_WS_IO
 #define AUDIO_I2S_DO_IO       CONFIG_EXAMPLE_I2S_DOUT_IO
 #define AUDIO_I2S_DI_IO       CONFIG_EXAMPLE_I2S_DIN_IO
+#define AUDIO_PA_GPIO          53   /* Power amplifier enable (HIGH=ON) */
 
 /* SD Card */
 #define SDMMC_MOUNT_POINT     "/sdcard"

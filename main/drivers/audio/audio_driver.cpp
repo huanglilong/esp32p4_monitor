@@ -86,8 +86,8 @@ void AudioDriver::init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&pa_conf);
-    gpio_set_level((gpio_num_t)53, 1);
-    ESP_LOGI(TAG, "PA GPIO 53 enabled");
+    gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 1);
+    ESP_LOGI(TAG, "PA GPIO %d enabled", AUDIO_PA_GPIO);
 
     /* I2S channel init (duplex, STD, 48kHz stereo) */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(0, I2S_ROLE_MASTER);
@@ -98,11 +98,11 @@ void AudioDriver::init(void)
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(EXAMPLE_AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
-            .mclk = (gpio_num_t)13,
-            .bclk = (gpio_num_t)12,
-            .ws   = (gpio_num_t)10,
-            .dout = (gpio_num_t)9,
-            .din  = (gpio_num_t)11,
+            .mclk = (gpio_num_t)AUDIO_I2S_MCK_IO,
+            .bclk = (gpio_num_t)AUDIO_I2S_BCK_IO,
+            .ws   = (gpio_num_t)AUDIO_I2S_WS_IO,
+            .dout = (gpio_num_t)AUDIO_I2S_DO_IO,
+            .din  = (gpio_num_t)AUDIO_I2S_DI_IO,
         },
     };
     std_cfg.clk_cfg.mclk_multiple = EXAMPLE_AUDIO_MCLK_MULTIPLE;
@@ -153,7 +153,7 @@ void AudioDriver::init(void)
             es8311_codec_cfg_t es8311_cfg = {
                 .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
                 .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-                .pa_pin = 53, .master_mode = false, .use_mclk = true,
+                .pa_pin = AUDIO_PA_GPIO, .master_mode = false, .use_mclk = true,
                 .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
                 .mclk_div = I2S_MCLK_MULTIPLE_256,
             };
@@ -208,7 +208,7 @@ void AudioDriver::init(void)
             es8311_codec_cfg_t es8311_cfg = {
                 .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
                 .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-                .pa_pin = 53, .master_mode = false, .use_mclk = true,
+                .pa_pin = AUDIO_PA_GPIO, .master_mode = false, .use_mclk = true,
                 .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
                 .mclk_div = I2S_MCLK_MULTIPLE_256,
             };
@@ -244,7 +244,7 @@ void AudioDriver::init(void)
             i2s_del_channel(_rx_handle);
             _rx_handle = nullptr;
         }
-        gpio_set_level((gpio_num_t)53, 0);
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
         xSemaphoreGive(_lifecycle_mutex);
         return;
@@ -308,7 +308,7 @@ void AudioDriver::init(void)
             i2s_del_channel(_rx_handle);
             _rx_handle = nullptr;
         }
-        gpio_set_level((gpio_num_t)53, 0);
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio codec open failed — audio unavailable");
         xSemaphoreGive(_lifecycle_mutex);
         return;
@@ -358,7 +358,7 @@ void AudioDriver::deinit(void)
         _rx_handle = nullptr;
     }
 
-    gpio_set_level((gpio_num_t)53, 0);
+    gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
 
     /* Nullify codec mutex FIRST while we still hold the lifecycle lock.
      * In-flight set_volume/set_mic_gain ops check _codec_mutex != nullptr
