@@ -1234,10 +1234,10 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-    cJSON_AddNumberToObject(root, "width", cs->_cam_width);
-    cJSON_AddNumberToObject(root, "height", cs->_cam_height);
-    cJSON_AddNumberToObject(root, "stream_width", cs->_stream_enc_width);
-    cJSON_AddNumberToObject(root, "stream_height", cs->_stream_enc_height);
+    cJSON_AddNumberToObject(root, "width", cs->_stream_enc_width);
+    cJSON_AddNumberToObject(root, "height", cs->_stream_enc_height);
+    cJSON_AddNumberToObject(root, "sensor_width", cs->_cam_width);
+    cJSON_AddNumberToObject(root, "sensor_height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality.load());
     cJSON_AddNumberToObject(root, "frame_rate", 2);   /* ~2fps from VTS=24600 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);

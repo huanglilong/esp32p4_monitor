@@ -271,13 +271,15 @@ class AppState extends ChangeNotifier {
         final info = await _httpService.fetchCameraInfo();
         _deviceStatus = 'Camera connected';
         _addLog('Camera info received');
-        // Firmware returns flat JSON: {width, height, jpeg_quality, frame_rate, pixel_format, total_frames}
+        // Firmware returns flat JSON: {width, height (streaming resolution, 300×300),
+        //   sensor_width, sensor_height (camera sensor, 800×800),
+        //   jpeg_quality, frame_rate, pixel_format, total_frames}
         if (info['width'] != null && info['height'] != null) {
           final w = info['width'] as num;
           final h = info['height'] as num;
           final fr = (info['frame_rate'] as num?)?.toInt() ?? 0;
           _latestText = '${w}x$h @ ${fr}fps';
-          _addLog('Resolution: $_latestText');
+          _addLog('Stream resolution: $_latestText');
         }
         final fmt = info['pixel_format'] ?? 'unknown';
         _addLog('Pixel format: $fmt');
