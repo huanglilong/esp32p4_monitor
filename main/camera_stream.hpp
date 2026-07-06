@@ -68,7 +68,7 @@ public:
     void                  *_encoder_handle;
     uint8_t               *_jpeg_out_buf;
     uint32_t               _jpeg_out_size;
-    uint8_t                _jpeg_quality;
+    std::atomic<uint8_t>   _jpeg_quality;
     SemaphoreHandle_t      _encoder_sem;
     std::atomic<bool>      _encoder_initialized;      /* Atomic: init done, safe to use _encoder_handle/_encoder_sem */
     std::atomic<bool>      _encoder_init_in_progress; /* Atomic: prevents double-init, notifies waiters */

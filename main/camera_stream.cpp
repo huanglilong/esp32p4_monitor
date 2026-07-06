@@ -121,7 +121,7 @@ CameraStream::CameraStream() :
     _v4l2_buf_count(0),
     _encoder_handle(nullptr),
     _jpeg_out_buf(nullptr), _jpeg_out_size(0),
-    _jpeg_quality(30),  // Lower quality = faster encode + less WiFi/SDIO traffic
+    _jpeg_quality{30},  // Lower quality = faster encode + less WiFi/SDIO traffic
     _encoder_sem(nullptr),
     _encoder_initialized(false),
     _encoder_init_in_progress(false),
@@ -458,7 +458,7 @@ bool CameraStream::_init_encoder(void)
         .width = _stream_enc_width,
         .height = _stream_enc_height,
         .pixel_format = _stream_enc_format,
-        .quality = _jpeg_quality,
+        .quality = _jpeg_quality.load(),
     };
 
     /* Retry up to 3 times with increasing delay.
@@ -467,7 +467,7 @@ bool CameraStream::_init_encoder(void)
     const int MAX_RETRIES = 3;
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         ESP_LOGI(TAG, "Encoder init attempt %d/%d: %" PRIu32 "x%" PRIu32 " fmt=0x%08" PRIx32 " quality=%d",
-                 attempt, MAX_RETRIES, _stream_enc_width, _stream_enc_height, _stream_enc_format, _jpeg_quality);
+                 attempt, MAX_RETRIES, _stream_enc_width, _stream_enc_height, _stream_enc_format, _jpeg_quality.load());
 
         if (example_encoder_init(&enc_cfg, &_encoder_handle) == ESP_OK) {
             break;  // success
@@ -1258,7 +1258,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "stream_width", cs->_stream_enc_width);
     cJSON_AddNumberToObject(root, "stream_height", cs->_stream_enc_height);
-    cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality);
+    cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality.load());
     cJSON_AddNumberToObject(root, "frame_rate", 2);   /* ~2fps from VTS=24600 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
 
@@ -1366,7 +1366,7 @@ static esp_err_t set_quality_handler(httpd_req_t *req)
     int q = atoi(val);
     if (q < 1) q = 1;
     if (q > 100) q = 100;
-    cs->_jpeg_quality = (uint8_t)q;
+    cs->_jpeg_quality.store((uint8_t)q);
 
     if (cs->_encoder_handle) {
         example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
@@ -1402,7 +1402,7 @@ static esp_err_t set_camera_config_handler(httpd_req_t *req)
         int quality = q->valueint;
         if (quality < 1) quality = 1;
         if (quality > 100) quality = 100;
-        cs->_jpeg_quality = (uint8_t)quality;
+        cs->_jpeg_quality.store((uint8_t)quality);
         if (cs->_encoder_handle) {
             example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
         }
