@@ -55,6 +55,9 @@ esp32p4_monitor/
 │   │   └── camera/
 │   │       ├── camera_driver.hpp   # CameraDriver — camera_state pub/sub + claim/release (owner-tracked)
 │   │       └── camera_driver.cpp
+│   │   └── system_monitor/
+│   │       ├── system_monitor.hpp  # SystemMonitor — CPU/memory 采样 + uORB 发布
+│   │       └── system_monitor.cpp
 │   ├── logger/                     # 文本日志模块
 │   │   ├── logger.hpp              # Logger API (level 过滤, esp_log_set_vprintf 拦截)
 │   │   └── logger.cpp              # Ring buffer + writer task → SD card text file, 文件轮转
@@ -80,6 +83,8 @@ esp32p4_monitor/
 │   ├── camera_state.msg
 │   ├── recording_state.msg
 │   └── volume_state.msg
+│   └── system_stats.msg
+│   └── system_alert.msg
 ├── tools/
 │   └── msg_gen.py                    # uORB .msg → C 代码生成器
 ├── doc/
@@ -158,6 +163,8 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 | `camera_state` | `camera_state_s` | 1 | CameraDriver | PeripheralManager, CameraStream, PhoneAppCamera |
 | `recording_state` | `recording_state_s` | 1 | PhoneAppAudio | UI 录制状态, PhoneAppMusic 录制互斥 |
 | `volume_state` | `volume_state_s` | 1 | AudioDriver (via PeripheralManager) | Music Playback |
+| `system_stats` | `system_stats_s` | 3 | SystemMonitor | ULog, Web API (/api/system_stats) |
+| `system_alert` | `system_alert_s` | 5 | SystemMonitor | ULog, Web API (/api/system_alerts) |
 
 ## Driver 模块架构 (Phase 3 重构)
 
@@ -170,6 +177,8 @@ PeripheralManager (thin facade)
   ├── AudioDriver::instance()     — I2S + codec 生命周期 + volume uORB
   ├── SDCardDriver::instance()    — SD mount/unmount + LDO power-cycle
   └── CameraDriver::instance()    — camera_state pub/sub + claim/release
+
+SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独立于 PeripheralManager)
 ```
 
 | Driver | 目录 | 职责 | 线程安全 |
@@ -177,6 +186,7 @@ PeripheralManager (thin facade)
 | AudioDriver | `drivers/audio/` | I2S channel + ES8311/ES7210 codec init/deinit, volume/mic_gain/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
 | SDCardDriver | `drivers/sdcard/` | SDSPI init-once (LDO VO4 power-cycle), never unmount | _init_mutex |
 | CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API with owner tracking | _mutex |
+| SystemMonitor | `drivers/system_monitor/` | FreeRTOS task CPU% + heap/PSRAM 采样, system_stats uORB, ESP_LOG 摘要, Web API, 资源异常告警 (CPU>90% / Memory>80%), delta-based CPU% (name-matched) | _latest_mutex + _alert_mutex |
 
 **设计要点**:
 - PeripheralManager API 完全不变，app 模块无需修改
@@ -674,6 +684,27 @@ widgets/
 
 > **注意**: 音频功能在 ESP32 Camera Stream 运行时被阻断 (`__cam_running()` 检查)。
 > 连接流程: Camera 按钮 → 端口 81 推流; Settings 按钮 → 端口 8080 配置。
+
+## Internal SRAM 分配分析 (HP L2MEM 768 KB)
+
+ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
+
+| 用途 | 大小 | 占比 | 类型 |
+|------|------|------|------|
+| L2 Cache (CONFIG_CACHE_L2_CACHE_SIZE) | 256 KB | 33.3% | 不可用 |
+| IRAM 代码 (flash操作/中断安全代码) | 152 KB | 19.8% | 静态 |
+| ROM 保留 (ROM BSS/Data/Stack) | 81 KB | 10.5% | 不可用 |
+| DRAM .data + .bss (全局变量) | 44 KB | 5.7% | 静态 |
+| Heap (动态分配) | ~234 KB | 30.5% | 动态 |
+
+运行时 Heap ~234 KB 主要消耗者：
+- WiFi/LWIP 缓冲区: ~50-80 KB (Static RX/TX 16×1.7KB each)
+- FreeRTOS 任务栈: ~40-50 KB (detect 16KB, audio 12KB, etc.)
+- 系统服务 (mDNS/NVS/esp_netif): ~10-20 KB
+- DMA 描述符/USB: ~5-10 KB
+- 剩余可用: ~90 KB (运行时日志: internal 91/385 KB free)
+
+优化方向：减少 WiFi buffer 数量、大栈任务分配到 PSRAM、减少 IRAM 代码量。
 
 ## 构建和烧录
 

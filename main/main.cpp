@@ -28,6 +28,7 @@
 #include "phone_app_camera_stream.hpp"
 #include "web_config_server.hpp"
 #include "logger/logger.hpp"
+#include "system_monitor.hpp"
 #include "git_info.h"
 #include "example_config.h"
 #include "mdns.h"
@@ -593,10 +594,16 @@ extern "C" void app_main(void)
         ulog_writer_add_topic(ulog, ORB_ID(recording_state), 0);  /* default 100ms */
         ulog_writer_add_topic(ulog, ORB_ID(volume_state), 0);     /* default 100ms */
         ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
-        ESP_LOGI(TAG, "ULog writer initialized with %d topics", 8);
+        ulog_writer_add_topic(ulog, ORB_ID(system_stats), 500);   /* system CPU/memory every 500ms */
+        ulog_writer_add_topic(ulog, ORB_ID(system_alert), 0);     /* alerts on event */
+        ESP_LOGI(TAG, "ULog writer initialized with %d topics", 10);
     } else {
         ESP_LOGW(TAG, "SD card not available, skipping ULog writer init");
     }
+
+    /* ── System Performance Monitor ── */
+    SystemMonitor::instance().init();
+    SystemMonitor::instance().start();
 
     /* All setup complete — delete this task to reclaim its stack/TCB.
      * The FreeRTOS idle task will clean up. All work continues in

@@ -196,6 +196,24 @@
 | S147 | **MJPEG stream + detection fix** | 检测帧绘制时 MJPEG 流暂停 + FPS 统计未发布。修复: 检测和流处理顺序正确化 | ✅ |
 | S148 | **Camera info JSON parsing** | Camera Stream Web UI JSON 解析错误修复 | ✅ |
 
+### 2.3 系统性能监控
+
+| # | 需求 | 说明 | 状态 |
+|---|------|------|:----:|
+| M1 | **SystemMonitor 驱动** | `drivers/system_monitor/` — 周期性采样 FreeRTOS 任务 CPU% (`uxTaskGetSystemState`) + heap/PSRAM 内存，发布 uORB `system_stats` topic | ✅ |
+| M2 | **system_stats uORB topic** | `proto/system_stats.msg` — 内存 (free/min internal+PSRAM)、CPU%、任务数、Top-4 任务 CPU%/栈高水位 | ✅ |
+| M3 | **ESP_LOG 周期摘要** | 可配置间隔 (默认 60s) 输出 Top-4 CPU 消耗任务 + 内存摘要到 UART | ✅ |
+| M4 | **ULog 持久化** | system_stats 注册到 ULog writer，SD 卡 `.ulg` 文件记录完整性能历史 | ✅ |
+| M5 | **Web API `/api/system_stats`** | HTTP JSON 端点返回当前 CPU/内存/任务快照，供 Flutter App 或浏览器远程监控 | ✅ |
+| M6 | **Kconfig 可配置** | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` (采样间隔)、`LOG_INTERVAL` (日志频率)、`TOP_N`、`TASK_STACK` | ✅ |
+| M7 | **异常告警 — CPU 高负载** | CPU > 90% 时发布 `system_alert` uORB (CPU_HIGH)，ESP_LOGW 输出告警，包含 Top-1 任务名和 CPU% | ✅ |
+| M8 | **异常告警 — 内存高占用** | Internal SRAM 或 PSRAM 使用率 > 80% 时发布 `system_alert` uORB (MEM_INTERNAL_HIGH / MEM_PSRAM_HIGH) | ✅ |
+| M9 | **告警分级** | WARNING (阈值~+5%) / CRITICAL (阈值+10%) 两级严重度 | ✅ |
+| M10 | **告警冷却** | 同类型告警最小间隔 30s (可配置)，防止告警洪泛 | ✅ |
+| M11 | **告警 uORB 持久化** | `system_alert` 注册到 ULog writer，SD 卡 `.ulg` 文件记录告警事件 | ✅ |
+| M12 | **告警 Web API** | `GET /api/system_alerts` 返回当前 CPU/内存/PSRAM 告警状态 + 阈值配置 | ✅ |
+| M13 | **告警 Kconfig** | `CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT` (90%)、`MEM_ALERT_PCT` (80%)、`ALERT_COOLDOWN_S` (30) | ✅ |
+
 ---
 
 ## 3. 待完成需求

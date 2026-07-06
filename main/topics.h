@@ -18,6 +18,8 @@
 #include "generated/recording_state.h"
 #include "generated/volume_state.h"
 #include "generated/ulog_state.h"
+#include "generated/system_stats.h"
+#include "generated/system_alert.h"
 
 #include "uorb.h"
 
@@ -36,3 +38,5 @@ ORB_TOPIC_DECLARE(camera_state);
 ORB_TOPIC_DECLARE(recording_state);
 ORB_TOPIC_DECLARE(volume_state);
 ORB_TOPIC_DECLARE(ulog_state);
+ORB_TOPIC_DECLARE(system_stats);
+ORB_TOPIC_DECLARE(system_alert);

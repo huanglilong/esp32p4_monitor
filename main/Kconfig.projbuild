@@ -138,4 +138,66 @@ menu "Monitor Example Configuration"
             SD card writes.  Larger = less producer blocking, but
             more RAM.
 
+    # ── System Performance Monitor ──
+    config APP_SYS_MONITOR_INTERVAL_MS
+        int "System monitor sampling interval (ms)"
+        default 5000
+        range 1000 60000
+        help
+            How often the SystemMonitor samples FreeRTOS task CPU
+            usage and heap memory. Shorter intervals give finer
+            granularity but consume more CPU.
+
+    config APP_SYS_MONITOR_LOG_INTERVAL
+        int "Log summary every N samples"
+        default 12
+        range 0 3600
+        help
+            Print a human-readable system stats summary via ESP_LOGI
+            every N sampling cycles. Set to 0 to disable periodic
+            logging (stats are still available via uORB / HTTP API).
+
+    config APP_SYS_MONITOR_TOP_N
+        int "Number of top CPU-consuming tasks to track"
+        default 6
+        range 1 6
+        help
+            How many of the highest-CPU tasks to include in each
+            system_stats sample. Maximum 6 (limited by uORB topic
+            structure).
+
+    config APP_SYS_MONITOR_TASK_STACK
+        int "Monitor task stack size (bytes)"
+        default 4096
+        range 2048 8192
+        help
+            Stack size for the background system monitor task.
+
+    config APP_SYS_MONITOR_CPU_ALERT_PCT
+        int "CPU usage alert threshold (%)"
+        default 90
+        range 50 99
+        help
+            Fire a CPU_HIGH alert when total CPU usage exceeds this
+            percentage. The alert includes the top CPU-consuming task.
+            Set to 100 to disable CPU alerts.
+
+    config APP_SYS_MONITOR_MEM_ALERT_PCT
+        int "Memory usage alert threshold (%)"
+        default 80
+        range 50 99
+        help
+            Fire a MEM_HIGH alert when internal SRAM or PSRAM usage
+            exceeds this percentage. Set to 100 to disable memory
+            alerts.
+
+    config APP_SYS_MONITOR_ALERT_COOLDOWN_S
+        int "Alert cooldown period (seconds)"
+        default 10
+        range 5 3600
+        help
+            Minimum time between repeated alerts of the same type.
+            Prevents alert flooding when a resource is persistently
+            over threshold.
+
 endmenu

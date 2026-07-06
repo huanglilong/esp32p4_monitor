@@ -56,6 +56,10 @@
 
 /* ULog writer */
 #include "ulog_writer.h"
+
+/* System Monitor */
+#include "system_monitor.hpp"
+
 extern "C" {
 #include "layer3.h"
 }
@@ -1648,6 +1652,134 @@ static esp_err_t ulog_stop_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/system_stats — current system performance snapshot */
+static esp_err_t h_system_stats(httpd_req_t *req)
+{
+    system_stats_s stats = SystemMonitor::instance().get_latest();
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+
+    cJSON *memory = cJSON_CreateObject();
+    cJSON_AddNumberToObject(memory, "free_internal_kb", (double)(stats.free_internal / 1024));
+    cJSON_AddNumberToObject(memory, "free_psram_kb", (double)(stats.free_psram / 1024));
+    cJSON_AddNumberToObject(memory, "min_free_internal_kb", (double)(stats.min_free_internal / 1024));
+    cJSON_AddNumberToObject(memory, "min_free_psram_kb", (double)(stats.min_free_psram / 1024));
+    cJSON_AddItemToObject(root, "memory", memory);
+
+    cJSON_AddNumberToObject(root, "task_count", (double)stats.task_count);
+    cJSON_AddNumberToObject(root, "cpu_pct", (double)stats.total_cpu_pct / 100.0);
+
+    /* Top tasks */
+    cJSON *tasks = cJSON_CreateArray();
+    struct {
+        const char *name;
+        uint32_t cpu_pct;
+        uint32_t stack_hwm;
+    } top[] = {
+        { stats.task_name_0, stats.task_cpu_pct_0, stats.task_stack_hwm_0 },
+        { stats.task_name_1, stats.task_cpu_pct_1, stats.task_stack_hwm_1 },
+        { stats.task_name_2, stats.task_cpu_pct_2, stats.task_stack_hwm_2 },
+        { stats.task_name_3, stats.task_cpu_pct_3, stats.task_stack_hwm_3 },
+        { stats.task_name_4, stats.task_cpu_pct_4, stats.task_stack_hwm_4 },
+        { stats.task_name_5, stats.task_cpu_pct_5, stats.task_stack_hwm_5 },
+    };
+    for (int i = 0; i < 6; i++) {
+        if (top[i].name[0] == '\0') break;
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddStringToObject(t, "name", top[i].name);
+        cJSON_AddNumberToObject(t, "cpu_pct", (double)top[i].cpu_pct / 100.0);
+        cJSON_AddNumberToObject(t, "stack_hwm", (double)top[i].stack_hwm);
+        cJSON_AddItemToArray(tasks, t);
+    }
+    cJSON_AddItemToObject(root, "top_tasks", tasks);
+
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_sendstr(req, "{}");
+    }
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* GET /api/system_alerts — current alert state */
+static cJSON *_build_alert_obj(const system_alert_s &a)
+{
+    cJSON *obj = cJSON_CreateObject();
+    if (a.timestamp == 0) {
+        cJSON_AddBoolToObject(obj, "active", false);
+        return obj;
+    }
+    cJSON_AddBoolToObject(obj, "active", true);
+    const char *type_str = "unknown";
+    switch (a.alert_type) {
+    case SYS_ALERT_CPU_HIGH:          type_str = "cpu_high"; break;
+    case SYS_ALERT_MEM_INTERNAL_HIGH: type_str = "mem_internal_high"; break;
+    case SYS_ALERT_MEM_PSRAM_HIGH:    type_str = "mem_psram_high"; break;
+    default: break;
+    }
+    cJSON_AddStringToObject(obj, "type", type_str);
+    const char *sev_str = "info";
+    switch (a.severity) {
+    case SYS_ALERT_SEVERITY_WARNING:  sev_str = "warning"; break;
+    case SYS_ALERT_SEVERITY_CRITICAL: sev_str = "critical"; break;
+    default: break;
+    }
+    cJSON_AddStringToObject(obj, "severity", sev_str);
+    cJSON_AddNumberToObject(obj, "current_pct", (double)a.current_value / 100.0);
+    cJSON_AddNumberToObject(obj, "threshold_pct", (double)a.threshold / 100.0);
+    if (a.task_name[0] != '\0') {
+        cJSON_AddStringToObject(obj, "task_name", a.task_name);
+        cJSON_AddNumberToObject(obj, "task_cpu_pct", (double)a.task_cpu_pct / 100.0);
+    }
+    cJSON_AddNumberToObject(obj, "free_internal_kb", (double)(a.free_internal / 1024));
+    cJSON_AddNumberToObject(obj, "free_psram_kb", (double)(a.free_psram / 1024));
+    return obj;
+}
+
+static esp_err_t h_system_alerts(httpd_req_t *req)
+{
+    system_alert_s cpu_alert = {}, mem_int_alert = {}, mem_psram_alert = {};
+    SystemMonitor::instance().get_alerts(&cpu_alert, &mem_int_alert, &mem_psram_alert);
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+
+    cJSON_AddItemToObject(root, "cpu", _build_alert_obj(cpu_alert));
+    cJSON_AddItemToObject(root, "mem_internal", _build_alert_obj(mem_int_alert));
+    cJSON_AddItemToObject(root, "mem_psram", _build_alert_obj(mem_psram_alert));
+
+    /* Also include thresholds from Kconfig */
+    cJSON *thresholds = cJSON_CreateObject();
+    cJSON_AddNumberToObject(thresholds, "cpu_pct", CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT);
+    cJSON_AddNumberToObject(thresholds, "mem_pct", CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT);
+    cJSON_AddNumberToObject(thresholds, "cooldown_s", CONFIG_APP_SYS_MONITOR_ALERT_COOLDOWN_S);
+    cJSON_AddItemToObject(root, "thresholds", thresholds);
+
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_sendstr(req, "{}");
+    }
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 /* CORS preflight handler — responds to OPTIONS requests for POST endpoints.
  * Browsers require this before cross-origin POST with Content-Type: application/json. */
 static esp_err_t cors_preflight_handler(httpd_req_t *req)
@@ -1703,7 +1835,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 24;  /* 5 core + 6 audio + 3 file mgr + 4 CORS + 5 ULog + 1 spare */
+    config.max_uri_handlers = 27;  /* 5 core + 6 audio + 3 file mgr + 4 CORS + 5 ULog + 2 system + 2 spare */
     config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
                                       stack vars + ESP_LOGI → uart_write → recursive mutex
                                       needs deep call chain; logger vprintf hook adds more */
@@ -1814,6 +1946,18 @@ static void web_config_task(void *arg)
     httpd_register_uri_handler(s_httpd, &uri_ulog_stop);
     httpd_register_uri_handler(s_httpd, &uri_ulog_cors);
     httpd_register_uri_handler(s_httpd, &uri_ulog_cors2);
+
+    /* System stats endpoint */
+    httpd_uri_t uri_sys_stats = {
+        .uri = "/api/system_stats", .method = HTTP_GET,
+        .handler = h_system_stats, .user_ctx = NULL
+    };
+    httpd_uri_t uri_sys_alerts = {
+        .uri = "/api/system_alerts", .method = HTTP_GET,
+        .handler = h_system_alerts, .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &uri_sys_stats);
+    httpd_register_uri_handler(s_httpd, &uri_sys_alerts);
 
     /* mDNS: advertise web config on the local network */
     if (shared_mdns_ensure()) {
