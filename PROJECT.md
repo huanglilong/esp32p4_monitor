@@ -361,10 +361,10 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 
 | 项目 | 配置 |
 |------|------|
-| 传感器 | OV5647, I2C auto-detect, 格式 `MIPI_2lane_24Minput_RAW8_800x800_50fps` (**VTS 运行时降为 9840 → ~5fps**) |
+| 传感器 | OV5647, I2C auto-detect, 格式 `MIPI_2lane_24Minput_RAW8_800x800_50fps` (**VTS 运行时降为 24600 → ~2fps**) |
 | CSI | 2-lane, 200Mbps, RAW8 input |
 | ISP | RAW8→RGB565, 80MHz clock |
-| ISP DMA | **~3.2 MB/s** (800×800×1×~5fps, VTS=9840) |
+| ISP DMA | **~1.3 MB/s** (800×800×1×~2fps, VTS=24600) |
 | 帧缓冲 | PSRAM, `heap_caps_aligned_alloc(128, ...)`, 128字节对齐 (cache line) |
 | 显示 | LVGL `lv_canvas` + buffer 零拷贝, 30fps 定时器刷新 |
 | 传感器初始化 | `esp_cam_sensor` auto-detect → `set_format` → VTS I2C write → `ioctl(S_STREAM)` |
@@ -558,11 +558,11 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 
 | 项目 | 配置 |
 |------|------|
-| 传感器 | OV5647, VTS=9840 (~5fps) |
+| 传感器 | OV5647, VTS=24600 (~2fps) |
 | 编码 | **HW JPEG** (`CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER=y`, esp_driver_jpeg), CPU 几乎无负载 |
 | 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~5-8KB/帧 @ 300×300) |
 | 推流分辨率 | 300×300 BGR24 (PPA 输出, 非 800×800 RGB565) |
-| 帧率实测 | **~4fps** @ 5fps sensor, CPU 7% |
+| 帧率实测 | **~2fps** @ 2fps sensor, CPU ~5% |
 | HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/capture_image`), 端口 81: MJPEG `/stream` |
 | Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块) |
 
@@ -591,7 +591,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - `SDIO_OPTIMIZATION_RX_STREAMING_MODE=y` + `TX_Q_SIZE=20` + `RX_Q_SIZE=20`
 - `MEMPOOL_PREFER_SPIRAM=y` (必需: SRAM 被 LVGL 缓冲区消耗)
 - `SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` (WiFi/LWIP 缓冲移至 PSRAM)
-- 帧率降至 ~5fps (VTS=9840) 降低 DMA 压力: ISP 带宽 ~3.2 MB/s
+- 帧率降至 ~2fps (VTS=24600) 降低 DMA 压力: ISP 带宽 ~1.3 MB/s
 
 > **已知风险**: 高带宽入站 TCP (>200KB/s) 在 v2.12.7 仍可能触发死锁 (#197)。Camera Stream 为出站 (MJPEG ~98KB/s @ 7fps), 验证稳定。
 

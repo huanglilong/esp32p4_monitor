@@ -37,9 +37,9 @@ static const char *TAG = "CameraStream";
 extern "C" i2c_master_bus_handle_t bsp_i2c_get_handle(void);
 
 /*============================================================================
- * OV5647 VTS helper: reduce sensor frame rate from ~50fps to ~5fps
+ * OV5647 VTS helper: reduce sensor frame rate from ~50fps to ~2fps
  *============================================================================*/
-void ov5647_set_vts_10fps(void)
+void ov5647_set_vts_2fps(void)
 {
     i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
     if (!i2c_handle) {
@@ -60,7 +60,7 @@ void ov5647_set_vts_10fps(void)
         return;
     }
 
-    const uint16_t NEW_VTS = 9840;  /* 10x original 984 → ~5fps */
+    const uint16_t NEW_VTS = 24600;  /* 25x original 984 → ~2fps */
     uint8_t data[3];
 
     /* Write VTS high byte (register 0x380E) */
@@ -91,7 +91,7 @@ void ov5647_set_vts_10fps(void)
         ret = i2c_master_transmit_receive(dev_handle, rd_cmd, 2, rd_val, 1, 100);
         if (ret == ESP_OK) {
             uint16_t vts = (vts_high << 8) | rd_val[0];
-            ESP_LOGI(TAG, "OV5647 VTS: 984→%u (target ~5 fps)", vts);
+            ESP_LOGI(TAG, "OV5647 VTS: 984→%u (target ~2 fps)", vts);
         }
     }
 
@@ -116,8 +116,8 @@ CameraStream& CameraStream::instance(void)
 CameraStream::CameraStream() :
     _video_fd(-1),
     _cam_width(0), _cam_height(0), _cam_pixel_format(0),
-    _v4l2_bufs{nullptr, nullptr, nullptr},
-    _v4l2_buf_len{0, 0, 0},
+    _v4l2_bufs{nullptr, nullptr},
+    _v4l2_buf_len{0, 0},
     _v4l2_buf_count(0),
     _encoder_handle(nullptr),
     _jpeg_out_buf(nullptr), _jpeg_out_size(0),
@@ -252,8 +252,8 @@ bool CameraStream::_init_video(void)
         return false;
     }
 
-    /* Step 1b: Reduce sensor frame rate from ~50fps → ~5fps by increasing VTS. */
-    ov5647_set_vts_10fps();
+    /* Step 1b: Reduce sensor frame rate from ~50fps → ~2fps by increasing VTS. */
+    ov5647_set_vts_2fps();
 
     bool ok = false;
     do {
@@ -270,14 +270,14 @@ bool CameraStream::_init_video(void)
         if (ioctl(_video_fd, VIDIOC_G_PARM, &sparm) == 0) {
             struct v4l2_fract *tpf = &sparm.parm.capture.timeperframe;
             uint32_t fps = (tpf->denominator && tpf->numerator) ? tpf->denominator / tpf->numerator : 0;
-            ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~5 fps from VTS=9840)", fps);
+            ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~2 fps from VTS=24600)", fps);
         } else {
             ESP_LOGW(TAG, "VIDIOC_G_PARM failed, frame rate unknown");
         }
 
         /* Step 4: REQBUFS */
         req = {};
-        req.count = 3;  // Triple buffer: pipeline capture→encode→send
+        req.count = 2;  // Double buffer: at 2fps, processing (~80ms) completes well before next frame (500ms)
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_MMAP;
         ESP_LOGI(TAG, "V4L2 REQBUFS: count=%" PRIu32, req.count);
@@ -1256,7 +1256,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "stream_width", cs->_stream_enc_width);
     cJSON_AddNumberToObject(root, "stream_height", cs->_stream_enc_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality);
-    cJSON_AddNumberToObject(root, "frame_rate", 5);   /* ~5fps from VTS=9840 */
+    cJSON_AddNumberToObject(root, "frame_rate", 2);   /* ~2fps from VTS=24600 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
 
     const char *fmt_str = "UNKNOWN";

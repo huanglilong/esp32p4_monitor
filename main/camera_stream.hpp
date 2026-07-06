@@ -17,20 +17,20 @@ extern "C" {
 #endif
 
 /**
- * @brief Write OV5647 VTS registers via I2C to reduce frame rate from ~50fps to ~5fps.
+ * @brief Write OV5647 VTS registers via I2C to reduce frame rate from ~50fps to ~2fps.
  *
  * VTS (Vertical Total Size) is the number of lines per frame including blanking.
- * Increasing VTS from 984 → 9840 (10x) proportionally reduces frame rate:
- *   Frame Rate = PCLK / (HTS × VTS) ≈ 50fps / 10 = ~5fps
+ * Increasing VTS from 984 → 24600 (25x) proportionally reduces frame rate:
+ *   Frame Rate = PCLK / (HTS × VTS) ≈ 50fps / 25 = ~2fps
  *
  * Benefits:
- *   - ISP DMA bandwidth: ~32 MB/s → ~6.4 MB/s
+ *   - ISP DMA bandwidth: ~32 MB/s → ~2.6 MB/s
  *   - MIPI CSI bandwidth usage is reduced (more idle time between frames)
  *   - JPEG encoder CPU load is reduced
  *
  * Must be called after example_video_init() (sensor I2C bus is available).
  */
-void ov5647_set_vts_10fps(void);
+void ov5647_set_vts_2fps(void);
 
 /**
  * @brief Camera stream over WiFi — V4L2 camera → JPEG encoding → HTTP MJPEG → mDNS
@@ -62,8 +62,8 @@ public:
     uint32_t               _cam_width;
     uint32_t               _cam_height;
     uint32_t               _cam_pixel_format;
-    uint8_t               *_v4l2_bufs[3];
-    uint32_t               _v4l2_buf_len[3];
+    uint8_t               *_v4l2_bufs[2];
+    uint32_t               _v4l2_buf_len[2];
     uint32_t               _v4l2_buf_count;
     void                  *_encoder_handle;
     uint8_t               *_jpeg_out_buf;
