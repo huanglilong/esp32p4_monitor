@@ -270,9 +270,16 @@ void PhoneAppCamera::_cleanup_camera_init(void)
         }
     }
     free(_cam_buffer); _cam_buffer = nullptr;
-    ::close(_video_fd); _video_fd = -1;
+    if (_video_fd >= 0) { ::close(_video_fd); _video_fd = -1; }
     CameraDriver::instance().release("camera_app");
-    example_video_deinit();
+    /* Only deinit the video pipeline if this app successfully initialized it.
+     * Unconditional deinit would tear down a pipeline that another module
+     * (e.g. CameraStream) depends on, even though claim/release prevents
+     * concurrent access. */
+    if (_video_initialized) {
+        example_video_deinit();
+        _video_initialized = false;
+    }
 }
 
 bool PhoneAppCamera::_deinit_camera(void)
