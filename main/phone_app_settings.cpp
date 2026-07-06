@@ -1066,6 +1066,9 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
         if (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET) {
             esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
             esp_sntp_setservername(0, "pool.ntp.org");
+            esp_sntp_set_time_sync_notification_cb([](struct timeval *tv) {
+                ESP_LOGI(TAG, "SNTP synchronized — wall-clock time: %ld.%06ld", (long)tv->tv_sec, (long)tv->tv_usec);
+            });
             esp_sntp_init();
             ESP_LOGI(TAG, "SNTP started — wall-clock time will sync shortly");
         }
