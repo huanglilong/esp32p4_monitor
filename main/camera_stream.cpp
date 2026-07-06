@@ -222,10 +222,9 @@ void CameraStream::stop(void)
     bool expected = true;
     if (!_running.compare_exchange_strong(expected, false)) return;
 
-    /* Signal stream handler to exit loop BEFORE stopping HTTP server.
-     * httpd_stop() waits for active connections to close — if the MJPEG
+    /* _running is now false — stream handler loop (while(isRunning())) will exit.
+     * httpd_stop() waits for active connections to close; if the MJPEG
      * stream loop never exits, httpd_stop() blocks indefinitely. */
-    _running = false;
 
     CameraDriver::instance().release("stream");
     _stop_http_server();
@@ -897,7 +896,7 @@ void CameraStream::_draw_detection_boxes_on_ppa(void)
 /* Draw detection boxes on RGB565 V4L2 buffer + cache msync */
 void CameraStream::_draw_detection_boxes_on_rgb565(uint8_t *buf, uint32_t len)
 {
-    if (!_detect_available || !_detect_mutex ||
+    if (!_detect_in_buf || !_detect_available || !_detect_mutex ||
         xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
     if (!_detect_results.empty()) {
         for (auto &r : _detect_results) {

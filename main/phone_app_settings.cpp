@@ -165,12 +165,12 @@ PhoneAppSettings::~PhoneAppSettings()
 void PhoneAppSettings::bootWifiAutoConnect(void)
 {
     nvs_handle_t nvs_h;
-    if (nvs_open("settings", NVS_READONLY, &nvs_h) != ESP_OK) {
+    if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READONLY, &nvs_h) != ESP_OK) {
         return;
     }
 
     int32_t wifi_en = 0;
-    nvs_get_i32(nvs_h, "wifi_en", &wifi_en);
+    nvs_get_i32(nvs_h, NVS_KEY_WIFI_EN, &wifi_en);
     if (!wifi_en) {
         nvs_close(nvs_h);
         return;
@@ -180,9 +180,9 @@ void PhoneAppSettings::bootWifiAutoConnect(void)
     char pass[65] = {};
     size_t len;
     len = sizeof(ssid);
-    nvs_get_str(nvs_h, "ssid", ssid, &len);
+    nvs_get_str(nvs_h, NVS_KEY_WIFI_SSID, ssid, &len);
     len = sizeof(pass);
-    nvs_get_str(nvs_h, "pass", pass, &len);
+    nvs_get_str(nvs_h, NVS_KEY_WIFI_PASS, pass, &len);
     nvs_close(nvs_h);
 
     if (strlen(ssid) == 0) {
@@ -1044,9 +1044,9 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
         publish_wifi_state(false, false, 0, "");
         /* Check if WiFi is enabled in NVS — if so, start 10s periodic reconnect */
         nvs_handle_t nvs_h;
-        if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
+        if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READONLY, &nvs_h) == ESP_OK) {
             int32_t wifi_en = 0;
-            nvs_get_i32(nvs_h, "wifi_en", &wifi_en);
+            nvs_get_i32(nvs_h, NVS_KEY_WIFI_EN, &wifi_en);
             nvs_close(nvs_h);
             if (wifi_en && !_wifi_reconnect_timer) {
                 _wifi_reconnect_timer = xTimerCreate("wifi_recon",
