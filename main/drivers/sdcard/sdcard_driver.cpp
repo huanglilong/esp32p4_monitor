@@ -109,22 +109,22 @@ bool SDCardDriver::init(void)
     const char mount_point[] = SDMMC_MOUNT_POINT;
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI2_HOST;
+    host.slot = SD_SPI_HOST;
     host.pwr_ctrl_handle = _pwr_ctrl;  /* let SDMMC driver manage power */
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs   = GPIO_NUM_42;  /* D3 → CS */
-    slot_config.host_id   = SPI2_HOST;
+    slot_config.gpio_cs   = (gpio_num_t)SD_SPI_CS_GPIO;
+    slot_config.host_id   = SD_SPI_HOST;
 
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = GPIO_NUM_44,  /* CMD → MOSI (DI) */
-        .miso_io_num = GPIO_NUM_39,  /* D0  → MISO (DO) */
-        .sclk_io_num = GPIO_NUM_43,  /* CLK → SCLK */
+        .mosi_io_num = (gpio_num_t)SD_SPI_MOSI_GPIO,
+        .miso_io_num = (gpio_num_t)SD_SPI_MISO_GPIO,
+        .sclk_io_num = (gpio_num_t)SD_SPI_SCLK_GPIO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
     };
-    ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    ret = spi_bus_initialize(SD_SPI_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
         if (_pwr_ctrl) { sd_pwr_ctrl_del_on_chip_ldo(_pwr_ctrl); _pwr_ctrl = nullptr; }
@@ -135,7 +135,7 @@ bool SDCardDriver::init(void)
     ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &_card);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SD card mount failed (%s), continuing without SD", esp_err_to_name(ret));
-        spi_bus_free(SPI2_HOST);
+        spi_bus_free(SD_SPI_HOST);
         if (_pwr_ctrl) { sd_pwr_ctrl_del_on_chip_ldo(_pwr_ctrl); _pwr_ctrl = nullptr; }
         xSemaphoreGive(_init_mutex);
         return false;

@@ -52,6 +52,11 @@ extern "C" {
 
 /* SD Card */
 #define SDMMC_MOUNT_POINT     "/sdcard"
+#define SD_SPI_HOST           SPI2_HOST
+#define SD_SPI_MOSI_GPIO      44   /* CMD → MOSI (DI) */
+#define SD_SPI_MISO_GPIO      39   /* D0  → MISO (DO) */
+#define SD_SPI_SCLK_GPIO      43   /* CLK → SCLK */
+#define SD_SPI_CS_GPIO        42   /* D3  → CS */
 
 /* NVS shared keys — used by PhoneAppSettings, PhoneAppMusic, web_config_server.
  * All settings use NVS namespace "settings". Keys must match across modules. */
