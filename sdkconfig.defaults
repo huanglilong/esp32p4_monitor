@@ -142,12 +142,14 @@ CONFIG_ESP_HOSTED_SLAVE_RESET_ON_EVERY_HOST_BOOTUP=y
 # CONFIG_ESP_HOSTED_ENABLE_ITWT is not set
 # Enable MIPI CSI backup buffer (reduces DMA pressure, matches reference)
 # CONFIG_ESP_VIDEO_DISABLE_MIPI_CSI_DRIVER_BACKUP_BUFFER is not set
-# LWIP TCP — reduced from 65535/22 to save ~30KB internal SRAM (pbuf headers).
-# 32KB TCP window still provides good throughput for MJPEG stream + file download.
+# LWIP TCP — increased from 32KB to 64KB to reduce SDIO packet burst frequency.
+# Larger send buffer allows TCP to batch more data per SDIO transaction,
+# reducing the number of small SDIO transfers that compete with C6 control msgs.
+# 64KB window provides good throughput for MJPEG stream + file download.
 # Keep MAX_SOCKETS=22 for future features (MQTT, WebSocket, OTA, etc.).
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
-CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65536
+CONFIG_LWIP_TCP_WND_DEFAULT=65536
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
 CONFIG_LWIP_MAX_SOCKETS=22
 
