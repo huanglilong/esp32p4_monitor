@@ -652,7 +652,7 @@ bool CameraStream::_init_detection(void)
         ESP_LOGE(TAG, "Failed to allocate model_load task stack in PSRAM or TCB");
         if (_model_load_stack) { heap_caps_free(_model_load_stack); _model_load_stack = nullptr; }
         if (_model_load_tcb) { heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr; }
-        heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr;
+        if (_detect_in_buf) { heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr; }
         return false;
     }
     _model_load_task = xTaskCreateStatic(
@@ -664,8 +664,7 @@ bool CameraStream::_init_detection(void)
 #if CONFIG_SOC_PPA_SUPPORTED
         if (_ppa) { delete _ppa; _ppa = nullptr; }
 #endif
-        heap_caps_free(_detect_in_buf);
-        _detect_in_buf = nullptr;
+        if (_detect_in_buf) { heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr; }
         return false;
     }
 
