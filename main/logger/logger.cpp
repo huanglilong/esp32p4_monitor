@@ -24,6 +24,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <atomic>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -69,9 +70,9 @@ static struct {
     char             file_path[128];
     FILE            *fd;
     size_t           bytes_written;
-    volatile bool    writer_running;
+    std::atomic<bool> writer_running{false};
     TaskHandle_t     writer_task;
-    volatile bool    writer_exited;  /* set by writer task before vTaskDelete(NULL) */
+    std::atomic<bool> writer_exited{false};  /* set by writer task before vTaskDelete(NULL) */
     /* vprintf hook */
     vprintf_like_t   orig_vprintf;  /* saved original for UART */
 } s_log;
