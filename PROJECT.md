@@ -867,4 +867,9 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - **MAX_TRACKS 去重**: 移除 `phone_app_music.cpp` 中重复的 `#define MAX_TRACKS 50`
   - **I2S/SD SPI 引脚宏化**: AudioDriver 中 I2S GPIO 和 SDCardDriver 中 SPI GPIO 改用 `example_config.h` 宏 (`AUDIO_I2S_*`, `AUDIO_PA_GPIO`, `SD_SPI_*`)
   - **Logger 丢弃策略优化**: 缓冲区满时立即丢弃日志行，替代 100ms 轮询等待，避免阻塞 LVGL/WiFi 任务
+  - **Logger volatile→atomic 迁移** (S170): `writer_running`/`writer_exited` 从 `volatile bool` 迁移为 `std::atomic<bool>`
+  - **web s_rec_bytes atomic** (S171): 录音字节数从 `uint32_t` 改为 `std::atomic<uint32_t>`，消除 audio_task 与 HTTP handler 间数据竞态
+  - **SystemMonitor stop() eTaskGetState 竞态** (S172): 用 `_task_exited` atomic flag 替代 `eTaskGetState()`，轮询超时基于 `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` 确保覆盖完整任务周期
+  - **bsp_i2c_get_handle 声明去重** (S173): 移除 audio_driver.cpp/camera_stream.cpp 中的重复 `extern "C"` 声明，统一定义在 `example_config.h`
+  - **AudioDriver PA GPIO 宏化** (S174): `gpio_config_t` 中 `(1ULL << 53)` 替换为 `(1ULL << AUDIO_PA_GPIO)`
   - **CameraStream stream_handler 重构**: 提取 `_draw_detection_boxes_on_ppa()`, `_draw_detection_boxes_on_rgb565()`, `_send_mjpeg_part()`, `_save_jpeg_snapshot()`, `_update_fps_stats()` 辅助方法，减少代码重复

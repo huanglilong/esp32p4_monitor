@@ -225,7 +225,7 @@
 | S169 | **heap_caps_free 一致性** | `heap_caps_*` 分配的内存用 `free()` 释放。修复: 统一使用 `heap_caps_free()` | ✅ |
 | S170 | **Logger volatile→atomic 迁移** | `writer_running`/`writer_exited` 使用 `volatile bool`，writer task (core 0) 写入，logger_deinit() (任意 core) 读取。修复: 迁移为 `std::atomic<bool>`，遵循 S152 标准 | ✅ |
 | S171 | **web s_rec_bytes 数据竞态** | `s_rec_bytes` 在 audio_task 中无锁 `+=` (read-modify-write)，HTTP handler 持锁读取。修复: 改为 `std::atomic<uint32_t>`，writer 使用 `fetch_add()`，reader 使用 `load()` | ✅ |
-| S172 | **SystemMonitor stop() eTaskGetState 竞态** | `stop()` 使用 `eTaskGetState(handle)` 检查已自删任务，与 idle task TCB 回收竞态。修复: 新增 `_task_exited` atomic flag，任务退出前设置，stop() 轮询替代 eTaskGetState (遵循 S74 模式) | ✅ |
+| S172 | **SystemMonitor stop() eTaskGetState 竞态** | `stop()` 使用 `eTaskGetState(handle)` 检查已自删任务，与 idle task TCB 回收竞态。修复: 新增 `_task_exited` atomic flag，任务退出前设置，stop() 轮询替代 eTaskGetState (遵循 S74 模式)；轮询超时使用 `CONFIG_APP_SYS_MONITOR_INTERVAL_MS + 500` 确保覆盖一个完整任务周期 | ✅ |
 | S173 | **bsp_i2c_get_handle extern 去重** | `audio_driver.cpp` 和 `camera_stream.cpp` 各自声明 `extern "C" bsp_i2c_get_handle()`。修复: 统一定义在 `example_config.h`，移除重复声明 | ✅ |
 | S174 | **AudioDriver PA GPIO 硬编码** | `gpio_config_t` 的 `pin_bit_mask` 使用字面量 `(1ULL << 53)`，而 `AUDIO_PA_GPIO` 宏已存在。修复: 使用 `(1ULL << AUDIO_PA_GPIO)` 宏 | ✅ |
 

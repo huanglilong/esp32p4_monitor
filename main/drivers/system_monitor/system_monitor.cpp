@@ -143,10 +143,12 @@ void SystemMonitor::stop(void)
 
     /* Wait for task to exit. The monitor task checks _running each cycle,
      * sets _task_exited before vTaskDelete(NULL), and stop() polls the flag
-     * instead of eTaskGetState() which races with idle task TCB recycling. */
+     * instead of eTaskGetState() which races with idle task TCB recycling.
+     * Total wait must cover one full task interval (up to 5s) plus margin. */
     if (_task_handle) {
         TaskHandle_t handle = _task_handle;
-        for (int i = 0; i < 20 && !_task_exited.load(std::memory_order_acquire); i++) {
+        const int max_wait_ms = CONFIG_APP_SYS_MONITOR_INTERVAL_MS + 500;
+        for (int i = 0; i < (max_wait_ms + 49) / 50 && !_task_exited.load(std::memory_order_acquire); i++) {
             vTaskDelay(pdMS_TO_TICKS(50));
         }
         /* If the task still hasn't signaled exit (shouldn't happen), force-delete it */
