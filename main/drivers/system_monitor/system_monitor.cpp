@@ -82,6 +82,10 @@ bool SystemMonitor::init(void)
     _min_free_internal.store(free_int, std::memory_order_relaxed);
     _min_free_psram.store(free_psram, std::memory_order_relaxed);
 
+    /* Cache total heap sizes (runtime constants — never change) */
+    _total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    _total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+
     _initialized.store(true, std::memory_order_release);
 
     ESP_LOGI(TAG, "Initialized (interval=%dms, log_every=%d samples, "
@@ -295,8 +299,8 @@ void SystemMonitor::_sample(void)
 void SystemMonitor::_log_summary(const system_stats_s &stats)
 {
     ESP_LOGI(TAG, "───── System Stats ─────");
-    uint32_t total_int = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    uint32_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    uint32_t total_int = _total_internal;
+    uint32_t total_psram = _total_psram;
     uint32_t used_pct_int = total_int > 0 ? (uint32_t)((uint64_t)(total_int - stats.free_internal) * 100 / total_int) : 0;
     uint32_t used_pct_psram = total_psram > 0 ? (uint32_t)((uint64_t)(total_psram - stats.free_psram) * 100 / total_psram) : 0;
     ESP_LOGI(TAG, "  Internal SRAM: %u KB free / %u KB total (%u%% used, min %u KB)",
@@ -348,7 +352,7 @@ void SystemMonitor::_check_alerts(const system_stats_s &stats)
     }
 
     /* ── Internal SRAM alert ── */
-    uint32_t total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t total_internal = _total_internal;
     if (total_internal > 0) {
         uint32_t used_pct = (uint32_t)((uint64_t)(total_internal - stats.free_internal) * 10000 / total_internal);
         uint32_t mem_threshold = (uint32_t)CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT * 100;  /* 80% → 8000 */
@@ -374,7 +378,7 @@ void SystemMonitor::_check_alerts(const system_stats_s &stats)
     }
 
     /* ── PSRAM alert ── */
-    uint32_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    uint32_t total_psram = _total_psram;
     if (total_psram > 0) {
         uint32_t used_pct = (uint32_t)((uint64_t)(total_psram - stats.free_psram) * 10000 / total_psram);
         uint32_t mem_threshold = (uint32_t)CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT * 100;  /* 80% → 8000 */

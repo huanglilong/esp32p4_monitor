@@ -150,5 +150,9 @@ private:
     uint32_t _prev_idle_runtime_core1{0};
     int64_t _prev_timestamp_us{0};
 
+    /** Cached total heap sizes (runtime constants, set once in init()). */
+    uint32_t _total_internal{0};
+    uint32_t _total_psram{0};
+
     static constexpr const char *TAG = "SysMonitor";
 };
