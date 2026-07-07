@@ -77,7 +77,7 @@ void AudioDriver::init(void)
 
     /* Enable PA GPIO 53 (critical for speaker output) */
     gpio_config_t pa_conf = {
-        .pin_bit_mask = (1ULL << 53),
+        .pin_bit_mask = (1ULL << AUDIO_PA_GPIO),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
