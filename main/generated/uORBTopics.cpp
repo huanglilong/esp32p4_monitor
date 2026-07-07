@@ -5,6 +5,7 @@
 #include "uORBTopics.hpp"
 
 ORB_TOPIC_DECLARE(audio_level);
+ORB_TOPIC_DECLARE(camera_frame);
 ORB_TOPIC_DECLARE(camera_state);
 ORB_TOPIC_DECLARE(detection_result);
 ORB_TOPIC_DECLARE(fps_stats);
@@ -17,6 +18,7 @@ ORB_TOPIC_DECLARE(wifi_state);
 
 static const struct orb_metadata *const s_topics[ORB_TOPICS_COUNT] = {
     ORB_ID(audio_level),
+    ORB_ID(camera_frame),
     ORB_ID(camera_state),
     ORB_ID(detection_result),
     ORB_ID(fps_stats),

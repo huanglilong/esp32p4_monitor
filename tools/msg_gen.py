@@ -68,6 +68,15 @@ class MsgField:
         base = SIZE_MAP.get(self.type_raw, 4)
         return base * (self.array_len or 1)
 
+    @property
+    def alignment(self) -> int:
+        """C struct alignment requirement for this field."""
+        if self.array_len:
+            # Array alignment = element alignment
+            return SIZE_MAP.get(self.type_raw, 4)
+        # Scalar alignment = size (up to 8 for uint64_t/float64)
+        return min(SIZE_MAP.get(self.type_raw, 4), 8)
+
 
 class MsgSpec:
     """Parsed representation of a single .msg file."""
@@ -162,15 +171,53 @@ def _format_string(spec: MsgSpec) -> str:
     """
     Generate the ULog format string for a topic.
     Format: "topic_name:type0 name0;type1 name1;..."
-    Example: "fps_stats:uint64_t timestamp;uint32_t frame_count;float fps;"
+    
+    Per PX4 ULog spec, padding fields named `_paddingN` are ignored by
+    readers. However, pyulog only strips TRAILING _padding fields —
+    inter-field _padding entries cause field offset misalignment.
+    
+    Strategy: reorder fields by descending alignment to eliminate
+    inter-field padding, then append tail _padding only. This produces
+    a format string whose total size matches sizeof(struct) and whose
+    field offsets are consistent with the binary data.
+    
+    Note: The C struct retains the .msg declaration order (with compiler
+    padding), but the format string uses a different field order. This is
+    valid because pyulog reads fields by type+name, not by declaration
+    order. The key invariant is: format_string_total_size == sizeof(struct).
     """
+    # Sort fields by descending alignment to eliminate inter-field padding
+    sorted_fields = sorted(spec.fields, key=lambda f: (-f.alignment, f.name))
+    
+    max_align = max((f.alignment for f in spec.fields), default=1)
+    
     parts = [f"{spec.topic_name}:"]
-    for f in spec.fields:
+    offset = 0
+    padding_idx = 0
+    
+    for f in sorted_fields:
+        field_align = f.alignment
+        # Insert padding if current offset doesn't satisfy field alignment
+        if field_align > 1 and (offset % field_align) != 0:
+            pad_bytes = field_align - (offset % field_align)
+            base = TYPE_MAP.get('uint8', 'uint8_t')
+            parts.append(f"{base}[{pad_bytes}] _padding{padding_idx};")
+            offset += pad_bytes
+            padding_idx += 1
+        
         base = TYPE_MAP.get(f.type_raw, f.type_raw)
         if f.array_len:
             parts.append(f"{base}[{f.array_len}] {f.name};")
         else:
             parts.append(f"{base} {f.name};")
+        offset += f.size
+    
+    # Tail padding: struct must be aligned to its largest field alignment
+    if max_align > 1 and (offset % max_align) != 0:
+        pad_bytes = max_align - (offset % max_align)
+        base = TYPE_MAP.get('uint8', 'uint8_t')
+        parts.append(f"{base}[{pad_bytes}] _padding{padding_idx};")
+    
     return ''.join(parts)
 
 

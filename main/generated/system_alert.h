@@ -10,7 +10,7 @@
 
 #define ORB_QUEUE_LENGTH_SYSTEM_ALERT 5
 
-#define SYSTEM_ALERT_FORMAT_STR "system_alert:uint64_t timestamp;uint8_t alert_type;uint8_t severity;uint32_t current_value;uint32_t threshold;char[16] task_name;uint32_t task_cpu_pct;uint32_t free_internal;uint32_t free_psram;"
+#define SYSTEM_ALERT_FORMAT_STR "system_alert:uint64_t timestamp;uint32_t current_value;uint32_t free_internal;uint32_t free_psram;uint32_t task_cpu_pct;uint32_t threshold;uint8_t alert_type;uint8_t severity;char[16] task_name;uint8_t[2] _padding0;"
 
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct system_alert_s

@@ -11,6 +11,7 @@
 - **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
 - **多板支持** 通过 GT911 I2C 自动检测 LCD-4B / WIFI6，单一固件适配
 - **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS, SD 卡文件管理器 (浏览/下载/删除)
+- **Camera Frame Recording** JPEG 帧录制到 ULog 文件 (PPA 300×300 路径, ~5-8KB/帧, 2fps, Web API 控制)
 
 ### ESP-Brookesia App 列表
 
@@ -167,6 +168,7 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 | `volume_state` | `volume_state_s` | 1 | AudioDriver (via PeripheralManager) | Music Playback |
 | `system_stats` | `system_stats_s` | 3 | SystemMonitor | ULog, Web API (/api/system_stats) |
 | `system_alert` | `system_alert_s` | 5 | SystemMonitor | ULog, Web API (/api/system_alerts) |
+| `camera_frame` | `camera_frame_s` | 2 | CameraStream | ULog (camera JPEG frame recording) |
 
 ## Driver 模块架构 (Phase 3 重构)
 
@@ -781,7 +783,9 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **Web 配置服务器 (端口 8080, WiFi/音量网页设置, connect-before-save)**
 - [x] **WiFi 门控启动: web_config_task 等待 STA_GOT_IP 才启 HTTP**
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
-- [ ] Camera App 回放/录制功能
+- [x] **Camera App 回放/录制功能**
+- [x] Camera Frame ULog 录制 (JPEG 帧通过 camera_frame uORB topic 写入 .ulg 文件, Web API 控制)
+- [ ] **pyulog 兼容性**: pyulog 1.2.3 在 `_MessageAddLogged.__init__` 中先移除 trailing `_padding` 字段再计算 `max_data_size`，导致 `max_data_size < 实际 sizeof(struct)`，所有含 padding 的 topic 被 pyulog 标记为 data corruption。workaround: `tools/ulog_extract_frames.py` 脚本直接解析 ULog 二进制格式提取 JPEG 帧。根本修复需等待 pyulog 上游修复，或在 ULog writer 中改为逐字段序列化（去掉 padding 字节）。
 - [ ] **WIFI6 无屏配网**: 首次启动 NVS 为空时需要 WiFi AP 模式配网。当前 esp-hosted SDIO 不支持稳定 SoftAP (客户端连接时 SDIO 缓冲区溢出 → C6 崩溃)。需修复 C6 SDIO 驱动或通过其他方式配网（UART CLI / BLE provisioning）。**当前假定 NVS 已有 WiFi SSID/密码**。
 - [x] Audio App Speaker 输出功能 (需解决回声消除)
 - [x] Audio App MP3 录音 (Shine encoder, SD 卡)

@@ -33,6 +33,8 @@
 #include "freertos/semphr.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include <inttypes.h>
 
 static const char *TAG = "ULog";
@@ -427,11 +429,14 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
     /* Everything from now on goes through the ring buffer (non-reliable) */
 
     /* Create the writer task */
+#ifndef CONFIG_ULOG_TASK_STACK_SIZE
+#define CONFIG_ULOG_TASK_STACK_SIZE 8192
+#endif
     writer->task_should_run = true;
     BaseType_t ret = xTaskCreate(
         writer_task_func,
         "ulog_writer",
-        4096,        /* stack size */
+        CONFIG_ULOG_TASK_STACK_SIZE,  /* from Kconfig, default 8KB */
         writer,      /* arg */
         5,           /* priority */
         &writer->task_handle
@@ -466,11 +471,15 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
     }
 
     /* Drain remaining ring buffer data to file */
-    uint8_t buf[512];
-    size_t n;
-    while ((n = ringbuf_read(&writer->ringbuf, buf, sizeof(buf))) > 0) {
-        write(writer->fd, buf, n);
-        writer->bytes_written += n;
+    uint8_t *drain_buf = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    if (!drain_buf) drain_buf = (uint8_t *)malloc(4096);
+    if (drain_buf) {
+        size_t n;
+        while ((n = ringbuf_read(&writer->ringbuf, drain_buf, 4096)) > 0) {
+            write(writer->fd, drain_buf, n);
+            writer->bytes_written += n;
+        }
+        free(drain_buf);
     }
 
     /* Close the file */
@@ -562,11 +571,32 @@ static void writer_task_func(void *arg)
 {
     ulog_writer_t *writer = (ulog_writer_t *)arg;
 
-    /* Scratch buffer for formatting one DATA message.
-     * 3 (header) + 2 (msg_id) + max topic size (~hundred bytes).
-     * 512 bytes is sufficient for all current topics. */
-    uint8_t data_buf[512];
-    uint8_t flush_buf[1024];
+    /* Determine the maximum topic payload size across all registered topics.
+     * This determines the scratch buffer size for formatting DATA messages.
+     * Layout: 3 (header) + 2 (msg_id) + payload_size.
+     * For camera_frame, payload is ~8203 bytes, so we allocate from PSRAM heap. */
+    size_t max_payload = 64;  /* minimum reasonable size */
+    for (int i = 0; i < writer->num_topics; i++) {
+        if (writer->topics[i].meta && writer->topics[i].meta->o_size > max_payload) {
+            max_payload = writer->topics[i].meta->o_size;
+        }
+    }
+    size_t data_buf_size = ULOG_MSG_HEADER_LEN + sizeof(uint16_t) + max_payload;
+    uint8_t *data_buf = (uint8_t *)heap_caps_malloc(data_buf_size, MALLOC_CAP_SPIRAM);
+    if (!data_buf) {
+        /* Fallback to internal RAM (may fail for very large topics) */
+        data_buf = (uint8_t *)malloc(data_buf_size);
+    }
+    if (!data_buf) {
+        ESP_LOGE(TAG, "Failed to allocate data_buf (%u bytes)", (unsigned)data_buf_size);
+        writer->task_should_run = false;
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "data_buf: %u bytes (%s)", (unsigned)data_buf_size,
+             esp_ptr_external_ram(data_buf) ? "PSRAM" : "internal");
+
+    uint8_t flush_buf[4096];
 
     while (writer->task_should_run) {
         uint64_t now_us = esp_timer_get_time();
@@ -662,6 +692,9 @@ static void writer_task_func(void *arg)
         /* Sleep a short time */
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+
+    /* Free heap-allocated data buffer before task exit */
+    free(data_buf);
 
     /* Task self-delete */
     vTaskDelete(NULL);

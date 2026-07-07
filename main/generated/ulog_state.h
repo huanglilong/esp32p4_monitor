@@ -10,7 +10,7 @@
 
 #define ORB_QUEUE_LENGTH_ULOG_STATE 1
 
-#define ULOG_STATE_FORMAT_STR "ulog_state:uint64_t timestamp;bool logging;char[128] filepath;"
+#define ULOG_STATE_FORMAT_STR "ulog_state:uint64_t timestamp;char[128] filepath;bool logging;uint8_t[7] _padding0;"
 
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct ulog_state_s

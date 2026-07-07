@@ -142,6 +142,8 @@ CameraStream::CameraStream() :
     _stream_enc_width(0), _stream_enc_height(0), _stream_enc_format(0),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
+    _recording_enabled(false),
+    _frame_pub(ORB_ADVERT_INVALID),
     _mdns_running(false)
 {
     _detect_mutex = xSemaphoreCreateMutex();
@@ -234,6 +236,10 @@ void CameraStream::stop(void)
 
     /* Reset FPS publisher handle — will be re-created on next start() */
     _fps_pub = ORB_ADVERT_INVALID;
+
+    /* Reset camera frame publisher handle */
+    _frame_pub = ORB_ADVERT_INVALID;
+    _recording_enabled.store(false, std::memory_order_release);
 
     ESP_LOGI(TAG, "Stream stopped");
 }
@@ -974,6 +980,51 @@ void CameraStream::_update_fps_stats(uint32_t jpeg_size)
     }
 }
 
+void CameraStream::set_recording(bool enabled)
+{
+    _recording_enabled.store(enabled, std::memory_order_release);
+    ESP_LOGI(TAG, "Camera frame recording %s", enabled ? "enabled" : "disabled");
+}
+
+void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
+{
+    if (!_recording_enabled.load(std::memory_order_acquire)) return;
+    if (!jpeg_data || jpeg_size == 0) return;
+
+    /* JPEG size must fit in camera_frame_s.jpeg_data[8192] */
+    if (jpeg_size > sizeof(((camera_frame_s *)0)->jpeg_data)) {
+        ESP_LOGW(TAG, "JPEG frame too large for ULog (%u > %u), skipping",
+                 (unsigned)jpeg_size, (unsigned)sizeof(((camera_frame_s *)0)->jpeg_data));
+        return;
+    }
+
+    /* Lazy-init publisher (atomic CAS prevents double-advertise) */
+    orb_advert_t expected = ORB_ADVERT_INVALID;
+    _frame_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(camera_frame)),
+            std::memory_order_acq_rel, std::memory_order_acquire);
+    if (_frame_pub < 0) return;
+
+    /* camera_frame_s is ~8KB — too large for httpd task stack (4KB default).
+     * Allocate from PSRAM heap to avoid stack overflow. */
+    camera_frame_s *frame = (camera_frame_s *)heap_caps_malloc(sizeof(camera_frame_s), MALLOC_CAP_SPIRAM);
+    if (!frame) {
+        ESP_LOGW(TAG, "Failed to allocate camera_frame_s, skipping publish");
+        return;
+    }
+
+    memset(frame, 0, sizeof(*frame));
+    frame->timestamp   = esp_timer_get_time();
+    frame->frame_index = _frame_count.load(std::memory_order_relaxed);
+    frame->width       = _stream_enc_width;
+    frame->height      = _stream_enc_height;
+    frame->format      = 0;  /* 0 = JPEG */
+    frame->jpeg_size   = (uint16_t)jpeg_size;
+    memcpy(frame->jpeg_data, jpeg_data, jpeg_size);
+
+    orb_publish(ORB_ID(camera_frame), _frame_pub, frame);
+    free(frame);
+}
+
 /** MJPEG stream handler (port 81) — continuous multipart JPEG stream */
 static esp_err_t stream_handler(httpd_req_t *req)
 {
@@ -1117,6 +1168,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
             /* Save JPEG snapshot for /api/capture_image */
             cs->_save_jpeg_snapshot(jpeg_data, jpeg_size);
 
+            /* Publish camera frame to uORB for ULog recording */
+            cs->_publish_camera_frame(jpeg_data, jpeg_size);
+
             /* Run inference — PPA output already available, _run_inference reuses it */
             cs->_run_inference(nullptr, 0);
             cs->_update_fps_stats(jpeg_size);
@@ -1200,6 +1254,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
 
             /* Save latest JPEG snapshot for /api/capture_image endpoint */
             cs->_save_jpeg_snapshot(jpeg_data, jpeg_size);
+
+            /* Publish camera frame to uORB for ULog recording */
+            cs->_publish_camera_frame(jpeg_data, jpeg_size);
 
             if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                 xSemaphoreGive(cs->_encoder_sem);

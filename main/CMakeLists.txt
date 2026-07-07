@@ -110,6 +110,7 @@ idf_component_register(
          "generated/ulog_state.cpp"
          "generated/system_stats.cpp"
          "generated/system_alert.cpp"
+         "generated/camera_frame.cpp"
          "generated/uORBTopics.cpp"
     INCLUDE_DIRS "." "generated" "drivers/audio" "drivers/sdcard" "drivers/camera" "drivers/system_monitor" "logger"
     REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c esp_driver_ppa fatfs

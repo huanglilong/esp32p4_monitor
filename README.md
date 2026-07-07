@@ -85,6 +85,17 @@
   - [ESP32-P4 Datasheet](https://documentation.espressif.com/esp32-p4_datasheet_en.pdf)
   - [ESP32-P4 Technical Reference Manual](https://documentation.espressif.com/esp32-p4_technical_reference_manual_en.pdf)
 - ESP-IDF Version: v6.x
+  - Build, Flash and Monitor
+    - MacOS:
+      ```
+      $ source ~/.espressif/v6.x/esp-idf/export.sh
+      $ idf.py build && idf.py flash -b 1500000 -p $(ls /dev/cu.usbmodem*) monitor
+      ```
+    - Linux:
+      ```
+      $ source ~/.espressif/v6.x/esp-idf/export.sh
+      $ idf.py build && idf.py flash -b 1500000 -p /dev/ttyACM0 monitor
+      ```
 
 ### Software Features
 - **MIPI DSI** 720×720 LCD + GT911 Touch (ESP-Brookesia Phone UI, LVGL v9.2.2)

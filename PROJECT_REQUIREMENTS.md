@@ -132,6 +132,7 @@
 | R19 | **Flutter File Manager** | Flutter App Settings 页新增文件管理：目录浏览/导航、下载、删除，含确认弹窗 | ✅ |
 | R20 | **CameraStream JPEG 快照** | `/api/capture_image` 端点返回最新 JPEG 帧 (stream handler 每帧缓存到 `_last_jpeg_buf`, mutex 保护) | ✅ |
 | R21 | **CameraStream 内联人体检测** | MJPEG stream_handler 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
+| R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, ~5-8KB/帧, 2fps)；Web API `/api/camera_record` 控制启停；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
 | S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
 | S87 | **AudioDriver deinit mutex 删除竞态** | `deinit()` 先置空 codec handles + yield 让 in-flight 操作退出，再安全删除 `_codec_mutex`；同时重置 `_vol_pub` 防止重启用 stale handle | ✅ |
 | S88 | **AudioDriver set_volume stale publish** | codec mutex 超时时跳过 uORB publish，避免发布未实际应用的音量值 | ✅ |
@@ -246,7 +247,8 @@
 
 | # | 需求 | 说明 |
 |---|------|------|
-| P3 | **Camera App 录像功能** | 视频录制到 SD 卡 |
+| P3 | **Camera App 录像功能** | 视频录制到 SD 卡（已通过 R22 ULog 录制部分实现） |
+| P3b | **pyulog 兼容性修复** | pyulog 1.2.3 在移除 trailing `_padding` 后计算 `max_data_size`，导致所有含 padding 的 topic 被标记为 corrupt。当前 workaround: `tools/ulog_extract_frames.py` 脚本。根本修复: 改 ULog writer 逐字段序列化（去掉 padding 字节），或等 pyulog 上游修复 |
 | P4 | **Camera 检测框平滑** | EMA 或 Kalman filter 减少检测框抖动 |
 | P5 | **ROI 区域检测** | 只检测画面中心区域，减少误报 |
 
@@ -368,6 +370,7 @@
 | 2026-07-03 | +S49 Driver 模块拆分: PeripheralManager→thin facade + AudioDriver + SDCardDriver + CameraDriver (claim/release API) |
 | 2026-07-03 | +S44~S48 Bug 修复 (gettimeofday overflow, Music _stop ASP 泄漏, SD LDO 检查, web task 干净退出) +PeripheralManager facade 模块化重构 (消除 extern 全局变量) |
 | 2026-07-03 | +S42 uORB 消息总线（FreeRTOS Queue 实现） +S43 .msg 自动生成 pipeline +P11 IPC 迁移计划 |
+| 2026-07-07 | +R22 Camera Frame ULog 录制: JPEG 帧通过 camera_frame uORB topic 写入 .ulg 文件, Web API /api/camera_record 控制, ULog ring buffer 64KB + PSRAM data_buf |
 | 2026-07-06 | +R20 CameraStream JPEG 快照 (`/api/capture_image`), +R21 CameraStream 内联人体检测 (每3帧 COCODetect, 检测框绘制在 JPEG 帧上) |
 | 2026-07-06 | +S130~S148 线程安全审查修复: SDCardDriver/AudioDriver atomic (S130-S131), CameraDriver mutable (S132), JPEG encoder init race (S133), uORB orb_init/ABA (S134-S135), Settings bool atomic (S136), AudioDriver _vol_pub atomic (S137), CameraStream FPS atomic (S138), AudioDriver deinit 竞态 (S139), NVS cache mutex (S140), Logger ring buffer 活锁 (S141), V4L2 triple buffer (S142), ULog storage path/session/refactor (S143-S145), nvs_write_i32 rename (S146), MJPEG+detection fix (S147), Camera info JSON (S148) |
 | 2026-07-06 | +K1 已修复 (Camera 帧缓冲跨核并发 → _detect_in_buf 私有缓冲), +K5~K7 已知低优先级问题 |

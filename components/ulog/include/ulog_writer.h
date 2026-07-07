@@ -34,7 +34,11 @@ extern "C" {
 #endif
 
 /** Default sampling interval for topics that specify 0 (ms). */
-#define ULOG_DEFAULT_INTERVAL_MS 100
+#ifdef CONFIG_ULOG_DEFAULT_INTERVAL_MS
+#define ULOG_DEFAULT_INTERVAL_MS  CONFIG_ULOG_DEFAULT_INTERVAL_MS
+#else
+#define ULOG_DEFAULT_INTERVAL_MS  100
+#endif
 
 /** Maximum number of logged topics. */
 #define ULOG_MAX_TOPICS 16
@@ -42,8 +46,12 @@ extern "C" {
 /** Maximum log file path length. */
 #define ULOG_MAX_PATH 256
 
-/** Ring buffer size (bytes). */
-#define ULOG_RINGBUF_SIZE (16 * 1024)
+/** Ring buffer size (bytes). Default 64KB to accommodate camera frame topics. */
+#ifdef CONFIG_ULOG_RINGBUF_SIZE
+#define ULOG_RINGBUF_SIZE  CONFIG_ULOG_RINGBUF_SIZE
+#else
+#define ULOG_RINGBUF_SIZE  (64 * 1024)
+#endif
 
 /** How often to flush ring buffer to file (ms). */
 #define ULOG_FLUSH_INTERVAL_MS 100

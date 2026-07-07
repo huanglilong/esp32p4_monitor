@@ -11,12 +11,13 @@ menu "ULog Logger Configuration"
 
         config ULOG_RINGBUF_SIZE
             int "Ring buffer size (bytes)"
-            default 16384
-            range 4096 131072
+            default 65536
+            range 4096 262144
             help
                 Size of the internal ring buffer for decoupling data
                 collection from SD card writes. Larger buffers reduce
                 the chance of data loss during burst writes.
+                Default 64KB to accommodate camera frame topics (~8KB/frame).
 
         config ULOG_FLUSH_INTERVAL_MS
             int "File flush interval (ms)"
@@ -53,10 +54,11 @@ menu "ULog Logger Configuration"
 
         config ULOG_TASK_STACK_SIZE
             int "Writer task stack size (bytes)"
-            default 4096
+            default 8192
             range 2048 16384
             help
                 Stack size for the ULog writer FreeRTOS task.
+                Default 8KB: large data_buf for camera frames is heap-allocated.
 
         config ULOG_TASK_PRIORITY
             int "Writer task priority"

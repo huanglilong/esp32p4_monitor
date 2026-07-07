@@ -10,7 +10,7 @@
 
 #define ORB_QUEUE_LENGTH_CAMERA_STATE 1
 
-#define CAMERA_STATE_FORMAT_STR "camera_state:uint64_t timestamp;bool running;"
+#define CAMERA_STATE_FORMAT_STR "camera_state:uint64_t timestamp;bool running;uint8_t[7] _padding0;"
 
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct camera_state_s

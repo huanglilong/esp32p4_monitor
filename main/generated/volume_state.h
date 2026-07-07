@@ -10,7 +10,7 @@
 
 #define ORB_QUEUE_LENGTH_VOLUME_STATE 1
 
-#define VOLUME_STATE_FORMAT_STR "volume_state:uint64_t timestamp;int32_t volume;"
+#define VOLUME_STATE_FORMAT_STR "volume_state:uint64_t timestamp;int32_t volume;uint8_t[4] _padding0;"
 
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct volume_state_s

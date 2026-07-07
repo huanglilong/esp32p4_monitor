@@ -10,7 +10,7 @@
 
 #define ORB_QUEUE_LENGTH_WIFI_STATE 1
 
-#define WIFI_STATE_FORMAT_STR "wifi_state:uint64_t timestamp;bool connected;bool scanning;int8_t rssi;char[32] ssid;"
+#define WIFI_STATE_FORMAT_STR "wifi_state:uint64_t timestamp;bool connected;int8_t rssi;bool scanning;char[32] ssid;uint8_t[5] _padding0;"
 
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct wifi_state_s

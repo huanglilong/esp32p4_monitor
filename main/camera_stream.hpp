@@ -5,6 +5,7 @@
 #include "freertos/semphr.h"
 #include "dl_detect_define.hpp"
 #include "uorb.h"
+#include "generated/camera_frame.h"
 #include <time.h>
 #include <list>
 #include <atomic>
@@ -56,6 +57,12 @@ public:
 
     /** @return true if stream is currently active */
     bool isRunning(void) const { return _running; }
+
+    /** Enable/disable camera frame recording to ULog.
+     *  Frames are published as camera_frame uORB topic when recording is enabled.
+     *  ULogWriter must be configured to subscribe to camera_frame for this to take effect. */
+    void set_recording(bool enabled);
+    bool is_recording(void) const { return _recording_enabled; }
 
     /* Public members accessed by HTTP handler functions (C-style callbacks) */
     int                    _video_fd;
@@ -127,6 +134,7 @@ public:
                           char *part_buf, size_t part_buf_size);  /* Send MJPEG boundary+part, return false on error */
     void _save_jpeg_snapshot(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Cache latest JPEG for /api/capture_image */
     void _update_fps_stats(uint32_t jpeg_size);   /* Update FPS counters and publish uORB */
+    void _publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Publish camera_frame uORB topic for ULog recording */
 
     /* Run detection inference on given buffer (same task, no mutex needed) */
     void _run_inference(uint8_t *buffer, uint32_t size);
@@ -156,6 +164,10 @@ private:
 
     /* State */
     std::atomic<bool>          _running;
+
+    /* Camera frame recording to ULog */
+    std::atomic<bool>          _recording_enabled;  /* True when camera frame recording is active */
+    std::atomic<orb_advert_t>  _frame_pub;          /* uORB publisher for camera_frame — atomic for lazy advertise CAS */
 
     /* mDNS */
     bool                   _mdns_running;

@@ -596,7 +596,8 @@ extern "C" void app_main(void)
         ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
         ulog_writer_add_topic(ulog, ORB_ID(system_stats), 500);   /* system CPU/memory every 500ms */
         ulog_writer_add_topic(ulog, ORB_ID(system_alert), 0);     /* alerts on event */
-        ESP_LOGI(TAG, "ULog writer initialized with %d topics", 10);
+        ulog_writer_add_topic(ulog, ORB_ID(camera_frame), 500);   /* camera JPEG frames, 500ms = ~2fps */
+        ESP_LOGI(TAG, "ULog writer initialized with %d topics", 11);
     } else {
         ESP_LOGW(TAG, "SD card not available, skipping ULog writer init");
     }
