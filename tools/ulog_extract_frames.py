@@ -143,15 +143,17 @@ def extract_camera_frames(ulg_path, output_dir, verbose=False):
 
                     # Verify JPEG magic
                     if jpeg_data[:2] == b'\xff\xd8':
-                        filename = f"frame_{frame_index:06d}.jpg"
+                        # Use sequential numbering for FFmpeg compatibility
+                        filename = f"frame_{frame_count:06d}.jpg"
                         filepath = os.path.join(output_dir, filename)
                         with open(filepath, 'wb') as f:
                             f.write(jpeg_data)
-                        frame_count += 1
-                        total_bytes += jpeg_size
 
                         if verbose or frame_count <= 5:
                             print(f"  Frame {frame_index}: {width}x{height}, {jpeg_size} bytes, ts={timestamp}")
+
+                        frame_count += 1
+                        total_bytes += jpeg_size
                     else:
                         if verbose:
                             print(f"  Frame {frame_index}: invalid JPEG magic ({jpeg_data[:4].hex()}), skipping")
