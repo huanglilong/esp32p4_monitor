@@ -112,6 +112,8 @@ bool SystemMonitor::start(void)
         return true;
     }
 
+    _task_exited.store(false, std::memory_order_release);
+
     BaseType_t ret = xTaskCreatePinnedToCore(
         _monitor_task_func,
         "sys_monitor",
@@ -139,14 +141,16 @@ void SystemMonitor::stop(void)
         return;  /* Not running */
     }
 
-    /* Wait for task to exit. The monitor task checks _running each cycle
-     * and self-deletes via vTaskDelete(NULL). We wait one full interval
-     * plus a margin, then verify the task is truly gone via eTaskGetState(). */
+    /* Wait for task to exit. The monitor task checks _running each cycle,
+     * sets _task_exited before vTaskDelete(NULL), and stop() polls the flag
+     * instead of eTaskGetState() which races with idle task TCB recycling. */
     if (_task_handle) {
         TaskHandle_t handle = _task_handle;
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_APP_SYS_MONITOR_INTERVAL_MS + 500));
-        /* If the task still exists (shouldn't happen), force-delete it */
-        if (eTaskGetState(handle) != eDeleted) {
+        for (int i = 0; i < 20 && !_task_exited.load(std::memory_order_acquire); i++) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        /* If the task still hasn't signaled exit (shouldn't happen), force-delete it */
+        if (!_task_exited.load(std::memory_order_acquire)) {
             ESP_LOGW(TAG, "Monitor task did not exit gracefully, force-deleting");
             vTaskDelete(handle);
         }
@@ -171,8 +175,11 @@ void SystemMonitor::_monitor_task_func(void *arg)
     }
 
     /* Clean up and self-delete.
+     * Signal stop() that we're exiting via _task_exited flag so it can
+     * check without eTaskGetState() which races with idle task TCB recycling.
      * Do NOT write _task_handle — the owner (stop()) manages it exclusively
      * to avoid racing with a subsequent start() call. */
+    self->_task_exited.store(true, std::memory_order_release);
     ESP_LOGI(TAG, "Monitor task exiting");
     vTaskDelete(NULL);
 }
