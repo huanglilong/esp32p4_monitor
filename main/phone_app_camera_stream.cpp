@@ -289,10 +289,8 @@ void PhoneAppCameraStream::_update_stream_info(void)
             orb_copy(ORB_ID(fps_stats), s_fps_sub, &fps_data);
             _prev_frame_count = fps_data.frame_count;
             _prev_total_bytes = fps_data.fps_total_bytes;
+            _fps = (uint32_t)fps_data.fps;
         }
-
-        /* Calculate FPS since last update */
-        _fps = (_fps > 0) ? _fps : 0;  /* Keep previous FPS if no new data */
 
         lv_label_set_text_fmt(_label_stream_info,
             "Stream: ACTIVE  %lux%lu",
