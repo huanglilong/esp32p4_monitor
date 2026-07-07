@@ -175,7 +175,7 @@ menu "Monitor Example Configuration"
 
     config APP_SYS_MONITOR_MEM_ALERT_PCT
         int "Memory usage alert threshold (%)"
-        default 80
+        default 85
         range 50 99
         help
             Fire a MEM_HIGH alert when internal SRAM or PSRAM usage

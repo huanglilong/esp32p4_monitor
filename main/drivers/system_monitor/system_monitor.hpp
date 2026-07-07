@@ -30,7 +30,7 @@
  *   CONFIG_APP_SYS_MONITOR_LOG_INTERVAL       — log summary every N samples (default 12 = 60s)
  *   CONFIG_APP_SYS_MONITOR_TASK_STACK         — monitor task stack size (default 4096)
  *   CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT      — CPU alert threshold (default 90)
- *   CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT      — Memory alert threshold (default 80)
+ *   CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT      — Memory alert threshold (default 85)
  *   CONFIG_APP_SYS_MONITOR_ALERT_COOLDOWN_S   — Alert cooldown in seconds (default 30)
  */
 
