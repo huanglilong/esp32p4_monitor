@@ -1021,7 +1021,7 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     memcpy(frame->jpeg_data, jpeg_data, jpeg_size);
 
     orb_publish(ORB_ID(camera_frame), _frame_pub, frame);
-    free(frame);
+    heap_caps_free(frame);
 }
 
 /** MJPEG stream handler (port 81) — continuous multipart JPEG stream */

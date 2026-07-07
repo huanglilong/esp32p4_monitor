@@ -3,6 +3,7 @@
 #include "private/esp_brookesia_utils.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "driver/i2s_std.h"
 #include "bsp/display.h"
 #include "example_config.h"
@@ -279,7 +280,7 @@ void PhoneAppAudio::_audio_task(void *arg)
         }
     }
 
-    free(buf);
+    heap_caps_free(buf);
     app->_task_handle = nullptr;  /* Clear before self-delete to prevent double-free in close() */
     vTaskDelete(nullptr);
 }
@@ -336,7 +337,7 @@ void PhoneAppAudio::_start_recording(void)
     if (shine_check_config(cfg.wave.samplerate, cfg.mpeg.bitr) < 0) {
         ESP_LOGE(TAG, "Invalid encoder config: %dHz %dkbps",
                  cfg.wave.samplerate, cfg.mpeg.bitr);
-        free(_pcm_buffer);
+        heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
     }
@@ -344,7 +345,7 @@ void PhoneAppAudio::_start_recording(void)
     _encoder = shine_initialise(&cfg);
     if (!_encoder) {
         ESP_LOGE(TAG, "Failed to initialize MP3 encoder");
-        free(_pcm_buffer);
+        heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
     }
@@ -354,7 +355,7 @@ void PhoneAppAudio::_start_recording(void)
         ESP_LOGE(TAG, "SD card not available, cannot start recording");
         shine_close(_encoder);
         _encoder = nullptr;
-        free(_pcm_buffer);
+        heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
     }
@@ -382,7 +383,7 @@ void PhoneAppAudio::_start_recording(void)
         ESP_LOGE(TAG, "Failed to create file: %s", path);
         shine_close(_encoder);
         _encoder = nullptr;
-        free(_pcm_buffer);
+        heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
     }
@@ -452,7 +453,7 @@ void PhoneAppAudio::_stop_recording(void)
 
     /* Free PCM buffer */
     if (_pcm_buffer) {
-        free(_pcm_buffer);
+        heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
     }
 

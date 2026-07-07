@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_cache.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_video_init.h"
 #include "esp_video_ioctl.h"
 #include "sys/mman.h"
@@ -269,7 +270,7 @@ void PhoneAppCamera::_cleanup_camera_init(void)
             _v4l2_buffers[i] = nullptr;
         }
     }
-    free(_cam_buffer); _cam_buffer = nullptr;
+    heap_caps_free(_cam_buffer); _cam_buffer = nullptr;
     if (_video_fd >= 0) { ::close(_video_fd); _video_fd = -1; }
     CameraDriver::instance().release("camera_app");
     /* Only deinit the video pipeline if this app successfully initialized it.
@@ -306,7 +307,7 @@ bool PhoneAppCamera::_deinit_camera(void)
 
     /* Free display buffer */
     if (_cam_buffer) {
-        free(_cam_buffer);
+        heap_caps_free(_cam_buffer);
         _cam_buffer = nullptr;
     }
 

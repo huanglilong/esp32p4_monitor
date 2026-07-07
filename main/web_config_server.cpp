@@ -49,6 +49,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
 #include "ff.h"
 #include <sys/time.h>
@@ -1145,7 +1146,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     c.wave.channels = PCM_STEREO; c.wave.samplerate = 48000; c.mpeg.mode = STEREO; c.mpeg.bitr = 128;
     s_shine = shine_initialise(&c);
     if (!s_shine) {
-        free(s_pcm_buf);
+        heap_caps_free(s_pcm_buf);
         s_pcm_buf = NULL;
         _stop_audio_task_if_running();
         audio_unlock();
@@ -1164,7 +1165,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%lu.mp3", (unsigned long)mono_ms);
     }
     s_rec_file = fopen(s_rec_path, "wb");
-    if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
+    if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; heap_caps_free(s_pcm_buf); s_pcm_buf = NULL;
         _stop_audio_task_if_running(); audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -1209,7 +1210,7 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
         /* Recover from stale state if a previous record_start failed mid-way. */
         _stop_audio_task_if_running();
         if (s_shine) { shine_close(s_shine); s_shine = NULL; }
-        if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf = NULL; }
+        if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf = NULL; }
         if (s_rec_file) { fclose(s_rec_file); s_rec_file = NULL; }
         audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":1}");
@@ -1233,7 +1234,7 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
     FILE *f = s_rec_file; s_rec_file = NULL;
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine, &wr); if(d&&wr>0&&f) fwrite(d,1,wr,f); shine_close(s_shine); s_shine=NULL; }
     if (f) fclose(f);
-    if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
+    if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
     audio_unlock();
     char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", s_rec_path, (unsigned long)s_rec_bytes);
     ESP_LOGI(TAG,"Saved: %s (%lu)", s_rec_path, (unsigned long)s_rec_bytes);
@@ -2117,7 +2118,7 @@ void web_config_server_stop(void)
     audio_lock();
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine,&wr); if(d&&wr>0&&s_rec_file) fwrite(d,1,wr,s_rec_file); shine_close(s_shine); s_shine=NULL; }
     if (s_rec_file) { fclose(s_rec_file); s_rec_file=NULL; }
-    if (s_pcm_buf) { free(s_pcm_buf); s_pcm_buf=NULL; }
+    if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
     s_playing = false;
     if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
     if (s_audio_inited) { PeripheralManager::instance().deinit_audio(); s_audio_inited=false; }
