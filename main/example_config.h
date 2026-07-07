@@ -68,6 +68,14 @@ extern "C" {
 #define NVS_KEY_BRIGHTNESS            "brightness"
 #define NVS_KEY_CAM_STREAM            "cam_stream"
 
+/* Volume / Brightness shared constants */
+#define VOLUME_MIN                    0
+#define VOLUME_MAX                    100
+#define VOLUME_DEFAULT                60
+#define BRIGHTNESS_MIN                20
+#define BRIGHTNESS_MAX                100
+#define BRIGHTNESS_DEFAULT            80
+
 /* Shared mDNS initialization guard with reference counting.
  * Both CameraStream and web_config_server use mDNS.
  * - shared_mdns_mutex_init() must be called once from app_main before

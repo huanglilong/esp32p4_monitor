@@ -72,12 +72,9 @@ static const char *TAG = "WebConfig";
 #define WEB_CONFIG_PORT         8080
 
 /* NVS keys now defined in example_config.h (NVS_NAMESPACE_SETTINGS, NVS_KEY_*) */
-/* Backward-compatible local aliases for brevity in this file */
+/* Volume/Brightness constants now defined in example_config.h (VOLUME_MIN/MAX/DEFAULT, BRIGHTNESS_MIN/MAX/DEFAULT) */
+/* Backward-compatible local alias for brevity in this file */
 #define NVS_NAMESPACE           NVS_NAMESPACE_SETTINGS
-
-#define VOLUME_MIN              0
-#define VOLUME_MAX              100
-#define VOLUME_DEFAULT          60
 
 #define TASK_STACK_SIZE         (4 * 1024)
 #define TASK_PRIORITY           1

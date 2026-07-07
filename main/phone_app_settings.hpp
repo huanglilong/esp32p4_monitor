@@ -141,10 +141,4 @@ private:
     static constexpr int   TASK_STACK_WIFI_CONNECT = 4 * 1024;
     static constexpr int   TASK_PRIO_WIFI_SCAN = 1;
     static constexpr int   TASK_PRIO_WIFI_CONNECT = 4;
-    static constexpr int   VOLUME_MIN = 0;
-    static constexpr int   VOLUME_MAX = 100;
-    static constexpr int   VOLUME_DEFAULT = 60;
-    static constexpr int   BRIGHTNESS_MIN = 20;
-    static constexpr int   BRIGHTNESS_MAX = 100;
-    static constexpr int   BRIGHTNESS_DEFAULT = 80;
 };
