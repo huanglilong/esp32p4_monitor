@@ -1,5 +1,6 @@
 #pragma once
 #include "sdkconfig.h"
+#include "driver/i2c_master.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -96,6 +97,9 @@ void shared_mdns_update_delegate_ip(void);
 /* Returns the unique mDNS hostname (e.g. "esp-web-a1b2c3").
  * Valid after shared_mdns_ensure() has been called. */
 const char *shared_mdns_hostname(void);
+
+/* BSP I2C bus handle — provided by Waveshare BSP (shared I2C bus for GT911/ES8311/ES7210/OV5647) */
+i2c_master_bus_handle_t bsp_i2c_get_handle(void);
 
 #ifdef __cplusplus
 }

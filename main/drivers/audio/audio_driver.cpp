@@ -20,8 +20,6 @@
 #include "uorb.h"
 #include "topics.h"
 
-extern "C" i2c_master_bus_handle_t bsp_i2c_get_handle(void);
-
 static const char *TAG = "AudioDriver";
 
 /*============================================================================

@@ -33,9 +33,6 @@
 
 static const char *TAG = "CameraStream";
 
-/* Forward declaration: BSP I2C bus handle getter (provided by Waveshare BSP) */
-extern "C" i2c_master_bus_handle_t bsp_i2c_get_handle(void);
-
 /*============================================================================
  * OV5647 VTS helper: reduce sensor frame rate from ~50fps to ~2fps
  *============================================================================*/
