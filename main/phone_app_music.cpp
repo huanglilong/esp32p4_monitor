@@ -16,7 +16,6 @@ static const char *TAG = "MusicApp";
 /* External icon from brookesia */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
-#define MUSIC_DIR  "/sdcard"
 /* MAX_TRACKS defined in phone_app_music.hpp */
 
 PhoneAppMusic::PhoneAppMusic(bool use_status_bar, bool use_navigation_bar) :
@@ -377,9 +376,9 @@ void PhoneAppMusic::_scan_files(void)
     }
 
     struct dirent *entry;
-    DIR *dir = opendir(MUSIC_DIR);
+    DIR *dir = opendir(SDMMC_MOUNT_POINT);
     if (!dir) {
-        ESP_LOGW(TAG, "Cannot open %s (SD card not mounted?)", MUSIC_DIR);
+        ESP_LOGW(TAG, "Cannot open %s (SD card not mounted?)", SDMMC_MOUNT_POINT);
         _track_count = 0;
         return;
     }
@@ -400,7 +399,7 @@ void PhoneAppMusic::_scan_files(void)
     closedir(dir);
     _track_count = count;
 
-    ESP_LOGI(TAG, "Found %d music files in %s", _track_count, MUSIC_DIR);
+    ESP_LOGI(TAG, "Found %d music files in %s", _track_count, SDMMC_MOUNT_POINT);
 
     for (int i = 0; i < _track_count; i++) {
         lv_obj_t *btn = lv_list_add_btn(_list_tracks, NULL, _file_names[i]);

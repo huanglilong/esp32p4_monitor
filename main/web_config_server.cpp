@@ -93,7 +93,6 @@ static std::atomic<bool>  s_mdns_running{false};
 /*============================================================================
  * Audio state — lazy-init when camera stream is OFF
  *============================================================================*/
-#define REC_DIR              "/sdcard"
 #define REC_BUF_SAMPLES      480
 #define REC_BUF_BYTES        (REC_BUF_SAMPLES * 2 * sizeof(int16_t))
 #define ENC_SAMPLES_PER_CH   1152
@@ -1162,11 +1161,11 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     localtime_r(&t, &tm_buf);
     /* Guard against unsynced wall-clock (epoch year < 2020 → overwrite) */
     if (tm_buf.tm_year + 1900 > 2020) {
-        snprintf(s_rec_path, sizeof(s_rec_path), REC_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
+        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
                  tm_buf.tm_year+1900, tm_buf.tm_mon+1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
     } else {
         uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        snprintf(s_rec_path, sizeof(s_rec_path), REC_DIR "/rec_%lu.mp3", (unsigned long)mono_ms);
+        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%lu.mp3", (unsigned long)mono_ms);
     }
     s_rec_file = fopen(s_rec_path, "wb");
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; free(s_pcm_buf); s_pcm_buf = NULL;
@@ -1273,7 +1272,7 @@ static esp_err_t h_list(httpd_req_t *req) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-    DIR *d = opendir(REC_DIR);
+    DIR *d = opendir(SDMMC_MOUNT_POINT);
     cJSON *root = cJSON_CreateObject();
     cJSON *arr = cJSON_CreateArray();
     if (!root || !arr) {
@@ -1340,7 +1339,7 @@ static esp_err_t h_play(httpd_req_t *req) {
     httpd_query_key_value(q,"file",fn,sizeof(fn));
     if(!strlen(fn)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     _url_decode(fn);
-    char uri[160]; snprintf(uri,sizeof(uri),"file://" REC_DIR "/%s",fn);
+    char uri[160]; snprintf(uri,sizeof(uri),"file://" SDMMC_MOUNT_POINT "/%s",fn);
     audio_lock();
     if (s_fm_busy) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     /* Refuse playback while web recording is active — recording and playback share I2S hardware */

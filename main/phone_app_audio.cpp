@@ -20,9 +20,6 @@ extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_1
 #define AUDIO_BUF_SAMPLES   480
 #define AUDIO_BUF_BYTES     (AUDIO_BUF_SAMPLES * 2 * sizeof(int16_t))
 
-/* Recording directory on SD card */
-#define RECORD_DIR          "/sdcard"
-
 /* Shine encoder expects SHINE_MAX_SAMPLES (1152) samples per channel per frame */
 #define ENC_SAMPLES_PER_CH  SHINE_MAX_SAMPLES
 #define PCM_BUF_SAMPLES     (ENC_SAMPLES_PER_CH * 2)  /* interleaved stereo */
@@ -371,13 +368,13 @@ void PhoneAppAudio::_start_recording(void)
      * Before NTP sync, gettimeofday returns epoch (1970), causing
      * all recordings to get the same filename and overwrite each other. */
     if (tm_info.tm_year + 1900 > 2020) {
-        snprintf(path, sizeof(path), RECORD_DIR "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
+        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
                  tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
                  tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
     } else {
         /* Fallback: use monotonic timer as unique identifier */
         uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        snprintf(path, sizeof(path), RECORD_DIR "/rec_%lu.mp3", (unsigned long)mono_ms);
+        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%lu.mp3", (unsigned long)mono_ms);
     }
 
     _record_file = fopen(path, "wb");
@@ -510,9 +507,9 @@ void PhoneAppAudio::_scan_recordings(void)
     }
 
     struct dirent *entry;
-    DIR *dir = opendir(RECORD_DIR);
+    DIR *dir = opendir(SDMMC_MOUNT_POINT);
     if (!dir) {
-        ESP_LOGW(TAG, "Cannot open %s (SD card not mounted?)", RECORD_DIR);
+        ESP_LOGW(TAG, "Cannot open %s (SD card not mounted?)", SDMMC_MOUNT_POINT);
         if (_label_no_recs) lv_obj_remove_flag(_label_no_recs, LV_OBJ_FLAG_HIDDEN);
         if (_list_recordings) lv_obj_add_flag(_list_recordings, LV_OBJ_FLAG_HIDDEN);
         return;
@@ -534,7 +531,7 @@ void PhoneAppAudio::_scan_recordings(void)
     closedir(dir);
     _recording_count = count;
 
-    ESP_LOGI(TAG, "Found %d recording(s) in %s", _recording_count, RECORD_DIR);
+    ESP_LOGI(TAG, "Found %d recording(s) in %s", _recording_count, SDMMC_MOUNT_POINT);
 
     if (_recording_count == 0) {
         if (_label_no_recs) lv_obj_remove_flag(_label_no_recs, LV_OBJ_FLAG_HIDDEN);
