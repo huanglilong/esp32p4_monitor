@@ -293,9 +293,10 @@ void PhoneAppCameraStream::_update_stream_info(void)
         }
 
         lv_label_set_text_fmt(_label_stream_info,
-            "Stream: ACTIVE  %lux%lu",
+            "Stream: ACTIVE  %lux%lu  %lu fps",
             (unsigned long)cs._cam_width,
-            (unsigned long)cs._cam_height);
+            (unsigned long)cs._cam_height,
+            (unsigned long)_fps);
 
         if (_label_stream_bytes) {
             lv_label_set_text_fmt(_label_stream_bytes,
