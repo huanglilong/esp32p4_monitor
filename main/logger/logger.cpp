@@ -313,32 +313,34 @@ static void _logger_push(const char *data, int len)
         size_t avail = (s_log.buf_size - 1) - 
                        ((s_log.head + s_log.buf_size - s_log.tail) % s_log.buf_size);
 
-        if (avail >= (size_t)(len - written)) {
-            /* Fast path: enough space for the entire remaining data */
-            size_t remaining = (size_t)(len - written);
-            for (size_t i = 0; i < remaining; i++) {
-                s_log.buf[s_log.head] = (uint8_t)data[written++];
-                s_log.head = (s_log.head + 1) % s_log.buf_size;
-            }
-            xSemaphoreGive(s_log.buf_mutex);
-            xSemaphoreGive(s_log.data_sem);
-            break;
-        } else if (avail > 0) {
-            /* Partial write: fill available space, then drop remainder.
-             * This avoids blocking the caller (which may be LVGL or WiFi
-             * event handler) with a polling loop. */
-            for (size_t i = 0; i < avail; i++) {
-                s_log.buf[s_log.head] = (uint8_t)data[written++];
-                s_log.head = (s_log.head + 1) % s_log.buf_size;
-            }
-            xSemaphoreGive(s_log.buf_mutex);
-            xSemaphoreGive(s_log.data_sem);
-            /* Drop remainder — better to lose a log line than freeze
-             * a time-critical task for 100ms. */
-            break;
-        } else {
+        size_t to_write = (avail >= (size_t)(len - written)) ? (size_t)(len - written) : avail;
+        if (to_write == 0) {
             /* Buffer completely full — drop entire remaining data */
             xSemaphoreGive(s_log.buf_mutex);
+            break;
+        }
+
+        /* Wrap-aware memcpy: up to two chunks if data wraps around buffer end */
+        size_t first_chunk = s_log.buf_size - s_log.head;
+        if (first_chunk > to_write) first_chunk = to_write;
+        memcpy(&s_log.buf[s_log.head], &data[written], first_chunk);
+        written += first_chunk;
+        s_log.head = (s_log.head + first_chunk) % s_log.buf_size;
+
+        if (first_chunk < to_write) {
+            /* Second chunk wraps to beginning of buffer */
+            size_t second_chunk = to_write - first_chunk;
+            memcpy(&s_log.buf[0], &data[written], second_chunk);
+            written += second_chunk;
+            s_log.head = second_chunk;
+        }
+
+        xSemaphoreGive(s_log.buf_mutex);
+        xSemaphoreGive(s_log.data_sem);
+
+        if (to_write < (size_t)(len - written + to_write)) {
+            /* Partial write: filled available space, drop remainder.
+             * Better to lose a log line than freeze a time-critical task. */
             break;
         }
     }
@@ -359,14 +361,21 @@ static void _logger_writer_task(void *arg)
 
         /* Drain the ring buffer in batches */
         while (true) {
-            uint8_t local[128];
+            uint8_t local[512];
             int n = 0;
 
             xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
 
+            /* Wrap-aware read from ring buffer */
             while (s_log.tail != s_log.head && n < (int)sizeof(local)) {
-                local[n++] = s_log.buf[s_log.tail];
-                s_log.tail = (s_log.tail + 1) % s_log.buf_size;
+                size_t contiguous = (s_log.head >= s_log.tail)
+                    ? (s_log.head - s_log.tail)
+                    : (s_log.buf_size - s_log.tail);
+                size_t room = sizeof(local) - n;
+                size_t chunk = (contiguous > room) ? room : contiguous;
+                memcpy(&local[n], &s_log.buf[s_log.tail], chunk);
+                n += chunk;
+                s_log.tail = (s_log.tail + chunk) % s_log.buf_size;
             }
 
             xSemaphoreGive(s_log.buf_mutex);
