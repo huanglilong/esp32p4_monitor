@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import '../main.dart';
 import '../providers/app_state.dart';
 import '../services/http_service.dart';
+import 'ulog_viewer_screen.dart';
 
 /// Settings + Audio: device config (WiFi/volume/camera stream) + audio recording/playback.
 class SettingsScreen extends StatefulWidget {
@@ -301,6 +302,78 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// Open a .ulg file from SD card in the ULog viewer.
+  void _fmOpenUlog(String name) {
+    final base = _fmDir.endsWith('/') ? _fmDir : '$_fmDir/';
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => UlogViewerScreen(remotePath: '$base$name'),
+      ),
+    );
+  }
+
+  /// Open a locally downloaded .ulg file for parsing.
+  Future<void> _openLocalUlog() async {
+    try {
+      final ulgFiles = <String>[];
+
+      // Scan Documents directory
+      final docDir = await getApplicationDocumentsDirectory();
+      ulgFiles.addAll(Directory(docDir.path)
+          .listSync()
+          .where((f) => f.path.toLowerCase().endsWith('.ulg'))
+          .map((f) => f.path));
+
+      // Also scan Caches directory (temp downloads from UlogViewerScreen)
+      final cacheDir = await getTemporaryDirectory();
+      try {
+        ulgFiles.addAll(Directory(cacheDir.path)
+            .listSync()
+            .where((f) => f.path.toLowerCase().endsWith('.ulg'))
+            .map((f) => f.path));
+      } catch (_) {}
+
+      if (!mounted) return;
+
+      if (ulgFiles.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No .ulg files found. Download from SD card first.')),
+        );
+        return;
+      }
+
+      final selected = await showDialog<String>(
+        context: context,
+        builder: (ctx) => SimpleDialog(
+          title: const Text('Select ULog file'),
+          children: ulgFiles.map((path) {
+            final name = path.split('/').last;
+            return SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, path),
+              child: Row(children: [
+                const Icon(Icons.videocam, size: 18, color: Colors.deepPurple),
+                const SizedBox(width: 8),
+                Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
+              ]),
+            );
+          }).toList(),
+        ),
+      );
+
+      if (selected == null || !mounted) return;
+
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => UlogViewerScreen(localPath: selected),
+        ),
+      );
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   String _t(int s) => '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
   String _b(int b) => b < 1024 ? '$b B' : b < 1048576 ? '${(b / 1024).toStringAsFixed(1)} KB' : '${(b / 1048576).toStringAsFixed(1)} MB';
 
@@ -345,18 +418,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ]))),
         const SizedBox(height: 8),
         // === ULog Recording ===
-        Card(child: Padding(padding: const EdgeInsets.all(12), child: Row(children: [
-          Icon(_ulogRunning ? Icons.fiber_manual_record : Icons.article, color: _ulogRunning ? Colors.green : null), const SizedBox(width: 8),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(_ulogRunning ? 'ULog Recording' : 'ULog Logger', style: tt.titleSmall),
-            if (_ulogRunning) Text('${_b(_ulogBytes)}', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-            if (_ulogRunning && _ulogFilepath.isNotEmpty) Text(_ulogFilepath, style: TextStyle(color: Colors.grey[500], fontSize: 10), overflow: TextOverflow.ellipsis),
-          ])),
-          const SizedBox(width: 8),
-          _ulogRunning
-              ? FilledButton.icon(onPressed: _ulogStop, icon: const Icon(Icons.stop, size: 18), label: const Text('Stop'))
-              : FilledButton.icon(onPressed: _ulogStart, icon: const Icon(Icons.play_arrow, size: 18), label: const Text('Start'),
-                  style: FilledButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white)),
+        Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(children: [
+          Row(children: [
+            Icon(_ulogRunning ? Icons.fiber_manual_record : Icons.article, color: _ulogRunning ? Colors.green : null), const SizedBox(width: 8),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(_ulogRunning ? 'ULog Recording' : 'ULog Logger', style: tt.titleSmall),
+              if (_ulogRunning) Text('${_b(_ulogBytes)}', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+              if (_ulogRunning && _ulogFilepath.isNotEmpty) Text(_ulogFilepath, style: TextStyle(color: Colors.grey[500], fontSize: 10), overflow: TextOverflow.ellipsis),
+            ])),
+            const SizedBox(width: 8),
+            _ulogRunning
+                ? FilledButton.icon(onPressed: _ulogStop, icon: const Icon(Icons.stop, size: 18), label: const Text('Stop'))
+                : FilledButton.icon(onPressed: _ulogStart, icon: const Icon(Icons.play_arrow, size: 18), label: const Text('Start'),
+                    style: FilledButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white)),
+          ]),
+          const SizedBox(height: 8),
+          Align(alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: _openLocalUlog,
+              icon: const Icon(Icons.folder_open, size: 16),
+              label: const Text('Open Local .ulg'),
+              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12)),
+            ),
+          ),
         ]))),
         const SizedBox(height: 8),
         // === SD Card Files (directory browser + play/download/delete) ===
@@ -377,22 +461,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final name = f['name'] as String;
             final isDir = f['is_dir'] == true;
             final isMp3 = !isDir && name.toLowerCase().endsWith('.mp3');
+            final isUlg = !isDir && name.toLowerCase().endsWith('.ulg');
             final isPlaying = _playingFile == name;
             return ListTile(
               visualDensity: VisualDensity.compact,
               dense: true,
               leading: Icon(
-                isDir ? Icons.folder : isMp3 ? (isPlaying ? Icons.volume_up : Icons.music_note) : Icons.insert_drive_file,
-                color: isDir ? Colors.amber : isPlaying ? Colors.green : null,
+                isDir ? Icons.folder : isMp3 ? (isPlaying ? Icons.volume_up : Icons.music_note) : isUlg ? Icons.videocam : Icons.insert_drive_file,
+                color: isDir ? Colors.amber : isPlaying ? Colors.green : isUlg ? Colors.deepPurple : null,
               ),
               title: Text(name, overflow: TextOverflow.ellipsis),
               subtitle: isDir ? null : Text(_b((f['size'] as num?)?.toInt() ?? 0), style: const TextStyle(fontSize: 11)),
-              onTap: isDir ? () => _fmNavigate(name) : null,
+              onTap: isDir ? () => _fmNavigate(name) : isUlg ? () => _fmOpenUlog(name) : null,
               trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                 if (isMp3)
                   isPlaying
                       ? IconButton(icon: const Icon(Icons.stop_circle, color: Colors.red, size: 22), onPressed: _stopPlayback)
                       : IconButton(icon: const Icon(Icons.play_circle, color: Colors.green, size: 22), onPressed: () => _playFile(name)),
+                if (isUlg)
+                  IconButton(icon: const Icon(Icons.play_circle, color: Colors.deepPurple, size: 22), tooltip: 'View frames', onPressed: () => _fmOpenUlog(name)),
                 if (!isDir) ...[
                   IconButton(icon: const Icon(Icons.download, size: 22), onPressed: () => _fmDownload(name)),
                   const SizedBox(width: 4),

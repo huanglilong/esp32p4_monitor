@@ -582,7 +582,7 @@ class Esp32HttpService {
       socket = await Socket.connect(
         device.host,
         8080,
-        timeout: const Duration(seconds: 30),
+        timeout: const Duration(seconds: 10),
       );
       socket.write(
         'GET /api/files/download?path=${Uri.encodeComponent(path)} HTTP/1.0\r\n'
@@ -591,65 +591,158 @@ class Esp32HttpService {
       );
       await socket.flush();
 
-      final completer = Completer<Uint8List>();
-      final buf = BytesBuilder();
+      // Read entire raw response via onDone (HTTP/1.0 server closes connection when done)
+      final rawCompleter = Completer<Uint8List>();
+      final rawBuf = BytesBuilder();
       int? contentLength;
-      int bodyStart = -1;
-      int totalLen = 0; // Track byte count without O(n²) toBytes()
+      int headerEnd = -1;
 
       socket.cast<List<int>>().listen(
         (chunk) {
-          buf.add(chunk);
-          totalLen += chunk.length;
+          rawBuf.add(chunk);
 
-          // Parse Content-Length header from raw bytes (binary-safe)
+          // Try to parse Content-Length from headers once we have them
           if (contentLength == null) {
-            final data = buf.toBytes();
-            // Find \r\n\r\n delimiter
-            int delim = -1;
+            final data = rawBuf.toBytes();
+            // Find \r\n\r\n
             for (int i = 0; i < data.length - 3; i++) {
               if (data[i] == 13 && data[i+1] == 10 && data[i+2] == 13 && data[i+3] == 10) {
-                delim = i;
+                headerEnd = i + 4;
+                final headers = utf8.decode(data.sublist(0, i));
+                final clMatch = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false)
+                    .firstMatch(headers);
+                if (clMatch != null) {
+                  contentLength = int.parse(clMatch.group(1)!);
+                }
                 break;
               }
             }
-            if (delim >= 0) {
-              // Decode only the header portion as UTF-8
-              final headers = utf8.decode(data.sublist(0, delim));
-              final clMatch = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false)
-                  .firstMatch(headers);
-              if (clMatch != null) {
-                contentLength = int.parse(clMatch.group(1)!);
-                bodyStart = delim + 4;
-              }
-            }
           }
 
-          // Read until body bytes reached (use counter, not toBytes().length)
-          if (contentLength != null && bodyStart >= 0) {
-            final bodyBytes = totalLen - bodyStart;
-            if (bodyBytes >= contentLength!) {
-              if (!completer.isCompleted) {
-                final all = buf.toBytes();
-                completer.complete(Uint8List.fromList(
-                    all.sublist(bodyStart, bodyStart + contentLength!)));
-              }
+          // If we know Content-Length, complete as soon as body is fully received
+          if (contentLength != null && headerEnd >= 0 && !rawCompleter.isCompleted) {
+            final totalReceived = rawBuf.toBytes().length;
+            if (totalReceived >= headerEnd + contentLength!) {
+              rawCompleter.complete(rawBuf.toBytes());
             }
           }
         },
-        onError: (e) { if (!completer.isCompleted) completer.complete(Uint8List(0)); },
-        onDone: () { if (!completer.isCompleted) completer.complete(Uint8List(0)); },
+        onError: (e) {
+          print('$TAG ❌ filesDownload stream error: $e');
+          if (!rawCompleter.isCompleted) rawCompleter.complete(Uint8List(0));
+        },
+        onDone: () {
+          if (!rawCompleter.isCompleted) {
+            final bytes = rawBuf.toBytes();
+            print('$TAG 📥 filesDownload onDone: ${bytes.length} bytes');
+            rawCompleter.complete(bytes);
+          }
+        },
         cancelOnError: true,
       );
 
-      final result = await completer.future.timeout(const Duration(seconds: 30));
-      return result;
+      final raw = await rawCompleter.future; // No timeout — wait for onDone or Content-Length
+      if (raw.isEmpty) {
+        print('$TAG ❌ filesDownload: empty response for $path');
+        return Uint8List(0);
+      }
+
+      print('$TAG 📥 filesDownload total: ${raw.length} bytes');
+
+      // Find header/body boundary (\r\n\r\n)
+      int bodyStart = -1;
+      for (int i = 0; i < raw.length - 3; i++) {
+        if (raw[i] == 13 && raw[i+1] == 10 && raw[i+2] == 13 && raw[i+3] == 10) {
+          bodyStart = i + 4;
+          break;
+        }
+      }
+      if (bodyStart < 0) return Uint8List(0);
+
+      final headersStr = utf8.decode(raw.sublist(0, bodyStart - 4));
+      print('$TAG 📥 filesDownload headers: ${headersStr.replaceAll('\r\n', ' | ')}');
+      print('$TAG 📥 filesDownload body first 20 bytes: ${raw.sublist(bodyStart, (bodyStart + 20).clamp(0, raw.length)).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
+
+      // Detect chunked encoding: either explicit header or body starts with hex chunk size
+      // IMPORTANT: chunked takes priority over Content-Length (RFC 7230)
+      final isChunkedHeader = RegExp(r'Transfer-Encoding:\s*chunked', caseSensitive: false)
+          .hasMatch(headersStr);
+      final bodyLooksChunked = _isChunkedBody(raw, bodyStart);
+
+      if (isChunkedHeader || bodyLooksChunked) {
+        print('$TAG 📥 filesDownload: dechunking (header=$isChunkedHeader, detected=$bodyLooksChunked)');
+        return _dechunk(raw, bodyStart);
+      }
+
+      // Content-Length only if NOT chunked
+      final clMatch = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false)
+          .firstMatch(headersStr);
+      if (clMatch != null) {
+        final contentLength = int.parse(clMatch.group(1)!);
+        if (bodyStart + contentLength <= raw.length) {
+          return Uint8List.fromList(raw.sublist(bodyStart, bodyStart + contentLength));
+        }
+      }
+
+      // Fallback: return all bytes after headers (HTTP/1.0 style)
+      return Uint8List.fromList(raw.sublist(bodyStart));
     } catch (e) {
       print('$TAG ❌ File download failed: $e');
       return Uint8List(0);
     } finally {
       socket?.close();
     }
+  }
+
+  /// Check if body starts with a chunked encoding pattern (hex size + \r\n).
+  static bool _isChunkedBody(Uint8List data, int bodyStart) {
+    if (bodyStart >= data.length) return false;
+    // Find first \r\n after bodyStart
+    int lineEnd = -1;
+    for (int i = bodyStart; i < data.length - 1; i++) {
+      if (data[i] == 13 && data[i + 1] == 10) {
+        lineEnd = i;
+        break;
+      }
+    }
+    if (lineEnd <= bodyStart) return false;
+    // Check if the line is a valid hex number
+    final line = String.fromCharCodes(data.sublist(bodyStart, lineEnd));
+    final hexPart = line.split(';').first.trim();
+    if (hexPart.isEmpty || hexPart.length > 8) return false;
+    return int.tryParse(hexPart, radix: 16) != null;
+  }
+
+  /// Decode chunked transfer encoding body.
+  static Uint8List _dechunk(Uint8List data, int start) {
+    final result = BytesBuilder();
+    int pos = start;
+
+    while (pos < data.length) {
+      // Read chunk size line (hex number + \r\n)
+      int lineEnd = -1;
+      for (int i = pos; i < data.length - 1; i++) {
+        if (data[i] == 13 && data[i + 1] == 10) {
+          lineEnd = i;
+          break;
+        }
+      }
+      if (lineEnd < 0) break;
+
+      final sizeStr = utf8.decode(data.sublist(pos, lineEnd)).trim();
+      // Ignore chunk extensions (after semicolon)
+      final chunkSize = int.parse(sizeStr.split(';').first, radix: 16);
+      if (chunkSize == 0) break; // terminal chunk
+
+      final chunkStart = lineEnd + 2;
+      final chunkEnd = chunkStart + chunkSize;
+      if (chunkEnd + 2 > data.length) break; // incomplete
+
+      result.add(data.sublist(chunkStart, chunkEnd));
+      pos = chunkEnd + 2; // skip trailing \r\n
+    }
+
+    return result.toBytes();
   }
 
   /// POST /api/files/delete — Delete a file from SD card.
