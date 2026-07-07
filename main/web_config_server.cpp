@@ -103,7 +103,7 @@ static shine_t        s_shine = NULL;
 static int16_t       *s_pcm_buf = NULL;
 static int            s_pcm_count = 0;
 static FILE          *s_rec_file = NULL;
-static uint32_t       s_rec_bytes = 0;
+static std::atomic<uint32_t> s_rec_bytes{0};
 static uint32_t       s_rec_start_ms = 0;
 static char           s_rec_path[128];
 
@@ -180,7 +180,7 @@ static void audio_task(void *arg)
                 if (++s_pcm_count >= ENC_SAMPLES_PER_CH) {
                     int wr = 0;
                     unsigned char *mp3 = shine_encode_buffer_interleaved(s_shine, s_pcm_buf, &wr);
-                    if (mp3 && wr > 0 && s_rec_file) s_rec_bytes += fwrite(mp3, 1, wr, s_rec_file);
+                    if (mp3 && wr > 0 && s_rec_file) s_rec_bytes.fetch_add(fwrite(mp3, 1, wr, s_rec_file), std::memory_order_relaxed);
                     s_pcm_count = 0;
                 }
             }
@@ -1223,7 +1223,7 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
         struct recording_state_s rs = {};
         rs.timestamp = esp_timer_get_time();
         rs.active = false;
-        rs.bytes_written = s_rec_bytes;
+        rs.bytes_written = s_rec_bytes.load(std::memory_order_relaxed);
         rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms));
         orb_publish(ORB_ID(recording_state), s_rec_pub, &rs);
     }
@@ -1236,8 +1236,8 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
     if (f) fclose(f);
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
     audio_unlock();
-    char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", s_rec_path, (unsigned long)s_rec_bytes);
-    ESP_LOGI(TAG,"Saved: %s (%lu)", s_rec_path, (unsigned long)s_rec_bytes);
+    char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", s_rec_path, (unsigned long)s_rec_bytes.load(std::memory_order_relaxed));
+    ESP_LOGI(TAG,"Saved: %s (%lu)", s_rec_path, (unsigned long)s_rec_bytes.load(std::memory_order_relaxed));
     httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -1247,10 +1247,10 @@ static esp_err_t h_rec_status(httpd_req_t *req) {
     char r[128];
     if (s_is_recording) {
         /* Take audio mutex to get consistent snapshot of recording state.
-         * s_rec_bytes is updated by the recording task and read here
-         * from the httpd task — technically a data race without sync. */
+         * s_rec_bytes is updated by the recording task via fetch_add
+         * and read here from the httpd task — atomic ensures no data race. */
         audio_lock();
-        uint32_t bytes = s_rec_bytes;
+        uint32_t bytes = s_rec_bytes.load(std::memory_order_relaxed);
         uint32_t start_ms = s_rec_start_ms;
         audio_unlock();
         uint32_t e = (uint32_t)((esp_timer_get_time() / 1000 - start_ms) / 1000);
