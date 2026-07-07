@@ -36,10 +36,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('ESP32-P4 Viewer'),
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+    return SelectionArea(
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('ESP32-P4 Viewer'),
+          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -111,6 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           );
         },
+      ),
       ),
     );
   }

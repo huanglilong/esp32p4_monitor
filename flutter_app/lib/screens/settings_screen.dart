@@ -307,8 +307,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Settings'), backgroundColor: Theme.of(context).colorScheme.primaryContainer),
+    return SelectionArea(
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Settings'), backgroundColor: Theme.of(context).colorScheme.primaryContainer),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
@@ -402,6 +403,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           }).toList()),
         ),
       ]))),
+      ),
     );
   }
 }

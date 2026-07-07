@@ -393,8 +393,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       style: TextStyle(color: Colors.white24, fontSize: 12),
                     ),
                   )
-                : SelectionArea(
-                    child: ListView.builder(
+                : ListView.builder(
                       controller: _logScrollController,
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -437,7 +436,6 @@ class _CameraScreenState extends State<CameraScreen> {
                       },
                     ),
                   ),
-          ),
         ],
       ),
     );
@@ -465,11 +463,12 @@ class _CameraScreenState extends State<CameraScreen> {
           Navigator.of(context).pop();
         }
       },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(state.connectedDevice?.name ?? 'Camera'),
-          backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
+      child: SelectionArea(
+        child: Scaffold(
+          appBar: AppBar(
+            title: Text(state.connectedDevice?.name ?? 'Camera'),
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
           actions: [
             IconButton(
               icon: const Icon(Icons.save_alt),
@@ -573,6 +572,7 @@ class _CameraScreenState extends State<CameraScreen> {
           },
         ),
       ),
+    ),
     );
   }
 }
