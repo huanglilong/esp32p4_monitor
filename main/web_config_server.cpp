@@ -79,8 +79,7 @@ static const char *TAG = "WebConfig";
 #define TASK_STACK_SIZE         (4 * 1024)
 #define TASK_PRIORITY           1
 #define WIFI_CONNECT_TIMEOUT_MS 15000  /* Max wait for STA connection before giving up */
-/* WiFi event group bits (local to this module's event group) */
-#define WIFI_CONNECTED_BIT      BIT0
+/* WIFI_CONNECTED_BIT now defined in example_config.h */
 
 static httpd_handle_t s_httpd = NULL;
 static TaskHandle_t   s_task_handle = NULL;

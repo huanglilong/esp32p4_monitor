@@ -69,9 +69,9 @@ static void publish_wifi_state(bool connected, bool scanning, int8_t rssi, const
 }
 
 /* NVS keys now defined in example_config.h (NVS_NAMESPACE_SETTINGS, NVS_KEY_*) */
-/* Backward-compatible local aliases for brevity in this file */
+/* WIFI_CONNECTED_BIT now defined in example_config.h */
+/* Backward-compatible local alias for brevity in this file */
 #define NVS_NAMESPACE            NVS_NAMESPACE_SETTINGS
-#define WIFI_CONNECTED_BIT      BIT0
 #define WIFI_INIT_DONE_BIT      BIT1
 /*============================================================================
  * Constructor / Destructor

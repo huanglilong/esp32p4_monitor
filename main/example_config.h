@@ -76,6 +76,9 @@ extern "C" {
 #define BRIGHTNESS_MAX                100
 #define BRIGHTNESS_DEFAULT            80
 
+/* WiFi event group bits — shared by PhoneAppSettings and web_config_server */
+#define WIFI_CONNECTED_BIT            BIT0
+
 /* Shared mDNS initialization guard with reference counting.
  * Both CameraStream and web_config_server use mDNS.
  * - shared_mdns_mutex_init() must be called once from app_main before
