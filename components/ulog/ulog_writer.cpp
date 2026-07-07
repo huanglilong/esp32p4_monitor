@@ -574,7 +574,8 @@ static void writer_task_func(void *arg)
     /* Determine the maximum topic payload size across all registered topics.
      * This determines the scratch buffer size for formatting DATA messages.
      * Layout: 3 (header) + 2 (msg_id) + payload_size.
-     * For camera_frame, payload is ~8203 bytes, so we allocate from PSRAM heap. */
+     * For camera_frame, payload is ~8203 bytes, so we allocate from PSRAM heap.
+     * Note: buffer must be o_size (full struct) because orb_copy writes sizeof(struct). */
     size_t max_payload = 64;  /* minimum reasonable size */
     for (int i = 0; i < writer->num_topics; i++) {
         if (writer->topics[i].meta && writer->topics[i].meta->o_size > max_payload) {
@@ -617,8 +618,12 @@ static void writer_task_func(void *arg)
             void *payload = data_buf + ULOG_MSG_HEADER_LEN + sizeof(uint16_t);
             if (orb_copy(entry->meta, entry->sub_handle, payload) != 0) continue;
 
-            /* Build ULog DATA message header */
-            uint16_t payload_size = (uint16_t)entry->meta->o_size;
+            /* Build ULog DATA message header.
+             * Use o_size_no_padding (PX4 convention): write only the data
+             * fields without trailing _padding bytes. This ensures pyulog's
+             * max_data_size (which strips trailing _padding) matches the
+             * actual DATA message size, avoiding false data corruption. */
+            uint16_t payload_size = (uint16_t)entry->meta->o_size_no_padding;
             uint16_t msg_total = (uint16_t)(sizeof(uint16_t) + payload_size); /* excl. 3-byte header */
 
             data_buf[0] = (uint8_t)(msg_total & 0xFF);

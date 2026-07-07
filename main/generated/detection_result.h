@@ -24,4 +24,10 @@ typedef struct detection_result_s
 // NOLINTNEXTLINE
 static constexpr size_t detection_result_SIZE_CONST { DETECTION_RESULT_SIZE };
 
+/** Size without trailing _padding (for ULog writer). Matches PX4 o_size_no_padding. */
+#define DETECTION_RESULT_SIZE_NO_PADDING (sizeof(detection_result_s) - 4)
+
+// NOLINTNEXTLINE
+static constexpr size_t detection_result_SIZE_NO_PADDING_CONST { DETECTION_RESULT_SIZE_NO_PADDING };
+
 #endif /* UORB_TOPIC_DETECTION_RESULT_H_ */

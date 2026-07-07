@@ -10,7 +10,7 @@
 
 #define ORB_QUEUE_LENGTH_FPS_STATS 3
 
-#define FPS_STATS_FORMAT_STR "fps_stats:uint64_t timestamp;float fps;uint32_t fps_total_bytes;uint32_t frame_count;uint8_t[4] _padding0;"
+#define FPS_STATS_FORMAT_STR "fps_stats:uint64_t timestamp;uint32_t frame_count;uint32_t fps_total_bytes;float fps;uint8_t[4] _padding0;"
 
 // NOLINTNEXTLINE(modernize-use-using)
 typedef struct fps_stats_s
@@ -25,5 +25,11 @@ typedef struct fps_stats_s
 
 // NOLINTNEXTLINE
 static constexpr size_t fps_stats_SIZE_CONST { FPS_STATS_SIZE };
+
+/** Size without trailing _padding (for ULog writer). Matches PX4 o_size_no_padding. */
+#define FPS_STATS_SIZE_NO_PADDING (sizeof(fps_stats_s) - 4)
+
+// NOLINTNEXTLINE
+static constexpr size_t fps_stats_SIZE_NO_PADDING_CONST { FPS_STATS_SIZE_NO_PADDING };
 
 #endif /* UORB_TOPIC_FPS_STATS_H_ */

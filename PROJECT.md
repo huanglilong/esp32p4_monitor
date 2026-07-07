@@ -785,7 +785,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [ ] 自定义 720x720 ESP-Brookesia 样式表
 - [x] **Camera App 回放/录制功能**
 - [x] Camera Frame ULog 录制 (JPEG 帧通过 camera_frame uORB topic 写入 .ulg 文件, Web API 控制)
-- [ ] **pyulog 兼容性**: pyulog 1.2.3 在 `_MessageAddLogged.__init__` 中先移除 trailing `_padding` 字段再计算 `max_data_size`，导致 `max_data_size < 实际 sizeof(struct)`，所有含 padding 的 topic 被 pyulog 标记为 data corruption。workaround: `tools/ulog_extract_frames.py` 脚本直接解析 ULog 二进制格式提取 JPEG 帧。根本修复需等待 pyulog 上游修复，或在 ULog writer 中改为逐字段序列化（去掉 padding 字节）。
+- [x] **pyulog 兼容性**: 采用 PX4 `o_size_no_padding` 方案修复。pyulog 1.2.3 在 `_MessageAddLogged.__init__` 中先移除 trailing `_padding` 字段再计算 `max_data_size`，导致 `max_data_size < sizeof(struct)`，所有含 padding 的 topic 被 pyulog 标记为 data corruption。修复：1) `orb_metadata` 新增 `o_size_no_padding` 字段 (PX4 惯例)；2) ULog writer DATA 消息使用 `o_size_no_padding` 代替 `o_size`，不写尾部 padding 字节 (ULog 规范明确允许)；3) `msg_gen.py` format string 使用 `.msg` 声明顺序（与 C struct 一致）+ 显式 `_padding` 字段，确保 pyulog 计算的字段偏移与二进制数据匹配。`tools/ulog_extract_frames.py` 仍可用作备用工具。
 - [ ] **WIFI6 无屏配网**: 首次启动 NVS 为空时需要 WiFi AP 模式配网。当前 esp-hosted SDIO 不支持稳定 SoftAP (客户端连接时 SDIO 缓冲区溢出 → C6 崩溃)。需修复 C6 SDIO 驱动或通过其他方式配网（UART CLI / BLE provisioning）。**当前假定 NVS 已有 WiFi SSID/密码**。
 - [x] Audio App Speaker 输出功能 (需解决回声消除)
 - [x] Audio App MP3 录音 (Shine encoder, SD 卡)

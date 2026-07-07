@@ -24,4 +24,10 @@ typedef struct camera_state_s
 // NOLINTNEXTLINE
 static constexpr size_t camera_state_SIZE_CONST { CAMERA_STATE_SIZE };
 
+/** Size without trailing _padding (for ULog writer). Matches PX4 o_size_no_padding. */
+#define CAMERA_STATE_SIZE_NO_PADDING (sizeof(camera_state_s) - 7)
+
+// NOLINTNEXTLINE
+static constexpr size_t camera_state_SIZE_NO_PADDING_CONST { CAMERA_STATE_SIZE_NO_PADDING };
+
 #endif /* UORB_TOPIC_CAMERA_STATE_H_ */

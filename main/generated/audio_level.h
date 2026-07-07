@@ -25,4 +25,10 @@ typedef struct audio_level_s
 // NOLINTNEXTLINE
 static constexpr size_t audio_level_SIZE_CONST { AUDIO_LEVEL_SIZE };
 
+/** Size without trailing _padding (for ULog writer). Matches PX4 o_size_no_padding. */
+#define AUDIO_LEVEL_SIZE_NO_PADDING (sizeof(audio_level_s) - 0)
+
+// NOLINTNEXTLINE
+static constexpr size_t audio_level_SIZE_NO_PADDING_CONST { AUDIO_LEVEL_SIZE_NO_PADDING };
+
 #endif /* UORB_TOPIC_AUDIO_LEVEL_H_ */

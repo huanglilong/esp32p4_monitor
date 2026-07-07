@@ -16,13 +16,19 @@
 typedef struct ulog_state_s
 {
     uint64_t                 timestamp;  ///< @brief
-    bool                     logging;  ///< @brief
     char                     filepath[128];  ///< @brief
+    bool                     logging;  ///< @brief
 } ulog_state_s;
 
 #define ULOG_STATE_SIZE sizeof(ulog_state_s)
 
 // NOLINTNEXTLINE
 static constexpr size_t ulog_state_SIZE_CONST { ULOG_STATE_SIZE };
+
+/** Size without trailing _padding (for ULog writer). Matches PX4 o_size_no_padding. */
+#define ULOG_STATE_SIZE_NO_PADDING (sizeof(ulog_state_s) - 7)
+
+// NOLINTNEXTLINE
+static constexpr size_t ulog_state_SIZE_NO_PADDING_CONST { ULOG_STATE_SIZE_NO_PADDING };
 
 #endif /* UORB_TOPIC_ULOG_STATE_H_ */

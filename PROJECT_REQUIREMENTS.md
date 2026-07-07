@@ -132,7 +132,7 @@
 | R19 | **Flutter File Manager** | Flutter App Settings 页新增文件管理：目录浏览/导航、下载、删除，含确认弹窗 | ✅ |
 | R20 | **CameraStream JPEG 快照** | `/api/capture_image` 端点返回最新 JPEG 帧 (stream handler 每帧缓存到 `_last_jpeg_buf`, mutex 保护) | ✅ |
 | R21 | **CameraStream 内联人体检测** | MJPEG stream_handler 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
-| R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, ~5-8KB/帧, 2fps)；Web API `/api/camera_record` 控制启停；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
+| R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, ~5-8KB/帧, 2fps)；Web API `/api/camera_record` 控制启停；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`orb_metadata.o_size_no_padding` (PX4 惯例) 使 ULog writer 不写尾部 padding 字节，修复 pyulog 兼容性；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
 | S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
 | S87 | **AudioDriver deinit mutex 删除竞态** | `deinit()` 先置空 codec handles + yield 让 in-flight 操作退出，再安全删除 `_codec_mutex`；同时重置 `_vol_pub` 防止重启用 stale handle | ✅ |
 | S88 | **AudioDriver set_volume stale publish** | codec mutex 超时时跳过 uORB publish，避免发布未实际应用的音量值 | ✅ |
@@ -265,7 +265,7 @@
 | # | 需求 | 说明 |
 |---|------|------|
 | P3 | **Camera App 录像功能** | 视频录制到 SD 卡（已通过 R22 ULog 录制部分实现） |
-| P3b | **pyulog 兼容性修复** | pyulog 1.2.3 在移除 trailing `_padding` 后计算 `max_data_size`，导致所有含 padding 的 topic 被标记为 corrupt。当前 workaround: `tools/ulog_extract_frames.py` 脚本。根本修复: 改 ULog writer 逐字段序列化（去掉 padding 字节），或等 pyulog 上游修复 |
+| P3b | **pyulog 兼容性修复** | ~~pyulog 1.2.3 在移除 trailing `_padding` 后计算 `max_data_size`，导致所有含 padding 的 topic 被标记为 corrupt。~~ ✅ 已修复：采用 PX4 `o_size_no_padding` 方案 — `orb_metadata` 新增 `o_size_no_padding` 字段，ULog writer DATA 消息写 `o_size_no_padding` 字节（不含尾部 padding），pyulog `max_data_size` 与 `o_size_no_padding` 一致 |
 | P4 | **Camera 检测框平滑** | EMA 或 Kalman filter 减少检测框抖动 |
 | P5 | **ROI 区域检测** | 只检测画面中心区域，减少误报 |
 

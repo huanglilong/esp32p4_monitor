@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """
-Extract camera JPEG frames from ULog (.ulg) files.
+Extract camera JPEG frames from ULog (.ulg) files and optionally create video.
 
-This script works around a pyulog bug where trailing _padding fields
-cause max_data_size to be underestimated, marking valid data as corrupt.
+This script parses ULog binary format directly to extract JPEG frames
+from camera_frame topics. It handles the ULog format correctly,
+including topics where the ULog writer omits trailing _padding bytes
+(PX4 o_size_no_padding convention).
 
 Usage:
     python3 ulog_extract_frames.py input.ulg [--output-dir frames/] [--verbose]
+    python3 ulog_extract_frames.py input.ulg --video              # extract + create MP4
+    python3 ulog_extract_frames.py input.ulg --video --framerate 5 # custom framerate
 
 Output:
     - Extracted JPEG files: frame_NNNNN.jpg
     - Summary: frame count, dimensions, sizes
-    - Optional: FFmpeg command to create video
+    - Optional: MP4 video via FFmpeg
 """
 
 import struct
 import argparse
 import os
 import sys
+import shutil
+import subprocess
 
 
 def extract_camera_frames(ulg_path, output_dir, verbose=False):
@@ -116,7 +122,8 @@ def extract_camera_frames(ulg_path, output_dir, verbose=False):
                 #   uint16_t jpeg_size     (offset 16, 2 bytes)
                 #   uint8_t  format        (offset 18, 1 byte)
                 #   uint8_t  jpeg_data[8192] (offset 19, up to 8192 bytes)
-                #   uint8_t  _padding0[5]  (tail padding)
+                # Note: ULog writer uses o_size_no_padding, so trailing
+                # _padding bytes are NOT written to the file.
                 payload = data[scan_pos+5:scan_pos+3+msg_size]
 
                 if len(payload) < 19:
@@ -154,11 +161,52 @@ def extract_camera_frames(ulg_path, output_dir, verbose=False):
     return frame_count
 
 
+def generate_video(frames_dir, output_path, framerate, verbose=False):
+    """Generate MP4 video from extracted JPEG frames using FFmpeg."""
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        print("Error: ffmpeg not found in PATH. Install FFmpeg to use --video.")
+        return False
+
+    cmd = [
+        ffmpeg, '-y',
+        '-framerate', str(framerate),
+        '-i', os.path.join(frames_dir, 'frame_%06d.jpg'),
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        output_path,
+    ]
+
+    if verbose:
+        print(f"\nRunning: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            size_kb = os.path.getsize(output_path) / 1024
+            print(f"Video created: {output_path} ({size_kb:.1f} KB)")
+            return True
+        else:
+            print(f"FFmpeg error:\n{result.stderr[-500:]}" if result.stderr else "FFmpeg failed")
+            return False
+    except subprocess.TimeoutExpired:
+        print("Error: FFmpeg timed out after 120 seconds")
+        return False
+    except Exception as e:
+        print(f"Error running FFmpeg: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description='Extract JPEG frames from ULog camera recording')
     parser.add_argument('input', help='Input ULog (.ulg) file path')
     parser.add_argument('--output-dir', '-o', default=None,
                         help='Output directory for JPEG frames (default: <input>_frames/)')
+    parser.add_argument('--no-video', action='store_true',
+                        help='Skip video generation (only extract JPEG frames)')
+    parser.add_argument('--framerate', '-r', type=float, default=2,
+                        help='Video framerate in fps (default: 2)')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Print detailed frame info')
     args = parser.parse_args()
@@ -179,8 +227,18 @@ def main():
 
     if frame_count > 0:
         print(f"\nExtracted {frame_count} frames to {output_dir}/")
-        print(f"\nTo create video with FFmpeg:")
-        print(f'  ffmpeg -framerate 2 -i {output_dir}/frame_%06d.jpg -c:v libx264 -pix_fmt yuv420p output.mp4')
+
+        if not args.no_video:
+            base = os.path.splitext(args.input)[0]
+            video_path = base + '.mp4'
+            if not generate_video(output_dir, video_path, args.framerate, args.verbose):
+                print(f"\nTo create video manually with FFmpeg:")
+                print(f'  ffmpeg -framerate {args.framerate} -i {output_dir}/frame_%06d.jpg '
+                      f'-c:v libx264 -pix_fmt yuv420p output.mp4')
+        else:
+            print(f"\nTo create video with FFmpeg:")
+            print(f'  ffmpeg -framerate {args.framerate} -i {output_dir}/frame_%06d.jpg '
+                  f'-c:v libx264 -pix_fmt yuv420p output.mp4')
     else:
         print("\nNo camera frames found in ULog file")
         sys.exit(1)

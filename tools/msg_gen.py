@@ -172,32 +172,29 @@ def _format_string(spec: MsgSpec) -> str:
     Generate the ULog format string for a topic.
     Format: "topic_name:type0 name0;type1 name1;..."
     
-    Per PX4 ULog spec, padding fields named `_paddingN` are ignored by
-    readers. However, pyulog only strips TRAILING _padding fields —
-    inter-field _padding entries cause field offset misalignment.
+    Fields are listed in .msg declaration order (same as C struct layout),
+    with explicit _padding fields inserted to match compiler struct alignment.
+    This ensures pyulog's field offsets (computed from format string order)
+    match the actual C struct binary layout.
     
-    Strategy: reorder fields by descending alignment to eliminate
-    inter-field padding, then append tail _padding only. This produces
-    a format string whose total size matches sizeof(struct) and whose
-    field offsets are consistent with the binary data.
+    pyulog compatibility: pyulog strips trailing _padding fields before
+    calculating max_data_size. The ULog writer must write only
+    o_size_no_padding bytes (sizeof - trailing padding) per DATA message,
+    so that data_size <= pyulog's max_data_size. This matches PX4's
+    convention (orb_metadata.o_size_no_padding).
     
-    Note: The C struct retains the .msg declaration order (with compiler
-    padding), but the format string uses a different field order. This is
-    valid because pyulog reads fields by type+name, not by declaration
-    order. The key invariant is: format_string_total_size == sizeof(struct).
+    Returns:
+        (format_string, padding_end_size) tuple
     """
-    # Sort fields by descending alignment to eliminate inter-field padding
-    sorted_fields = sorted(spec.fields, key=lambda f: (-f.alignment, f.name))
-    
     max_align = max((f.alignment for f in spec.fields), default=1)
     
     parts = [f"{spec.topic_name}:"]
     offset = 0
     padding_idx = 0
     
-    for f in sorted_fields:
+    for f in spec.fields:
         field_align = f.alignment
-        # Insert padding if current offset doesn't satisfy field alignment
+        # Insert inter-field padding if current offset doesn't satisfy alignment
         if field_align > 1 and (offset % field_align) != 0:
             pad_bytes = field_align - (offset % field_align)
             base = TYPE_MAP.get('uint8', 'uint8_t')
@@ -212,13 +209,15 @@ def _format_string(spec: MsgSpec) -> str:
             parts.append(f"{base} {f.name};")
         offset += f.size
     
-    # Tail padding: struct must be aligned to its largest field alignment
+    # Trailing padding: struct must be aligned to its largest field alignment
+    padding_end_size = 0
     if max_align > 1 and (offset % max_align) != 0:
         pad_bytes = max_align - (offset % max_align)
         base = TYPE_MAP.get('uint8', 'uint8_t')
         parts.append(f"{base}[{pad_bytes}] _padding{padding_idx};")
+        padding_end_size = pad_bytes
     
-    return ''.join(parts)
+    return (''.join(parts), padding_end_size)
 
 
 # ────────────────────────────────────────────────────────────
@@ -227,7 +226,7 @@ def _format_string(spec: MsgSpec) -> str:
 
 def _render_header(spec: MsgSpec) -> str:
     guard = _guard_name(spec.topic_name)
-    fmt_str = _format_string(spec)
+    fmt_str, padding_end_size = _format_string(spec)
     lines = [_license_header(),
              _include_guard_open(guard),
              '#include <cstdint>\n',
@@ -251,7 +250,11 @@ def _render_header(spec: MsgSpec) -> str:
         f'}} {spec.topic_name}_s;\n\n'
         f'#define {spec.topic_name.upper()}_SIZE sizeof({spec.topic_name}_s)\n\n'
         f'// NOLINTNEXTLINE\n'
-        f'static constexpr size_t {spec.topic_name}_SIZE_CONST {{ {spec.topic_name.upper()}_SIZE }};\n'
+        f'static constexpr size_t {spec.topic_name}_SIZE_CONST {{ {spec.topic_name.upper()}_SIZE }};\n\n'
+        f'/** Size without trailing _padding (for ULog writer). Matches PX4 o_size_no_padding. */\n'
+        f'#define {spec.topic_name.upper()}_SIZE_NO_PADDING (sizeof({spec.topic_name}_s) - {padding_end_size})\n\n'
+        f'// NOLINTNEXTLINE\n'
+        f'static constexpr size_t {spec.topic_name}_SIZE_NO_PADDING_CONST {{ {spec.topic_name.upper()}_SIZE_NO_PADDING }};\n'
     )
 
     lines.append(_include_guard_close(guard))
@@ -263,7 +266,7 @@ def _render_header(spec: MsgSpec) -> str:
 # ────────────────────────────────────────────────────────────
 
 def _render_source(spec: MsgSpec) -> str:
-    fmt_str = _format_string(spec)
+    fmt_str, padding_end_size = _format_string(spec)
     lines = [
         _license_header(),
         f'#include "{spec.topic_name}.h"\n',
@@ -272,7 +275,7 @@ def _render_source(spec: MsgSpec) -> str:
 
     for topic in spec.all_topic_names:
         lines.append(
-            f'ORB_TOPIC_DEFINE({topic}, {spec.topic_name}_s, {spec.queue_depth}, "{fmt_str}");\n'
+            f'ORB_TOPIC_DEFINE({topic}, {spec.topic_name}_s, {spec.queue_depth}, "{fmt_str}", {padding_end_size});\n'
         )
 
     return ''.join(lines)
