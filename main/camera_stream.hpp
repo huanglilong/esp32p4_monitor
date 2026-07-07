@@ -13,10 +13,6 @@
 class COCODetect;  // Forward declaration
 class PPAPreprocessor;  // Forward declaration
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /**
  * @brief Write OV5647 VTS registers via I2C to reduce frame rate from ~50fps to ~2fps.
  *
@@ -31,6 +27,9 @@ extern "C" {
  *
  * Must be called after example_video_init() (sensor I2C bus is available).
  */
+#ifdef __cplusplus
+extern "C"
+#endif
 void ov5647_set_vts_2fps(void);
 
 /**
@@ -172,7 +171,3 @@ private:
     /* mDNS */
     bool                   _mdns_running;
 };
-
-#ifdef __cplusplus
-}
-#endif
