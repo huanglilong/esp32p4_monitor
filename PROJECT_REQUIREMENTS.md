@@ -213,6 +213,16 @@
 | P1 | **PPA 硬件加速检测预处理** | `PPAPreprocessor` 类: PPA SRM client 执行 RGB565LE→BGR888 resize (800×800→300×300, PPA 4-bit frac 量化 0.4→0.375, pic_w=actual_w 确保行步长连续), COCODetect 内部 BGR888→letterbox→RGB888_QINT8 (含 R↔B swap); PhoneAppCamera + CameraStream 均启用; 自动降级 CPU fallback; 检测框按 actual_width/height rescale | ✅ |
 | S155 | **SystemMonitor 导致 LCD 闪烁** | 根因: `_sample()` 每 5s 调用 `uxTaskGetSystemState()` → `vTaskSuspendAll()` 暂停两核 FreeRTOS 调度器 → LVGL task 的 `ulTaskNotifyTake()` 无法 block → `lv_timer_handler()` 异常高频调用 + `xTaskResumeAll()` 恢复时上下文切换爆发 → 画面闪烁。修复: ① 移除 `heap_caps_print_heap_info()` ② **核心修复: 用 `xTaskGetIdleTaskHandleForCore()` + `vTaskGetInfo()` 替代 `uxTaskGetSystemState()`** — 前者仅读取每核 idle task 累计运行时间，不暂停调度器，无闪烁。per-core busy CPU% = 100% - idle%。③ 移除死代码 (静态 buffer、`_fill_top_tasks`、`_find_prev_runtime`、`_is_idle_task` 等 ~2.4KB SRAM 回收) ④ `system_stats.msg` 移除 top-6 task 字段，新增 `core0_cpu_pct` / `core1_cpu_pct` ⑤ 启用 `CONFIG_FREERTOS_INCLUDE_xTaskGetIdleTaskHandle=y` | ✅ |
 | S156 | **音乐卡顿 — 内部 SRAM 不足** | Camera Stream + 音乐播放时 `ESP_GMF_ASMP_DEC: Not enough memory for out` + 内部 SRAM 85.76% (54KB free / 386KB)。根因: LVGL IRAM 占用 ~64KB 内部 SRAM + LWIP 22 sockets × 64KB TCP 缓冲区 pbuf 链头占 ~60KB。修复: ① 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → 代码移至 PSRAM XIP, 释放 **~64KB** (主要修复) ② `task_stack_in_ext=true` 将 ASP 任务栈移至 PSRAM (-8KB) ③ LWIP `TCP_SND_BUF/WND` 65535→32768, httpd `max_open_sockets` 7→3/2/3 (-30KB pbuf 头部) | ✅ |
+| S160 | **PhoneAppCameraStream FPS no-op** | `_fps = (_fps > 0) ? _fps : 0` 是空操作，uORB fps_stats 中的实际 FPS 值从未使用。修复: 当 uORB 有新数据时 `_fps = fps_data.fps` | ✅ |
+| S161 | **_detect_in_buf null-free** | `_init_detection()` 失败路径 `heap_caps_free(_detect_in_buf)` 无 null 检查，PPA 路径下为 nullptr。修复: 添加 null 检查，匹配 `_deinit_detection()` 模式 | ✅ |
+| S162 | **Music 冗余 ASP 清理** | `close()` 中 `_stop()` 已调用 `_destroy_player_handle()`，后续 `if(_asp_handle)` 块是死代码。修复: 移除冗余清理，保留注释说明依赖顺序 | ✅ |
+| S163 | **SD 路径常量统一** | `RECORD_DIR`/`MUSIC_DIR`/`REC_DIR` 三个文件各自定义 `"/sdcard"`。修复: 统一使用 `example_config.h` 中的 `SDMMC_MOUNT_POINT` | ✅ |
+| S164 | **VOLUME/BRIGHTNESS 常量统一** | `VOLUME_MIN/MAX/DEFAULT` 和 `BRIGHTNESS_MIN/MAX/DEFAULT` 在 `phone_app_settings.hpp` 和 `web_config_server.cpp` 重复定义。修复: 移至 `example_config.h` 共享宏 | ✅ |
+| S165 | **WIFI_CONNECTED_BIT 共享** | `WIFI_CONNECTED_BIT` 在 `phone_app_settings.cpp` 和 `web_config_server.cpp` 重复定义。修复: 移至 `example_config.h` | ✅ |
+| S166 | **Logger ring buffer memcpy 优化** | 字节逐个拷贝+取模运算改为 wrap-aware memcpy (1-2次 memcpy)，writer task 批量从 128B→512B | ✅ |
+| S167 | **SystemMonitor heap 总大小缓存** | `heap_caps_get_total_size()` 每次采样都调用 (运行时常量)。修复: `init()` 中缓存一次 | ✅ |
+| S168 | **camera_stream.hpp extern "C" 修复** | 整个 `CameraStream` C++ 类被 `extern "C"` 包裹，禁用 C++ name mangling。修复: 仅 `ov5647_set_vts_2fps()` C 函数使用 `extern "C"` | ✅ |
+| S169 | **heap_caps_free 一致性** | `heap_caps_*` 分配的内存用 `free()` 释放。修复: 统一使用 `heap_caps_free()` | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -296,7 +306,7 @@
 | K2 | 🟢 低 | Audio 无用的 PSRAM 分配 (1920B) | 开销极小 |
 | K3 | 🟢 低 | Music 部分低优先级边界情况 | 见 project_design.md §4.10 |
 | K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已生效** | 所有 6 个端点均已加 `__cam_running()` 检查 (2026-07-02) |
-| K5 | 🟢 低 | CameraStream stream_handler 代码重复 | 检测和流处理逻辑混合，可提取为独立函数 |
+| K5 | 🟢 低 | CameraStream/web_config_server 大文件模块化 | 单文件超 1800/87KB，可拆分为独立模块 (V4L2Pipeline, AudioRecorder, WiFiManager 等)。部分已提取辅助方法 (S159) |
 | K6 | 🟢 低 | Logger 重入风险 | esp_log_set_vprintf 回调中调用 ESP_LOG 可能递归 |
 | K7 | ✅ 已修复 | Web `s_audio_running` 跨核竞态 | `volatile bool` → `std::atomic<bool>` (v2.4) |
 
@@ -370,6 +380,7 @@
 | 2026-07-03 | +S49 Driver 模块拆分: PeripheralManager→thin facade + AudioDriver + SDCardDriver + CameraDriver (claim/release API) |
 | 2026-07-03 | +S44~S48 Bug 修复 (gettimeofday overflow, Music _stop ASP 泄漏, SD LDO 检查, web task 干净退出) +PeripheralManager facade 模块化重构 (消除 extern 全局变量) |
 | 2026-07-03 | +S42 uORB 消息总线（FreeRTOS Queue 实现） +S43 .msg 自动生成 pipeline +P11 IPC 迁移计划 |
+| 2026-07-07 | +S160~S169 代码优化与清理: PhoneAppCameraStream FPS no-op修复(S160), _detect_in_buf null-check(S161), Music冗余ASP清理(S162), SD路径常量统一(S163), VOLUME/BRIGHTNESS常量统一(S164), WIFI_CONNECTED_BIT共享(S165), Logger ring buffer memcpy优化(S166), SystemMonitor heap总大小缓存(S167), camera_stream.hpp extern "C"修复(S168), heap_caps_free一致性(S169) |
 | 2026-07-07 | +R22 Camera Frame ULog 录制: JPEG 帧通过 camera_frame uORB topic 写入 .ulg 文件, Web API /api/camera_record 控制, ULog ring buffer 64KB + PSRAM data_buf |
 | 2026-07-06 | +R20 CameraStream JPEG 快照 (`/api/capture_image`), +R21 CameraStream 内联人体检测 (每3帧 COCODetect, 检测框绘制在 JPEG 帧上) |
 | 2026-07-06 | +S130~S148 线程安全审查修复: SDCardDriver/AudioDriver atomic (S130-S131), CameraDriver mutable (S132), JPEG encoder init race (S133), uORB orb_init/ABA (S134-S135), Settings bool atomic (S136), AudioDriver _vol_pub atomic (S137), CameraStream FPS atomic (S138), AudioDriver deinit 竞态 (S139), NVS cache mutex (S140), Logger ring buffer 活锁 (S141), V4L2 triple buffer (S142), ULog storage path/session/refactor (S143-S145), nvs_write_i32 rename (S146), MJPEG+detection fix (S147), Camera info JSON (S148) |

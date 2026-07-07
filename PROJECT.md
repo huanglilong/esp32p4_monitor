@@ -42,7 +42,7 @@ esp32p4_monitor/
 │   ├── CMakeLists.txt          # 主组件编译配置 (C++)
 │   ├── idf_component.yml       # 组件依赖声明
 │   ├── Kconfig.projbuild           # 项目 Kconfig 菜单
-│   ├── example_config.h        # 引脚和参数宏定义
+│   ├── example_config.h        # 引脚/参数/NVS键/音量亮度常量/共享mDNS API 宏定义
 │   ├── main.cpp                    # 主程序 (C++): 多板支持, 按需初始化
 │   ├── peripherals.hpp             # PeripheralManager facade — 委托给独立 Driver 模块
 │   ├── peripherals.cpp             # PeripheralManager 实现 (thin facade)
