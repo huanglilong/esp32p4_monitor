@@ -228,6 +228,8 @@
 | S172 | **SystemMonitor stop() eTaskGetState 竞态** | `stop()` 使用 `eTaskGetState(handle)` 检查已自删任务，与 idle task TCB 回收竞态。修复: 新增 `_task_exited` atomic flag，任务退出前设置，stop() 轮询替代 eTaskGetState (遵循 S74 模式)；轮询超时使用 `CONFIG_APP_SYS_MONITOR_INTERVAL_MS + 500` 确保覆盖一个完整任务周期 | ✅ |
 | S173 | **bsp_i2c_get_handle extern 去重** | `audio_driver.cpp` 和 `camera_stream.cpp` 各自声明 `extern "C" bsp_i2c_get_handle()`。修复: 统一定义在 `example_config.h`，移除重复声明 | ✅ |
 | S174 | **AudioDriver PA GPIO 硬编码** | `gpio_config_t` 的 `pin_bit_mask` 使用字面量 `(1ULL << 53)`，而 `AUDIO_PA_GPIO` 宏已存在。修复: 使用 `(1ULL << AUDIO_PA_GPIO)` 宏 | ✅ |
+| S175 | **TCP 窗口/发送缓冲增大** | Camera MJPEG 流通过 SDIO 传输大量 TCP 数据，小窗口导致频繁小包传输与 C6 控制消息竞争。修复: TCP SND_BUF/WND 从 32KB 增至 64KB | ✅ |
+| S176 | **Core 1 负载过高** | Core1 占 27% vs Core0 占 8%。原因: httpd (3实例) 未绑核默认跑 Core1 与 LVGL 竞争；LVGL timer 5ms 过于频繁。修复: (1) httpd core_id=0 (2) LVGL timer_period 5→20ms | ✅ |
 
 ### 2.3 系统性能监控
 

@@ -218,7 +218,7 @@ static void on_clock_update_timer_cb(struct _lv_timer_t *t);
         .task_stack = 10 * 1024,  \
         .task_affinity = 1,       \
         .task_max_sleep_ms = 500, \
-        .timer_period_ms = 5,     \
+        .timer_period_ms = 20,    \
     }
 
 /*============================================================================

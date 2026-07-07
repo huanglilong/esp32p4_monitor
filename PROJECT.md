@@ -872,4 +872,6 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - **SystemMonitor stop() eTaskGetState 竞态** (S172): 用 `_task_exited` atomic flag 替代 `eTaskGetState()`，轮询超时基于 `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` 确保覆盖完整任务周期
   - **bsp_i2c_get_handle 声明去重** (S173): 移除 audio_driver.cpp/camera_stream.cpp 中的重复 `extern "C"` 声明，统一定义在 `example_config.h`
   - **AudioDriver PA GPIO 宏化** (S174): `gpio_config_t` 中 `(1ULL << 53)` 替换为 `(1ULL << AUDIO_PA_GPIO)`
+  - **TCP 窗口/发送缓冲增大** (S175): TCP SND_BUF/WND 从 32KB 增至 64KB，减少 SDIO 小包竞争
+  - **Core 负载均衡** (S176): httpd 3 实例绑定 Core 0 (core_id=0)，LVGL timer 周期 5→20ms，降低 Core 1 负载
   - **CameraStream stream_handler 重构**: 提取 `_draw_detection_boxes_on_ppa()`, `_draw_detection_boxes_on_rgb565()`, `_send_mjpeg_part()`, `_save_jpeg_snapshot()`, `_update_fps_stats()` 辅助方法，减少代码重复

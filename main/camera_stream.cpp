@@ -1512,6 +1512,7 @@ bool CameraStream::_start_http_server(void)
      * Default is 7 — too many for 3 httpd instances. 3 is sufficient for
      * 1 browser tab (parallel API + resource requests). */
     config.max_open_sockets = 3;
+    config.core_id = 0;  /* Pin to Core 0 — Core 1 runs LVGL rendering */
     /* All registered URIs are exact paths — use default exact-match
      * instead of wildcard matching (faster, more secure). */
 

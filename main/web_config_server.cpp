@@ -1900,6 +1900,7 @@ static void web_config_task(void *arg)
                                       stack vars + ESP_LOGI → uart_write → recursive mutex
                                       needs deep call chain; logger vprintf hook adds more */
     config.lru_purge_enable = true;
+    config.core_id = 0;  /* Pin to Core 0 — Core 1 runs LVGL rendering */
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server on port %d", WEB_CONFIG_PORT);
