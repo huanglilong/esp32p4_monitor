@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.22)
 
+# ─────────────────────────────────────────────────────────────────
+#  ESP-Claw component directories
+#  ESP-IDF only scans direct children of components/, so we add
+#  the nested claw module/capability/common dirs as extra search paths.
+#  Must be set BEFORE include(project.cmake).
+# ─────────────────────────────────────────────────────────────────
+set(EXTRA_COMPONENT_DIRS
+    "${CMAKE_SOURCE_DIR}/components/claw/claw_modules"
+    "${CMAKE_SOURCE_DIR}/components/claw/claw_capabilities"
+    "${CMAKE_SOURCE_DIR}/components/claw/common"
+)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32p4_monitor)
 
