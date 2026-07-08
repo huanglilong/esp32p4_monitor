@@ -42,3 +42,4 @@
 2. **one issue, one commit** — fix each issue in its own separate commit. Do not combine fixes for multiple issues into one commit. Fix them promptly, document the changes made, and build to verify each fix individually.
 3. after fixed all issues, run /review for overall review and check if any issues remain, if so, repeat step 1-3 until reach a max of 3 rounds of review, if still have issues, report to user for further instructions
 4. update all relevant documentation files (*.md)
+5. flash the code to the device, read ~/.zshrc and use alias:  espidf_clean && espidf_bfm
