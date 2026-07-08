@@ -675,13 +675,16 @@ void CameraStream::_model_load_task_fn(void *arg)
     ESP_LOGI(TAG, "Model load task starting...");
 
     /* Create COCODetect instance (YOLO11n 320x320 for P4, lazy load) */
-    cs->_detector = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);
-    if (!cs->_detector) {
+    COCODetect *det = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);
+    cs->_detector.store(det, std::memory_order_release);
+    if (!det) {
         ESP_LOGE(TAG, "Failed to create COCODetect instance");
+        cs->_model_load_task_exited.store(true, std::memory_order_release);
+        cs->_model_load_task.store(nullptr, std::memory_order_release);
         vTaskDelete(NULL);
         return;
     }
-    cs->_detector.load()->set_score_thr(cs->PERSON_SCORE_THRESHOLD);
+    det->set_score_thr(cs->PERSON_SCORE_THRESHOLD);
 
     /* Warm-up inference: trigger model loading now so the stream loop
      * isn't blocked later. PPA output buffer (all zeros) is used as
@@ -718,7 +721,7 @@ void CameraStream::_model_load_task_fn(void *arg)
                 .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
             };
         }
-        cs->_detector.load()->run(img);  /* First call loads model (~11s) */
+        det->run(img);  /* First call loads model (~11s) */
         if (dummy_buf) heap_caps_free(dummy_buf);
     }
     cs->_model_ready = true;
@@ -852,7 +855,15 @@ void CameraStream::_deinit_detection(void)
     _detect_in_size = 0;
     _detect_available.store(false, std::memory_order_release);
     _model_ready = false;
-    _detect_results.clear();
+    {
+        /* Hold mutex for consistency with locking discipline — all other
+         * _detect_results accesses hold _detect_mutex. Safe without it
+         * here because stop() already waited for tasks to finish, but
+         * mutex prevents future regressions if ordering changes. */
+        xSemaphoreTake(_detect_mutex, portMAX_DELAY);
+        _detect_results.clear();
+        xSemaphoreGive(_detect_mutex);
+    }
     ESP_LOGI(TAG, "Detection deinitialized");
 }
 
