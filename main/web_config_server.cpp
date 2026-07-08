@@ -122,7 +122,7 @@ static std::atomic<bool>    s_playing{false};
 static std::atomic<bool>    s_fm_busy{false};
 
 /* uORB recording_state publisher — notifies PhoneAppMusic when web recording is active */
-static orb_advert_t     s_rec_pub = ORB_ADVERT_INVALID;
+static std::atomic<orb_advert_t> s_rec_pub{ORB_ADVERT_INVALID};
 
 /* Mutex to serialize audio operations across concurrent HTTP handlers.
  * Without this, two clients hitting /api/record and /api/play simultaneously
@@ -1198,16 +1198,18 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     }
 
     /* Publish recording_state.active=true so PhoneAppMusic can stop its playback */
-    if (s_rec_pub < 0) {
-        s_rec_pub = orb_advertise(ORB_ID(recording_state));
+    orb_advert_t pub = s_rec_pub.load(std::memory_order_acquire);
+    if (pub < 0) {
+        pub = orb_advertise(ORB_ID(recording_state));
+        s_rec_pub.store(pub, std::memory_order_release);
     }
-    if (s_rec_pub >= 0) {
+    if (pub >= 0) {
         struct recording_state_s rs = {};
         rs.timestamp = esp_timer_get_time();
         rs.active = true;
         rs.bytes_written = 0;
         rs.elapsed_ms = 0;
-        orb_publish(ORB_ID(recording_state), s_rec_pub, &rs);
+        orb_publish(ORB_ID(recording_state), pub, &rs);
     }
 
     audio_unlock();
@@ -1232,13 +1234,16 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
     s_is_recording = false;
 
     /* Publish recording_state.active=false so PhoneAppMusic can resume playback */
-    if (s_rec_pub >= 0) {
-        struct recording_state_s rs = {};
-        rs.timestamp = esp_timer_get_time();
-        rs.active = false;
-        rs.bytes_written = s_rec_bytes.load(std::memory_order_relaxed);
-        rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms));
-        orb_publish(ORB_ID(recording_state), s_rec_pub, &rs);
+    {
+        orb_advert_t pub = s_rec_pub.load(std::memory_order_acquire);
+        if (pub >= 0) {
+            struct recording_state_s rs = {};
+            rs.timestamp = esp_timer_get_time();
+            rs.active = false;
+            rs.bytes_written = s_rec_bytes.load(std::memory_order_relaxed);
+            rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms));
+            orb_publish(ORB_ID(recording_state), pub, &rs);
+        }
     }
 
     audio_unlock();  /* Release lock before blocking _stop_audio_task_if_running */
