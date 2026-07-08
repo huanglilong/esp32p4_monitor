@@ -16,6 +16,14 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32p4_monitor)
 
 # ─────────────────────────────────────────────────────────────────
+#  Suppress -Werror warnings in managed components that we cannot
+#  fix upstream (strncpy truncation false positives in mcp-c-sdk).
+# ─────────────────────────────────────────────────────────────────
+if(TARGET __idf_espressif__mcp-c-sdk)
+    target_compile_options(__idf_espressif__mcp-c-sdk PRIVATE -Wno-stringop-truncation)
+endif()
+
+# ─────────────────────────────────────────────────────────────────
 #  uORB topic code generation from proto/*.msg
 #  Automatically runs on idf.py build when .msg files change.
 #  Regenerate manually:  idf.py uorb_topics

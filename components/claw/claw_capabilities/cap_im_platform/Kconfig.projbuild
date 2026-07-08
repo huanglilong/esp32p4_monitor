@@ -1,0 +1,36 @@
+menu "ESP-Claw IM Platform Channels"
+
+config APP_CLAW_CAP_IM_FEISHU
+    bool "Enable Feishu (Lark) IM channel"
+    default n
+    help
+        Enable the Feishu/Lark bot channel for ESP-Claw.
+        Uses WebSocket for inbound messages and REST API for outbound.
+        Requires Feishu App ID and App Secret to be configured.
+
+config APP_CLAW_CAP_IM_QQ
+    bool "Enable QQ IM channel"
+    default n
+    help
+        Enable the QQ bot channel for ESP-Claw.
+        Uses WebSocket for inbound messages and REST API for outbound.
+        Requires QQ App ID and App Secret to be configured.
+
+config APP_CLAW_CAP_IM_TG
+    bool "Enable Telegram IM channel"
+    default n
+    help
+        Enable the Telegram bot channel for ESP-Claw.
+        Uses long polling for inbound messages and Bot API for outbound.
+        Requires Telegram Bot Token to be configured.
+
+config APP_CLAW_CAP_IM_WECHAT
+    bool "Enable WeChat IM channel"
+    default n
+    help
+        Enable the WeChat iLink Bot channel for ESP-Claw.
+        Uses QR scan login and long polling for inbound messages.
+        Supports text and image sending (no generic file).
+        Requires bot_token obtained via QR login flow.
+
+endmenu
