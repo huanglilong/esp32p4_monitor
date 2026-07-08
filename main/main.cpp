@@ -53,6 +53,16 @@
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
     defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
 #include "cap_im_platform.h"
+#include "claw_core.h"
+#include "claw_cap.h"
+#include "claw_event_router.h"
+#include "claw_agent_mgr.h"
+#include "claw_session_mgr.h"
+#include "claw_memory.h"
+#include "claw_skill.h"
+#include "cap_llm_config.h"
+#include "cap_session_mgr.h"
+#include "cap_scheduler.h"
 #endif
 
 static const char *TAG = "monitor";
@@ -598,6 +608,97 @@ extern "C" void app_main(void)
 #endif /* CONFIG_APP_CLAW_CAP_IM_TG */
 
         ESP_LOGI(TAG, "ESP-Claw IM platform initialized");
+
+        /* ── ESP-Claw Agent Loop Init ── */
+        /* Load LLM config from NVS */
+        cap_llm_config_t llm_cfg = {};
+        bool llm_configured = false;
+        nvs_handle_t nvs_h;
+        if (nvs_open("claw_llm", NVS_READONLY, &nvs_h) == ESP_OK) {
+            char buf[320] = {0};
+            size_t len;
+            len = sizeof(buf);
+            if (nvs_get_str(nvs_h, "api_key", buf, &len) == ESP_OK && len > 1) {
+                strlcpy(llm_cfg.api_key, buf, sizeof(llm_cfg.api_key));
+                llm_configured = true;
+            }
+            len = sizeof(buf);
+            if (nvs_get_str(nvs_h, "provider", buf, &len) == ESP_OK) {
+                if (strcmp(buf, "openai") == 0) strlcpy(llm_cfg.backend_type, "openai_compatible", sizeof(llm_cfg.backend_type));
+                else if (strcmp(buf, "anthropic") == 0) strlcpy(llm_cfg.backend_type, "anthropic", sizeof(llm_cfg.backend_type));
+                else strlcpy(llm_cfg.backend_type, "openai_compatible", sizeof(llm_cfg.backend_type));
+            } else {
+                strlcpy(llm_cfg.backend_type, "openai_compatible", sizeof(llm_cfg.backend_type));
+            }
+            len = sizeof(buf);
+            if (nvs_get_str(nvs_h, "model", buf, &len) == ESP_OK) strlcpy(llm_cfg.model, buf, sizeof(llm_cfg.model));
+            else strlcpy(llm_cfg.model, "deepseek-chat", sizeof(llm_cfg.model));
+            len = sizeof(buf);
+            if (nvs_get_str(nvs_h, "base_url", buf, &len) == ESP_OK) strlcpy(llm_cfg.base_url, buf, sizeof(llm_cfg.base_url));
+            strlcpy(llm_cfg.auth_type, "bearer", sizeof(llm_cfg.auth_type));
+            strlcpy(llm_cfg.max_tokens, "4096", sizeof(llm_cfg.max_tokens));
+            nvs_close(nvs_h);
+        }
+
+        if (llm_configured) {
+            /* Initialize core framework */
+            claw_event_router_config_t er_cfg = {};
+            er_cfg.event_queue_len = 16;
+            er_cfg.task_stack_size = 8192;
+            er_cfg.task_priority = 5;
+            er_cfg.task_core = tskNO_AFFINITY;
+            er_cfg.default_route_messages_to_agent = true;
+            claw_event_router_init(&er_cfg);
+
+            claw_memory_config_t mem_cfg = {};
+            mem_cfg.session_root_dir = "/sdcard/claw/sessions";
+            mem_cfg.memory_root_dir = "/sdcard/claw/memory";
+            mem_cfg.max_message_chars = 4096;
+            claw_memory_init(&mem_cfg);
+
+            cap_session_mgr_set_session_root_dir("/sdcard/claw/sessions");
+
+            claw_skill_config_t skill_cfg = {};
+            skill_cfg.session_state_root_dir = "/sdcard/claw/skills";
+            skill_cfg.max_file_bytes = 32768;
+            claw_skill_init(&skill_cfg);
+            cap_llm_config_register_group();
+            cap_session_mgr_register_group();
+            cap_scheduler_register_group();
+
+            /* Create Agent with LLM config */
+            claw_core_config_t core_cfg = {};
+            core_cfg.api_key = llm_cfg.api_key;
+            core_cfg.backend_type = llm_cfg.backend_type;
+            core_cfg.model = llm_cfg.model;
+            core_cfg.base_url = llm_cfg.base_url[0] ? llm_cfg.base_url : NULL;
+            core_cfg.auth_type = llm_cfg.auth_type;
+            core_cfg.max_tokens = 4096;
+            core_cfg.timeout_ms = 30000;
+            core_cfg.supports_tools = true;
+            core_cfg.supports_vision = false;
+
+            claw_agent_mgr_config_t mgr_cfg = {
+                .core_config = &core_cfg,
+            };
+            claw_agent_mgr_init(&mgr_cfg);
+            const char *root_id = NULL;
+            claw_agent_mgr_create_root_agent(&root_id);
+
+            /* Start services */
+            claw_event_router_start();
+            claw_cap_start_all();
+
+            /* Bind outbound channels */
+            claw_event_router_register_outbound_binding("wechat", "cap_im_wechat");
+            claw_event_router_register_outbound_binding("telegram", "cap_im_tg");
+            claw_event_router_register_outbound_binding("feishu", "cap_im_feishu");
+            claw_event_router_register_outbound_binding("qq", "cap_im_qq");
+
+            ESP_LOGI(TAG, "ESP-Claw Agent Loop started (model: %s)", llm_cfg.model);
+        } else {
+            ESP_LOGI(TAG, "ESP-Claw: LLM not configured, Agent Loop skipped. Use Web Config to set API key.");
+        }
     }
 #endif /* IM channels enabled */
 

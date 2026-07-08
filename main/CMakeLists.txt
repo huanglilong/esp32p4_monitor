@@ -130,7 +130,18 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
 # ─────────────────────────────────────────────────────────────────
 if(CONFIG_APP_CLAW_CAP_IM_WECHAT OR CONFIG_APP_CLAW_CAP_IM_FEISHU OR
    CONFIG_APP_CLAW_CAP_IM_QQ OR CONFIG_APP_CLAW_CAP_IM_TG)
-    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::cap_im_platform)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE
+        idf::cap_im_platform
+        idf::claw_core
+        idf::claw_cap
+        idf::claw_event_router
+        idf::claw_manager
+        idf::claw_memory
+        idf::claw_skill
+        idf::cap_llm_config
+        idf::cap_session_mgr
+        idf::cap_scheduler
+    )
 endif()
 
 # Get LVGL component library to suppress warnings

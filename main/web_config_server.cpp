@@ -58,6 +58,10 @@
 #ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
 #include "cap_im_wechat.h"
 #endif
+#if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+#include "cap_im_platform.h"
+#endif
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include "driver/i2s_std.h"
@@ -433,6 +437,29 @@ static const char *WEB_UI_HTML =
 "</div>"
 "</div>"
 #endif
+"<div class=\"card\">"
+"<h2>AI Agent (LLM)</h2>"
+"<label>Provider</label>"
+"<select id=\"llm_provider\" style=\"width:100%;padding:10px 12px;border-radius:8px;"
+"border:1px solid #0f3460;background:#0f3460;color:#e0e0e0;font-size:14px;margin-bottom:12px\">"
+"<option value=\"deepseek\">DeepSeek</option>"
+"<option value=\"openai\">OpenAI</option>"
+"<option value=\"anthropic\">Anthropic</option>"
+"<option value=\"qwen\">Qwen (Bailian)</option>"
+"<option value=\"custom\">Custom</option>"
+"</select>"
+"<label>API Key</label>"
+"<input type=\"password\" id=\"llm_key\" placeholder=\"sk-...\" style=\"width:100%;padding:10px 12px;"
+"border-radius:8px;border:1px solid #0f3460;background:#0f3460;color:#e0e0e0;font-size:14px;margin-bottom:12px\">"
+"<label>Model</label>"
+"<input type=\"text\" id=\"llm_model\" placeholder=\"deepseek-chat\" style=\"width:100%;padding:10px 12px;"
+"border-radius:8px;border:1px solid #0f3460;background:#0f3460;color:#e0e0e0;font-size:14px;margin-bottom:12px\">"
+"<label>Base URL (optional)</label>"
+"<input type=\"text\" id=\"llm_url\" placeholder=\"https://api.deepseek.com\" style=\"width:100%;padding:10px 12px;"
+"border-radius:8px;border:1px solid #0f3460;background:#0f3460;color:#e0e0e0;font-size:14px;margin-bottom:12px\">"
+"<button onclick=\"saveLlmConfig()\">Save LLM Config</button>"
+"<div id=\"llm_status\" style=\"font-size:12px;color:#a0a0b0;margin-top:8px;min-height:16px\"></div>"
+"</div>"
 "<button onclick=\"saveSettings()\">Save Settings</button>"
 "<div id=\"status\"></div>"
 "<div style=\"margin-top:24px;padding-top:16px;border-top:1px solid #0f3460\">"
@@ -641,7 +668,7 @@ static const char *WEB_UI_HTML =
 "let j=await r.json();"
 "showStatus('ULog stopped','success');loadUlogStatus()}"
 "catch(e){showStatus('ULog error','error')}}"
-"loadStatus();"
+"loadStatus();loadLlmConfig();"
 #ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
 "let wxPollId=null;"
 "async function onWxLogin(){"
@@ -688,6 +715,25 @@ static const char *WEB_UI_HTML =
 "document.getElementById('btn_wx_login').disabled=false;"
 "document.getElementById('btn_wx_cancel').style.display='none'}"
 #endif
+"async function loadLlmConfig(){"
+"try{let r=await fetch('/api/llm/config');let j=await r.json();"
+"if(j.provider)document.getElementById('llm_provider').value=j.provider;"
+"if(j.api_key)document.getElementById('llm_key').placeholder='(saved)';"
+"if(j.model)document.getElementById('llm_model').value=j.model;"
+"if(j.base_url)document.getElementById('llm_url').value=j.base_url}"
+"catch(e){}}"
+"async function saveLlmConfig(){"
+"let d={provider:document.getElementById('llm_provider').value,"
+"api_key:document.getElementById('llm_key').value,"
+"model:document.getElementById('llm_model').value,"
+"base_url:document.getElementById('llm_url').value};"
+"try{let r=await fetch('/api/llm/config',{method:'POST',"
+"headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});"
+"let j=await r.json();"
+"document.getElementById('llm_status').textContent=j.ok?'LLM config saved ✅':'Save failed';"
+"document.getElementById('llm_key').placeholder='(saved)';"
+"document.getElementById('llm_key').value=''}"
+"catch(e){document.getElementById('llm_status').textContent='Network error'}}"
 "</script></body></html>";
 
 /*============================================================================
@@ -2155,6 +2201,73 @@ static esp_err_t h_wx_login_persist(httpd_req_t *req)
 #endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
 
 /*============================================================================
+ * LLM/AI Agent Configuration API
+ *============================================================================*/
+/* GET /api/llm/config — return current LLM config from NVS */
+static esp_err_t h_llm_config_get(httpd_req_t *req)
+{
+    cJSON *resp = cJSON_CreateObject();
+    nvs_handle_t nvs_h;
+    if (nvs_open("claw_llm", NVS_READONLY, &nvs_h) == ESP_OK) {
+        char buf[320] = {0};
+        size_t len;
+        len = sizeof(buf);
+        if (nvs_get_str(nvs_h, "provider", buf, &len) == ESP_OK) cJSON_AddStringToObject(resp, "provider", buf);
+        len = sizeof(buf);
+        if (nvs_get_str(nvs_h, "api_key", buf, &len) == ESP_OK) cJSON_AddStringToObject(resp, "api_key", buf);
+        len = sizeof(buf);
+        if (nvs_get_str(nvs_h, "model", buf, &len) == ESP_OK) cJSON_AddStringToObject(resp, "model", buf);
+        len = sizeof(buf);
+        if (nvs_get_str(nvs_h, "base_url", buf, &len) == ESP_OK) cJSON_AddStringToObject(resp, "base_url", buf);
+        nvs_close(nvs_h);
+    }
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
+/* POST /api/llm/config — save LLM config to NVS */
+static esp_err_t h_llm_config_set(httpd_req_t *req)
+{
+    char *body = (char *)calloc(1, req->content_len + 1);
+    if (!body) return ESP_ERR_NO_MEM;
+    int ret = httpd_req_recv(req, body, req->content_len);
+    if (ret <= 0) { free(body); return ESP_FAIL; }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) return ESP_FAIL;
+
+    nvs_handle_t nvs_h;
+    esp_err_t err = nvs_open("claw_llm", NVS_READWRITE, &nvs_h);
+    if (err != ESP_OK) { cJSON_Delete(root); return ESP_FAIL; }
+
+    cJSON *item;
+    if ((item = cJSON_GetObjectItemCaseSensitive(root, "provider")) && cJSON_IsString(item))
+        nvs_set_str(nvs_h, "provider", item->valuestring);
+    if ((item = cJSON_GetObjectItemCaseSensitive(root, "api_key")) && cJSON_IsString(item))
+        nvs_set_str(nvs_h, "api_key", item->valuestring);
+    if ((item = cJSON_GetObjectItemCaseSensitive(root, "model")) && cJSON_IsString(item))
+        nvs_set_str(nvs_h, "model", item->valuestring);
+    if ((item = cJSON_GetObjectItemCaseSensitive(root, "base_url")) && cJSON_IsString(item))
+        nvs_set_str(nvs_h, "base_url", item->valuestring);
+    nvs_commit(nvs_h);
+    nvs_close(nvs_h);
+    cJSON_Delete(root);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
+/*============================================================================
  * URI Registration (extracted for httpd restart on WiFi recovery)
  *============================================================================*/
 static void _register_web_config_uris(httpd_handle_t hd)
@@ -2245,6 +2358,14 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_register_uri_handler(hd, &cors_wx_save);
     ESP_LOGI("webcfg", "WeChat QR login API registered (/api/wechat/login/*)");
 #endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
+
+    /* ── LLM/AI Agent Configuration API ── */
+    httpd_uri_t uri_llm_get = { .uri = "/api/llm/config", .method = HTTP_GET, .handler = h_llm_config_get };
+    httpd_uri_t uri_llm_set = { .uri = "/api/llm/config", .method = HTTP_POST, .handler = h_llm_config_set };
+    httpd_uri_t cors_llm_get = { .uri = "/api/llm/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
+    httpd_register_uri_handler(hd, &uri_llm_get);
+    httpd_register_uri_handler(hd, &uri_llm_set);
+    httpd_register_uri_handler(hd, &cors_llm_get);
 }
 
 /*============================================================================
