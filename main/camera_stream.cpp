@@ -152,6 +152,11 @@ CameraStream::CameraStream() :
     _detect_mutex = xSemaphoreCreateMutex();
     _shared_jpeg_mutex = xSemaphoreCreateMutex();
     _frame_ready_sem = xSemaphoreCreateCounting(2, 0);  /* Max 2 MJPEG clients */
+
+    /* Pre-allocate TCBs — reused across start/stop cycles.
+     * ~340B internal SRAM each, avoids TCB use-after-free race with idle task. */
+    _model_load_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    _capture_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 CameraStream::~CameraStream()
@@ -171,9 +176,11 @@ CameraStream::~CameraStream()
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
     }
-    /* Defensive: stop() should have freed these, but ensure no leak */
+    /* Defensive: stop() should have freed stacks, but ensure no leak */
     if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
+    /* Free pre-allocated TCBs — safe at shutdown since tasks have exited. */
     if (_capture_tcb) { heap_caps_free(_capture_tcb); _capture_tcb = nullptr; }
+    if (_model_load_tcb) { heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr; }
 }
 
 /*============================================================================
@@ -225,11 +232,9 @@ bool CameraStream::start(void)
      * regardless of HTTP client connections.
      * Use static task creation with PSRAM stack to save ~32KB internal SRAM. */
     _capture_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    _capture_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!_capture_stack || !_capture_tcb) {
-        ESP_LOGE(TAG, "Capture task PSRAM stack alloc failed");
+        ESP_LOGE(TAG, "Capture task PSRAM stack alloc failed or TCB is null");
         if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
-        if (_capture_tcb) { heap_caps_free(_capture_tcb); _capture_tcb = nullptr; }
         _deinit_encoder();
         _deinit_video();
         _deinit_detection();
@@ -243,7 +248,6 @@ bool CameraStream::start(void)
     if (!task_handle) {
         ESP_LOGE(TAG, "Capture task create failed");
         heap_caps_free(_capture_stack); _capture_stack = nullptr;
-        heap_caps_free(_capture_tcb); _capture_tcb = nullptr;
         _deinit_encoder();
         _deinit_video();
         _deinit_detection();
@@ -331,14 +335,13 @@ void CameraStream::stop(void)
     _deinit_detection();
     _deinit_video();
 
-    /* Free capture task PSRAM stack and TCB */
+    /* Free capture task PSRAM stack.
+     * TCB is pre-allocated and reused — not freed here.
+     * Stack is safe to free immediately: FreeRTOS doesn't reference it
+     * after the task exits (idle task only reclaims the TCB). */
     if (_capture_stack) {
         heap_caps_free(_capture_stack);
         _capture_stack = nullptr;
-    }
-    if (_capture_tcb) {
-        heap_caps_free(_capture_tcb);
-        _capture_tcb = nullptr;
     }
 
     /* Reset shared JPEG buffer */
@@ -773,11 +776,9 @@ bool CameraStream::_init_detection(void)
      * Use static allocation to place the 8KB stack in PSRAM. */
     const uint32_t load_stack_words = 8 * 1024 / sizeof(StackType_t);
     _model_load_stack = (StackType_t *)heap_caps_malloc(8 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    _model_load_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!_model_load_stack || !_model_load_tcb) {
-        ESP_LOGE(TAG, "Failed to allocate model_load task stack in PSRAM or TCB");
+        ESP_LOGE(TAG, "Failed to allocate model_load task stack in PSRAM or TCB is null");
         if (_model_load_stack) { heap_caps_free(_model_load_stack); _model_load_stack = nullptr; }
-        if (_model_load_tcb) { heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr; }
         if (_detect_in_buf) { heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr; }
         return false;
     }
@@ -788,7 +789,6 @@ bool CameraStream::_init_detection(void)
     if (_model_load_task.load(std::memory_order_relaxed) == nullptr) {
         ESP_LOGE(TAG, "Failed to create model load task");
         heap_caps_free(_model_load_stack); _model_load_stack = nullptr;
-        heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr;
 #if CONFIG_SOC_PPA_SUPPORTED
         if (_ppa) { delete _ppa; _ppa = nullptr; }
 #endif
@@ -827,14 +827,13 @@ void CameraStream::_deinit_detection(void)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    /* Free statically-allocated task stack (PSRAM) and TCB */
+    /* Free PSRAM-allocated stack (xTaskCreateStatic does not free it).
+     * TCB is pre-allocated and reused — not freed here.
+     * Stack is safe to free immediately: FreeRTOS doesn't reference it
+     * after the task exits (idle task only reclaims the TCB). */
     if (_model_load_stack) {
         heap_caps_free(_model_load_stack);
         _model_load_stack = nullptr;
-    }
-    if (_model_load_tcb) {
-        heap_caps_free(_model_load_tcb);
-        _model_load_tcb = nullptr;
     }
 
 #if CONFIG_SOC_PPA_SUPPORTED
