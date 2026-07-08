@@ -126,7 +126,7 @@ private:
     lv_obj_t              *_label_connect_status;
     /* WiFi state — static to persist across Settings app open/close cycles.
      * WiFi runs in background even when Settings app is closed. */
-    static TaskHandle_t      _wifi_scan_task;
+    static std::atomic<TaskHandle_t> _wifi_scan_task;
     static EventGroupHandle_t _wifi_event_group;
     static bool              _wifi_initialized;  // one-time netif/wifi init done
     static TimerHandle_t     _wifi_reconnect_timer;  // 10s periodic reconnect timer

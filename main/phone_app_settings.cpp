@@ -24,7 +24,7 @@ static const char *TAG = "Settings";
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
 /* Static WiFi state — persists across Settings app open/close cycles */
-TaskHandle_t PhoneAppSettings::_wifi_scan_task = nullptr;
+std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_scan_task{nullptr};
 EventGroupHandle_t PhoneAppSettings::_wifi_event_group = nullptr;
 bool PhoneAppSettings::_wifi_initialized = false;
 TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
@@ -157,9 +157,8 @@ PhoneAppSettings::~PhoneAppSettings()
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
-    if (_wifi_scan_task) {
-        vTaskDelete(_wifi_scan_task);
-        _wifi_scan_task = nullptr;
+    if (_wifi_scan_task.load(std::memory_order_acquire)) {
+        vTaskDelete(_wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel));
     }
     if (_wifi_event_group) {
         vEventGroupDelete(_wifi_event_group);
@@ -273,22 +272,25 @@ bool PhoneAppSettings::run(void)
     /* Auto-start WiFi scan task if WiFi was enabled from NVS.
      * If task already running (kept alive from previous session by close()),
      * reuse it — don't recreate. */
-    if (_nvs.wifi_en && _wifi_scan_task == NULL) {
+    if (_nvs.wifi_en && _wifi_scan_task.load(std::memory_order_acquire) == nullptr) {
         if (_wifi_event_group == nullptr) {
             _wifi_event_group = xEventGroupCreate();
         }
         if (_wifi_event_group) {
+            TaskHandle_t h = nullptr;
             BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
-                                         this, TASK_PRIO_WIFI_SCAN, &_wifi_scan_task);
+                                         this, TASK_PRIO_WIFI_SCAN, &h);
             if (ret != pdPASS) {
                 ESP_LOGE(TAG, "Failed to create WiFi scan task on app run");
                 vEventGroupDelete(_wifi_event_group);
                 _wifi_event_group = nullptr;
+            } else {
+                _wifi_scan_task.store(h, std::memory_order_release);
             }
         } else {
             ESP_LOGE(TAG, "Failed to create WiFi event group on app run");
         }
-    } else if (_wifi_scan_task) {
+    } else if (_wifi_scan_task.load(std::memory_order_acquire)) {
         ESP_LOGI(TAG, "Reusing existing WiFi background task");
     }
 
@@ -400,9 +402,8 @@ bool PhoneAppSettings::close(void)
             esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, _ip_handler_inst);
             _ip_handler_inst = nullptr;
         }
-        if (_wifi_scan_task) {
-            vTaskDelete(_wifi_scan_task);
-            _wifi_scan_task = nullptr;
+        if (_wifi_scan_task.load(std::memory_order_acquire)) {
+            vTaskDelete(_wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel));
         }
         if (_wifi_event_group) {
             vEventGroupDelete(_wifi_event_group);
@@ -927,7 +928,7 @@ void PhoneAppSettings::wifiScanTaskHandler(void *arg)
     esp_err_t ret = app->wifiInit();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "WiFi init failed, scan task exiting");
-        app->_wifi_scan_task = NULL;
+        app->_wifi_scan_task.store(nullptr, std::memory_order_release);
         vTaskDelete(NULL);
         return;
     }
@@ -1119,7 +1120,7 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
     app->setNvsParam(NVS_KEY_WIFI_EN, on ? 1 : 0);
 
     if (on) {
-        if (app->_wifi_scan_task == NULL) {
+        if (app->_wifi_scan_task.load(std::memory_order_acquire) == nullptr) {
             /* Create event group BEFORE spawning task (OFF path needs it) */
             if (app->_wifi_event_group == NULL) {
                 app->_wifi_event_group = xEventGroupCreate();
@@ -1131,8 +1132,9 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
                 app->setNvsParam(NVS_KEY_WIFI_EN, 0);
                 return;
             }
+            TaskHandle_t h = nullptr;
             BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
-                                         app, TASK_PRIO_WIFI_SCAN, &app->_wifi_scan_task);
+                                         app, TASK_PRIO_WIFI_SCAN, &h);
             if (ret != pdPASS) {
                 ESP_LOGE(TAG, "Failed to create WiFi scan task");
                 lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
@@ -1140,6 +1142,8 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
                 app->setNvsParam(NVS_KEY_WIFI_EN, 0);
                 vEventGroupDelete(app->_wifi_event_group);
                 app->_wifi_event_group = nullptr;
+            } else {
+                app->_wifi_scan_task.store(h, std::memory_order_release);
             }
         }
     } else {
@@ -1157,9 +1161,8 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
         }
         _wifi_reconnect_count = 0;
         /* Clean up scan task and event group on WiFi OFF */
-        if (app->_wifi_scan_task) {
-            vTaskDelete(app->_wifi_scan_task);
-            app->_wifi_scan_task = nullptr;
+        if (app->_wifi_scan_task.load(std::memory_order_acquire)) {
+            vTaskDelete(app->_wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel));
         }
         if (app->_wifi_event_group) {
             vEventGroupDelete(app->_wifi_event_group);
