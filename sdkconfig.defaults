@@ -162,6 +162,17 @@ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
 CONFIG_LWIP_TCP_WND_DEFAULT=32768
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
 CONFIG_LWIP_MAX_SOCKETS=28
+# TCP PCB pool: 3 httpd instances configure max_open_sockets = 12 + 3 + 2 = 17,
+# already exceeding the default 16 active PCBs. Disconnected clients (and the
+# self-probe, which opens+closes a socket every ~15s) linger in TIME_WAIT for
+# 2*MSL (default 60s -> 120s) and FIN_WAIT (20s), each holding an active PCB.
+# A handful of disconnects exhausts the 16-PCB pool so accept() refuses ALL new
+# connections until reboot — "disconnect -> can't reconnect".  Raise the pool and
+# shorten the lingering windows so stale PCBs free quickly and reconnects work.
+CONFIG_LWIP_MAX_ACTIVE_TCP=40
+CONFIG_LWIP_MAX_LISTENING_TCP=24
+CONFIG_LWIP_TCP_MSL=10000
+CONFIG_LWIP_TCP_FIN_WAIT_TIMEOUT=10000
 
 CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE=y
 
