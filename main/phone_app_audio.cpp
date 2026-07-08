@@ -76,7 +76,11 @@ PhoneAppAudio::~PhoneAppAudio()
      * path that destroys the object before close() ran. */
     if (_audio_stack) { heap_caps_free(_audio_stack); _audio_stack = nullptr; }
     /* TCB is pre-allocated at construction — free it here.
-     * Safe: task has fully exited (waited above). */
+     * Yield first to let idle task reclaim the TCB from the termination
+     * list if the task just exited (via close or destructor wait path).
+     * Without this yield, heap_caps_free corrupts FreeRTOS's internal
+     * linked list (xTasksWaitingTermination). */
+    vTaskDelay(pdMS_TO_TICKS(10));
     if (_audio_tcb)  { heap_caps_free(_audio_tcb);  _audio_tcb = nullptr; }
     /* Delete update timer (defensive — close() normally does this) */
     if (_update_timer) {

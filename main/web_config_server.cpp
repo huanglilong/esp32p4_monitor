@@ -2335,7 +2335,9 @@ cleanup:
         vSemaphoreDelete(s_nvs_cache_mutex);
         s_nvs_cache_mutex = NULL;
     }
-    /* Free pre-allocated TCB — safe at shutdown since audio task has exited. */
+    /* Free pre-allocated TCB — yield first to let idle task reclaim it
+     * from the termination list if the audio task just exited. */
+    vTaskDelay(pdMS_TO_TICKS(10));
     if (s_audio_tcb) { heap_caps_free(s_audio_tcb); s_audio_tcb = NULL; }
     if (s_wifi_state_sub >= 0) {
         orb_unsubscribe(s_wifi_state_sub);
@@ -2419,7 +2421,9 @@ void web_config_server_stop(void)
         vSemaphoreDelete(s_nvs_cache_mutex);
         s_nvs_cache_mutex = NULL;
     }
-    /* Free pre-allocated TCB — safe at shutdown since audio task has exited. */
+    /* Free pre-allocated TCB — yield first to let idle task reclaim it
+     * from the termination list if the audio task just exited. */
+    vTaskDelay(pdMS_TO_TICKS(10));
     if (s_audio_tcb) { heap_caps_free(s_audio_tcb); s_audio_tcb = NULL; }
     if (s_wifi_state_sub >= 0) {
         orb_unsubscribe(s_wifi_state_sub);

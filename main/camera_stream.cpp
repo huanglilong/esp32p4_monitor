@@ -178,7 +178,9 @@ CameraStream::~CameraStream()
     }
     /* Defensive: stop() should have freed stacks, but ensure no leak */
     if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
-    /* Free pre-allocated TCBs — safe at shutdown since tasks have exited. */
+    /* Free pre-allocated TCBs — yield first to let idle task reclaim them
+     * from the termination list if tasks just exited. */
+    vTaskDelay(pdMS_TO_TICKS(10));
     if (_capture_tcb) { heap_caps_free(_capture_tcb); _capture_tcb = nullptr; }
     if (_model_load_tcb) { heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr; }
 }

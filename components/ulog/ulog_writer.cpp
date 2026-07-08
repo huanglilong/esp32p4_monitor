@@ -642,8 +642,9 @@ void ulog_writer_deinit(ulog_writer_t *writer)
         ulog_writer_stop(writer);
     }
     ringbuf_deinit(&writer->ringbuf);
-    /* Free pre-allocated TCB — safe here because stop() already waited
-     * for the task to exit, and deinit() is only called at shutdown. */
+    /* Free pre-allocated TCB — yield first to let idle task reclaim it
+     * from the termination list if the writer task just exited. */
+    vTaskDelay(pdMS_TO_TICKS(10));
     if (writer->task_tcb) { heap_caps_free(writer->task_tcb); writer->task_tcb = nullptr; }
     writer->state = ULOG_STATE_UNINIT;
     ESP_LOGI(TAG, "Deinitialized");
