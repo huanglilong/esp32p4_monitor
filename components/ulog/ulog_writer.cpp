@@ -1223,7 +1223,7 @@ static uint16_t find_next_session_number(const char *log_root)
 /**
  * Create the log directory and file path.
  *
- * Date mode (SNTP synced):  /sdcard/data/YYYY-MM-DD/HH_MM_SS.ulg
+ * Date mode (SNTP synced):  /sdcard/data/YYYY-MM-DD/<unix_timestamp>.ulg
  * Session mode (no RTC):    /sdcard/data/sessNNN/logNNN.ulg
  *
  * @return ESP_OK on success
@@ -1235,8 +1235,9 @@ static esp_err_t create_log_path(ulog_writer_t *writer)
              writer->sd_mount_path, LOG_DIR_NAME);
     ensure_log_dir(log_root);
 
-    /* Use a large local buffer for path construction to avoid truncation warnings */
-    char full_path[ULOG_MAX_PATH + 64];
+    /* Use a large local buffer for path construction to avoid truncation warnings.
+     * Max path: log_dir(256) + "/" + base(32) + "_1000.ulg"(9) = 298 */
+    char full_path[ULOG_MAX_PATH + 128];
 
     if (writer->has_wall_clock) {
         /* ── Date-based naming ── */
@@ -1256,9 +1257,10 @@ static esp_err_t create_log_path(ulog_writer_t *writer)
                  log_root, date_dir);
         ensure_log_dir(writer->log_dir);
 
-        /* Create filename: HH_MM_SS.ulg */
-        char filename[16];
-        strftime(filename, sizeof(filename), "%H_%M_%S" ULOG_FILE_EXT, &tm_buf);
+        /* Create filename: <unix_timestamp>.ulg (unique per second) */
+        char filename[24];
+        snprintf(filename, sizeof(filename), "%lld" ULOG_FILE_EXT,
+                 (long long)ts.tv_sec);
 
         snprintf(full_path, sizeof(full_path), "%s/%s",
                  writer->log_dir, filename);
@@ -1267,13 +1269,8 @@ static esp_err_t create_log_path(ulog_writer_t *writer)
         struct stat st;
         if (stat(full_path, &st) == 0) {
             for (int suffix = 2; suffix < 100; suffix++) {
-                char base[16];
-                strftime(base, sizeof(base), "%H_%M_%S", &tm_buf);
-                char suffixed[24];
-                snprintf(suffixed, sizeof(suffixed), "%s_%d" ULOG_FILE_EXT,
-                         base, suffix);
-                snprintf(full_path, sizeof(full_path), "%s/%s",
-                         writer->log_dir, suffixed);
+                snprintf(full_path, sizeof(full_path), "%s/%lld_%d" ULOG_FILE_EXT,
+                         writer->log_dir, (long long)ts.tv_sec, suffix);
                 if (stat(full_path, &st) != 0) break;
             }
         }
@@ -1325,26 +1322,23 @@ static esp_err_t rotate_log_file(ulog_writer_t *writer)
     ESP_LOGI(TAG, "Rotating log file (size: %u KB)",
              (unsigned)(writer->bytes_written / 1024));
 
-    /* Determine next filename */
-    char full_path[ULOG_MAX_PATH + 64];
+    /* Determine next filename.
+     * Max path: log_dir(256) + "/" + base(32) + "_1000.ulg"(9) = 298 */
+    char full_path[ULOG_MAX_PATH + 128];
     if (writer->has_wall_clock) {
-        /* Date mode: use current time with suffix for uniqueness */
+        /* Date mode: use current unix timestamp with suffix for uniqueness */
         struct timespec ts;
         if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
-            struct tm tm_buf;
-            localtime_r(&ts.tv_sec, &tm_buf);
-            char base[16];
-            strftime(base, sizeof(base), "%H_%M_%S", &tm_buf);
             /* Find a non-existing filename with _N suffix */
             writer->file_counter++;
-            snprintf(full_path, sizeof(full_path), "%s/%s_%u" ULOG_FILE_EXT,
-                     writer->log_dir, base, (unsigned)writer->file_counter);
+            snprintf(full_path, sizeof(full_path), "%s/%lld_%u" ULOG_FILE_EXT,
+                     writer->log_dir, (long long)ts.tv_sec, (unsigned)writer->file_counter);
             struct stat st;
             if (stat(full_path, &st) == 0) {
                 /* Fallback: scan for next available suffix */
                 for (unsigned i = writer->file_counter + 1; i < 1000; i++) {
-                    snprintf(full_path, sizeof(full_path), "%s/%s_%u" ULOG_FILE_EXT,
-                             writer->log_dir, base, i);
+                    snprintf(full_path, sizeof(full_path), "%s/%lld_%u" ULOG_FILE_EXT,
+                             writer->log_dir, (long long)ts.tv_sec, i);
                     if (stat(full_path, &st) != 0) {
                         writer->file_counter = (uint16_t)i;
                         break;
