@@ -41,7 +41,8 @@ AudioDriver::AudioDriver() :
     _codec_mic_handle(nullptr),
     _rx_handle(nullptr),
     _tx_handle(nullptr),
-    _vol_pub(ORB_ADVERT_INVALID)
+    _vol_pub(ORB_ADVERT_INVALID),
+    _codec_ops_in_flight(0)
 {
     _lifecycle_mutex = xSemaphoreCreateMutex();
 }
@@ -350,7 +351,15 @@ void AudioDriver::deinit(void)
      * proceed — we wait for them below. */
     SemaphoreHandle_t old_codec_mutex = _codec_mutex.exchange(nullptr, std::memory_order_acq_rel);
     if (old_codec_mutex) {
-        vTaskDelay(pdMS_TO_TICKS(10));     /* wait for in-flight ops using old mutex to exit */
+        /* Wait for in-flight codec ops to finish (they decrement _codec_ops_in_flight
+         * on exit). Spin with yields to avoid busy-wait burning CPU. */
+        for (int i = 0; i < 200 && _codec_ops_in_flight.load(std::memory_order_acquire) > 0; i++) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        if (_codec_ops_in_flight.load(std::memory_order_acquire) > 0) {
+            ESP_LOGW(TAG, "Deinit: %d codec ops still in-flight after 1s, proceeding anyway",
+                     _codec_ops_in_flight.load());
+        }
     }
 
     /* Step 2: Now safe to close/delete codec handles — no one can
@@ -398,8 +407,22 @@ void AudioDriver::set_volume(int volume)
 
     SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_acquire);
     esp_codec_dev_handle_t ch = _codec_handle.load(std::memory_order_acquire);
-    if (ch && cm &&
-        xSemaphoreTake(cm, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (!ch || !cm) {
+        ESP_LOGW(TAG, "set_volume(%d) skipped: codec/mutex unavailable", volume);
+        return;
+    }
+
+    _codec_ops_in_flight.fetch_add(1, std::memory_order_acq_rel);
+    /* Re-read cm after incrementing counter — deinit() waits for counter=0
+     * before deleting the mutex, so our cm is guaranteed valid. */
+    cm = _codec_mutex.load(std::memory_order_acquire);
+    if (!cm) {
+        _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        ESP_LOGW(TAG, "set_volume(%d) skipped: mutex nullified during entry", volume);
+        return;
+    }
+
+    if (xSemaphoreTake(cm, pdMS_TO_TICKS(100)) == pdTRUE) {
         /* Re-read codec handle under mutex in case it changed */
         esp_codec_dev_handle_t ch2 = _codec_handle.load(std::memory_order_relaxed);
         if (ch2) {
@@ -408,15 +431,16 @@ void AudioDriver::set_volume(int volume)
             xSemaphoreGive(cm);
         } else {
             xSemaphoreGive(cm);
+            _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
             ESP_LOGW(TAG, "set_volume(%d) skipped: codec handle nullified", volume);
             return;
         }
     } else {
-        /* Codec not available or mutex timeout — skip publish to avoid
-         * advertising a volume that was never applied to hardware. */
-        ESP_LOGW(TAG, "set_volume(%d) skipped: codec/mutex unavailable", volume);
+        _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        ESP_LOGW(TAG, "set_volume(%d) skipped: mutex timeout", volume);
         return;
     }
+    _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
 
     /* Publish volume_state via uORB for cross-module notification */
     if (_vol_pub.load(std::memory_order_relaxed) < 0) {
@@ -445,7 +469,16 @@ void AudioDriver::set_mic_gain(int gain_db)
     esp_codec_dev_handle_t mic_h = _codec_mic_handle.load(std::memory_order_acquire);
     esp_codec_dev_handle_t out_h = _codec_handle.load(std::memory_order_acquire);
     esp_codec_dev_handle_t h = mic_h ? mic_h : out_h;
-    if (h && xSemaphoreTake(cm, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (!h) return;
+
+    _codec_ops_in_flight.fetch_add(1, std::memory_order_acq_rel);
+    cm = _codec_mutex.load(std::memory_order_acquire);
+    if (!cm) {
+        _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        return;
+    }
+
+    if (xSemaphoreTake(cm, pdMS_TO_TICKS(100)) == pdTRUE) {
         /* Re-read under mutex */
         mic_h = _codec_mic_handle.load(std::memory_order_relaxed);
         out_h = _codec_handle.load(std::memory_order_relaxed);
@@ -453,6 +486,7 @@ void AudioDriver::set_mic_gain(int gain_db)
         if (h) esp_codec_dev_set_in_gain(h, gain_db);
         xSemaphoreGive(cm);
     }
+    _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 int AudioDriver::codec_write(const uint8_t *data, int size)
@@ -461,11 +495,23 @@ int AudioDriver::codec_write(const uint8_t *data, int size)
     SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_acquire);
     esp_codec_dev_handle_t ch = _codec_handle.load(std::memory_order_acquire);
     if (!ch || !cm) return -1;
-    if (xSemaphoreTake(cm, pdMS_TO_TICKS(50)) != pdPASS) return -1;
+
+    _codec_ops_in_flight.fetch_add(1, std::memory_order_acq_rel);
+    cm = _codec_mutex.load(std::memory_order_acquire);
+    if (!cm) {
+        _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        return -1;
+    }
+
+    if (xSemaphoreTake(cm, pdMS_TO_TICKS(50)) != pdPASS) {
+        _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        return -1;
+    }
     /* Re-read under mutex */
     esp_codec_dev_handle_t ch2 = _codec_handle.load(std::memory_order_relaxed);
-    if (!ch2) { xSemaphoreGive(cm); return -1; }
+    if (!ch2) { xSemaphoreGive(cm); _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel); return -1; }
     int ret = esp_codec_dev_write(ch2, (void *)data, size);
     xSemaphoreGive(cm);
+    _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
     return (ret == ESP_CODEC_DEV_OK) ? size : -1;
 }

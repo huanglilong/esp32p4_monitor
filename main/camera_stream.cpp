@@ -1222,6 +1222,11 @@ static esp_err_t stream_handler(httpd_req_t *req)
             uint8_t *jpeg_data;
 
             if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+                /* JPEG sensor — use raw V4L2 data directly.
+                 * Must defer QBUF: jpeg_data points into V4L2 mmap buffer,
+                 * which must not be returned to driver until all consumers
+                 * (_send_mjpeg_part, _save_jpeg_snapshot, _publish_camera_frame)
+                 * finish using it. */
                 jpeg_data = cs->_v4l2_bufs[buf.index];
                 jpeg_size = buf.bytesused;
             }
@@ -1257,7 +1262,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
             }
 #endif
             else {
-                /* CPU fallback: draw boxes on V4L2 buffer, encode from 800×800 RGB565 */
+                /* CPU fallback: draw boxes on V4L2 buffer, encode from 800×800 RGB565.
+                 * After encoding, jpeg_data points to _jpeg_out_buf (independent of
+                 * V4L2 buffer), so QBUF is safe after encoding completes. */
                 cs->_draw_detection_boxes_on_rgb565(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index]);
 
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
@@ -1273,17 +1280,16 @@ static esp_err_t stream_handler(httpd_req_t *req)
                     continue;
                 }
                 jpeg_data = cs->_jpeg_out_buf;
+                /* Return V4L2 buffer — encoding done, jpeg_data is independent */
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             }
 
             /* Send part header + JPEG data */
             if (!cs->_send_mjpeg_part(req, jpeg_data, jpeg_size, part_buf, sizeof(part_buf))) {
                 if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                     xSemaphoreGive(cs->_encoder_sem);
-                }
-#if CONFIG_SOC_PPA_SUPPORTED
-                if (!(cs->_ppa && cs->_ppa->is_initialized()))
-#endif
-                {
+                } else {
+                    /* JPEG sensor: buffer was not yet returned to V4L2 */
                     ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
                 }
                 break;
@@ -1299,11 +1305,10 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 xSemaphoreGive(cs->_encoder_sem);
             }
 
-            /* Return V4L2 buffer if not already returned by PPA path */
-#if CONFIG_SOC_PPA_SUPPORTED
-            if (!(cs->_ppa && cs->_ppa->is_initialized()))
-#endif
-            {
+            /* JPEG sensor: all consumers done, now safe to return V4L2 buffer.
+             * Non-JPEG paths already returned the buffer above (PPA: after process,
+             * CPU fallback: after encoding). */
+            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             }
 

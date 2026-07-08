@@ -234,6 +234,9 @@
 | S178 | **SystemMonitor 内存告警阈值提升** | `CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT` 从 80% 提升至 85%，减少 Internal SRAM 误报 (LVGL + LWIP 常态占用 ~70%) | ✅ |
 | S179 | **Flutter ULog 视频查看器** | 新增 `ulog_parser.dart` (移植 Python ULog 解析器) + `ulog_viewer_screen.dart` (下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图网格，幻灯片播放，键盘导航，InteractiveViewer 缩放，单帧/全帧保存)；Settings 页 .ulg 可点击查看 + "Open Local .ulg" 按钮 | ✅ |
 | S180 | **Flutter filesDownload 可靠性** | 移除 `_isChunkedBody` 自动检测 (非 chunked 误判)，仅 `Transfer-Encoding: chunked` 头存在时 dechunk (RFC 7230)；O(n²) `toBytes().length` → int 计数器；超时 30s→10s | ✅ |
+| S181 | **Non-detection JPEG QBUF 延迟** | 非检测帧 JPEG sensor 路径 QBUF 在消费者完成前发出，V4L2 buffer 可能被驱动覆写。修复: 与检测帧路径统一，JPEG sensor 延迟 QBUF 至 `_send_mjpeg_part`/`_save_jpeg_snapshot`/`_publish_camera_frame` 完成后；CPU fallback 编码后立即 QBUF (jpeg_data 已独立) | ✅ |
+| S182 | **AudioDriver deinit mutex 竞态** | `deinit()` 用 10ms 延时等待 in-flight codec 操作，但 `set_volume`/`set_mic_gain` 可持锁 100ms。修复: 新增 `_codec_ops_in_flight` 原子计数器，codec 操作入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex | ✅ |
+| S183 | **Logger deinit mutex 竞态** | `logger_deinit()` 用 10ms 延时等待 in-flight `_logger_push`，但可持 `buf_mutex` 100ms。修复: 新增 `push_in_flight` 原子计数器，`_logger_push` 入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex | ✅ |
 
 ### 2.3 系统性能监控
 

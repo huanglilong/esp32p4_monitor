@@ -580,6 +580,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **JPEG 编码器初始化竞态**: 两个并发客户端可同时触发延迟初始化。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护。
 - **JPEG 快照**: stream handler 每帧保存最新 JPEG 到 `_last_jpeg_buf` (mutex 保护), `/api/capture_image` 端点返回最新帧的 `image/jpeg`。
 - **内联人体检测**: CameraStream 在 stream_handler 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→BGR888 resize)，检测框直接绘制在 PPA BGR24 输出 buffer 上再编码为 JPEG。V4L2 buffer 在 PPA 处理后立即归还 (~1ms)，不再持有到编码完成。JPEG 编码器直接消费 PPA 输出 (300×300 BGR24)，编码时间从 ~200ms 降至 ~30ms。
+- **V4L2 QBUF 延迟 (JPEG sensor)**: JPEG sensor 路径中 `jpeg_data` 直接指向 V4L2 mmap buffer，QBUF 必须延迟至所有消费者 (`_send_mjpeg_part`/`_save_jpeg_snapshot`/`_publish_camera_frame`) 完成后。检测帧和非检测帧路径均已统一为延迟 QBUF 模式。PPA 路径 (PPA 输出独立) 和 CPU fallback 路径 (编码后 `jpeg_data` 指向 `_jpeg_out_buf`) 可安全提前 QBUF。
 
 ### 15. esp_hosted (WiFi over SDIO) 稳定性
 
@@ -894,3 +895,6 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **SystemMonitor 内存告警阈值提升** (S178): `CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT` 从 80% 提升至 85%，减少 Internal SRAM 误报 (LVGL + LWIP 常态占用 ~70%)
 - [x] **Flutter ULog 视频查看器** (S179): 新增 `ulog_parser.dart` (移植 Python ULog 解析器到 Dart) + `ulog_viewer_screen.dart` (下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图网格，幻灯片播放，键盘导航，InteractiveViewer 缩放，单帧/全帧保存)；Settings 页 .ulg 文件可点击查看 + "Open Local .ulg" 按钮扫描本地已下载文件
 - [x] **Flutter filesDownload 可靠性修复** (S180): 移除 `_isChunkedBody` 自动检测 (非 chunked 下载误判)，仅当 `Transfer-Encoding: chunked` 头存在时 dechunk (RFC 7230)；O(n²) `rawBuf.toBytes().length` 替换为 int 计数器；HTTP/1.0 超时 30s→10s
+- [x] **Non-detection JPEG QBUF 延迟** (S181): 非检测帧 JPEG sensor 路径 QBUF 在消费者完成前发出，V4L2 buffer 可能被驱动覆写。修复: 与检测帧路径统一，JPEG sensor 延迟 QBUF 至所有消费者完成；CPU fallback 编码后立即 QBUF (jpeg_data 已独立于 V4L2 buffer)
+- [x] **AudioDriver deinit mutex 竞态** (S182): `deinit()` 用 10ms 延时等待 in-flight codec 操作，但 `set_volume`/`set_mic_gain` 可持锁 100ms，mutex 可能在 in-flight 操作仍持有时被删除。修复: 新增 `_codec_ops_in_flight` 原子计数器，codec 操作入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
+- [x] **Logger deinit mutex 竞态** (S183): `logger_deinit()` 用 10ms 延时等待 in-flight `_logger_push`，但可持 `buf_mutex` 100ms。修复: 新增 `push_in_flight` 原子计数器，`_logger_push` 入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex

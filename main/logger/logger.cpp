@@ -65,6 +65,10 @@ static struct {
     SemaphoreHandle_t buf_mutex;
     SemaphoreHandle_t data_sem;  /* signals writer when data available */
 
+    /* In-flight tracking: deinit waits for producers to exit before
+     * deleting buf_mutex, preventing use-after-free on the mutex. */
+    std::atomic<int>  push_in_flight{0};
+
     /* File I/O */
     char             dir_path[64];
     char             file_path[128];
@@ -155,12 +159,23 @@ void logger_deinit(void)
 
     /* Restore original vprintf FIRST — no more SD log writes from this point.
      * However, _logger_vprintf calls already in flight (past the running check
-     * but not yet finished) may still be executing.  Give them time to finish. */
+     * but not yet finished) may still be executing.  Wait for them to exit
+     * by polling the in-flight counter. */
     if (s_log.orig_vprintf) {
         esp_log_set_vprintf(s_log.orig_vprintf);
         s_log.orig_vprintf = NULL;
     }
-    vTaskDelay(pdMS_TO_TICKS(10));  /* Drain in-flight _logger_vprintf calls */
+
+    /* Wait for in-flight _logger_push calls to finish.
+     * They increment push_in_flight on entry and decrement on exit,
+     * so once it reaches 0, no one holds buf_mutex. */
+    for (int i = 0; i < 200 && s_log.push_in_flight.load(std::memory_order_acquire) > 0; i++) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (s_log.push_in_flight.load(std::memory_order_acquire) > 0) {
+        ESP_LOGW("logger", "deinit: %d push ops still in-flight after 1s, proceeding anyway",
+                 s_log.push_in_flight.load());
+    }
 
     /* Signal writer to stop and wake it */
     s_log.writer_running = false;
@@ -313,15 +328,29 @@ static void _logger_push(const char *data, int len)
     SemaphoreHandle_t mtx = s_log.buf_mutex;
     if (!mtx || !s_log.buf) return;
 
+    /* Mark in-flight before taking mutex — deinit() waits for this counter
+     * to reach 0 before deleting buf_mutex, ensuring our mtx is valid. */
+    s_log.push_in_flight.fetch_add(1, std::memory_order_acq_rel);
+    /* Re-read mutex after incrementing counter */
+    mtx = s_log.buf_mutex;
+    if (!mtx) {
+        s_log.push_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        return;
+    }
+
     /* Take mutex — check return in case mutex was deleted while we were blocked.
      * (logger_deinit restores vprintf first, so new _logger_vprintf calls are
      *  prevented, but an in-flight call already past the running check could
      *  still reach here.) */
-    if (xSemaphoreTake(mtx, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    if (xSemaphoreTake(mtx, pdMS_TO_TICKS(100)) != pdTRUE) {
+        s_log.push_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        return;
+    }
 
     /* Re-validate: buf may have been freed by deinit while we waited */
     if (!s_log.buf || !s_log.buf_mutex) {
         xSemaphoreGive(mtx);
+        s_log.push_in_flight.fetch_sub(1, std::memory_order_acq_rel);
         return;
     }
 
@@ -360,6 +389,7 @@ static void _logger_push(const char *data, int len)
     }
 
     xSemaphoreGive(mtx);
+    s_log.push_in_flight.fetch_sub(1, std::memory_order_acq_rel);
     xSemaphoreGive(s_log.data_sem);
 }
 
