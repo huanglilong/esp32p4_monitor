@@ -53,6 +53,11 @@
 #include "esp_vfs_fat.h"
 #include "ff.h"
 #include <sys/time.h>
+
+/* ESP-Claw IM — WeChat QR login API */
+#ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
+#include "cap_im_wechat.h"
+#endif
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include "driver/i2s_std.h"
@@ -1988,6 +1993,108 @@ static esp_err_t cors_preflight_handler(httpd_req_t *req)
 }
 
 /*============================================================================
+ * WeChat QR Login API handlers
+ *============================================================================*/
+#ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
+static esp_err_t h_wx_login_start(httpd_req_t *req)
+{
+    char body[128] = {0};
+    int ret = httpd_req_recv(req, body, sizeof(body) - 1);
+    (void)ret;
+    esp_err_t err = cap_im_wechat_qr_login_start("default", false);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "QR login start failed");
+        return ESP_FAIL;
+    }
+    cap_im_wechat_qr_login_status_t st = {};
+    cap_im_wechat_qr_login_get_status(&st);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddStringToObject(resp, "status", st.status);
+    cJSON_AddStringToObject(resp, "message", st.message);
+    if (st.qr_data_url[0]) cJSON_AddStringToObject(resp, "qr_data_url", st.qr_data_url);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
+static esp_err_t h_wx_login_status(httpd_req_t *req)
+{
+    cap_im_wechat_qr_login_status_t st = {};
+    esp_err_t err = cap_im_wechat_qr_login_get_status(&st);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to get status");
+        return ESP_FAIL;
+    }
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddBoolToObject(resp, "active", st.active);
+    cJSON_AddBoolToObject(resp, "completed", st.completed);
+    cJSON_AddBoolToObject(resp, "persisted", st.persisted);
+    cJSON_AddStringToObject(resp, "status", st.status);
+    cJSON_AddStringToObject(resp, "message", st.message);
+    if (st.qr_data_url[0]) cJSON_AddStringToObject(resp, "qr_data_url", st.qr_data_url);
+    if (st.account_id[0]) cJSON_AddStringToObject(resp, "account_id", st.account_id);
+    if (st.user_id[0]) cJSON_AddStringToObject(resp, "user_id", st.user_id);
+    if (st.base_url[0]) cJSON_AddStringToObject(resp, "base_url", st.base_url);
+    if (st.completed && st.token[0]) cJSON_AddStringToObject(resp, "token", st.token);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
+static esp_err_t h_wx_login_cancel(httpd_req_t *req)
+{
+    cap_im_wechat_qr_login_cancel();
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddStringToObject(resp, "message", "QR login cancelled");
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
+static esp_err_t h_wx_login_persist(httpd_req_t *req)
+{
+    cap_im_wechat_qr_login_status_t st = {};
+    cap_im_wechat_qr_login_get_status(&st);
+    if (!st.completed || !st.token[0]) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No completed login to persist");
+        return ESP_FAIL;
+    }
+    nvs_handle_t nvs_h;
+    esp_err_t err = nvs_open("claw_im", NVS_READWRITE, &nvs_h);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS open failed");
+        return ESP_FAIL;
+    }
+    nvs_set_str(nvs_h, "wx_token", st.token);
+    if (st.base_url[0]) nvs_set_str(nvs_h, "wx_base_url", st.base_url);
+    nvs_commit(nvs_h);
+    nvs_close(nvs_h);
+    cap_im_wechat_qr_login_mark_persisted();
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddStringToObject(resp, "message", "Token saved to NVS");
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+#endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
+
+/*============================================================================
  * URI Registration (extracted for httpd restart on WiFi recovery)
  *============================================================================*/
 static void _register_web_config_uris(httpd_handle_t hd)
@@ -2057,6 +2164,27 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_sys_alerts = { .uri = "/api/system_alerts", .method = HTTP_GET, .handler = h_system_alerts, .user_ctx = NULL };
     httpd_register_uri_handler(hd, &uri_sys_stats);
     httpd_register_uri_handler(hd, &uri_sys_alerts);
+
+    /* ── WeChat QR Login API ── */
+#ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
+    httpd_uri_t uri_wx_start  = { .uri = "/api/wechat/login/start",   .method = HTTP_POST, .handler = h_wx_login_start };
+    httpd_uri_t uri_wx_status = { .uri = "/api/wechat/login/status",  .method = HTTP_GET,  .handler = h_wx_login_status };
+    httpd_uri_t uri_wx_cancel = { .uri = "/api/wechat/login/cancel",  .method = HTTP_POST, .handler = h_wx_login_cancel };
+    httpd_uri_t uri_wx_save   = { .uri = "/api/wechat/login/persist", .method = HTTP_POST, .handler = h_wx_login_persist };
+    httpd_uri_t cors_wx_start = { .uri = "/api/wechat/login/start",   .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
+    httpd_uri_t cors_wx_stat  = { .uri = "/api/wechat/login/status",  .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
+    httpd_uri_t cors_wx_cancel= { .uri = "/api/wechat/login/cancel",  .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
+    httpd_uri_t cors_wx_save  = { .uri = "/api/wechat/login/persist", .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
+    httpd_register_uri_handler(hd, &uri_wx_start);
+    httpd_register_uri_handler(hd, &uri_wx_status);
+    httpd_register_uri_handler(hd, &uri_wx_cancel);
+    httpd_register_uri_handler(hd, &uri_wx_save);
+    httpd_register_uri_handler(hd, &cors_wx_start);
+    httpd_register_uri_handler(hd, &cors_wx_stat);
+    httpd_register_uri_handler(hd, &cors_wx_cancel);
+    httpd_register_uri_handler(hd, &cors_wx_save);
+    ESP_LOGI("webcfg", "WeChat QR login API registered (/api/wechat/login/*)");
+#endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
 }
 
 /*============================================================================
