@@ -33,8 +33,7 @@
 │  │ DeviceDiscovery│  │ Esp32HttpService     │ │
 │  │ · mDNS (_http) │  │ · GET /stream (MJPEG)│ │
 │  │ · HTTP probe   │  │ · POST set_camera_cfg│ │
-│  └──────┬───────┘  │ · GET capture_image   │ │
-│         │          │ · GET capture_binary   │ │
+│  └──────┬───────┘  │ · POST set_camera_cfg│ │
 │         │          └───────────┬────────────┘ │
 │         │                      │              │
 │  ┌──────┴──────────────────────┴───────────┐  │
@@ -95,8 +94,6 @@ Transfer-Encoding: chunked
 |------|------|------|
 | GET | `/api/get_camera_info` | 获取摄像头信息 |
 | POST | `/api/set_camera_config` | 设置 quality（body: `{index, image_format, jpeg_quality}`） |
-| GET | `/api/capture_image?source=0` | 下载单帧 JPEG |
-| GET | `/api/capture_binary?source=0` | 下载裸数据 |
 
 ---
 

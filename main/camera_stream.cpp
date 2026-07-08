@@ -122,8 +122,10 @@ CameraStream::CameraStream() :
     _encoder_sem(nullptr),
     _encoder_initialized(false),
     _encoder_init_in_progress(false),
-    _last_jpeg_mutex(nullptr),
-    _last_jpeg_buf(nullptr), _last_jpeg_size(0), _last_jpeg_capacity(0),
+    _shared_jpeg_mutex(nullptr),
+    _shared_jpeg_buf(nullptr), _shared_jpeg_size(0), _shared_jpeg_capacity(0),
+    _frame_generation(0),
+    _frame_ready_sem(nullptr),
     _frame_count(0), _fps_frame_count(0),
     _fps_window_start{0, 0},
     _fps_total_bytes(0),
@@ -139,6 +141,8 @@ CameraStream::CameraStream() :
     _model_load_stack(nullptr), _model_load_tcb(nullptr),
     _ppa(nullptr),
     _stream_enc_width(0), _stream_enc_height(0), _stream_enc_format(0),
+    _capture_task(nullptr),
+    _capture_stack(nullptr), _capture_tcb(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _recording_enabled(false),
@@ -146,22 +150,30 @@ CameraStream::CameraStream() :
     _mdns_running(false)
 {
     _detect_mutex = xSemaphoreCreateMutex();
-    _last_jpeg_mutex = xSemaphoreCreateMutex();
+    _shared_jpeg_mutex = xSemaphoreCreateMutex();
+    _frame_ready_sem = xSemaphoreCreateCounting(2, 0);  /* Max 2 MJPEG clients */
 }
 
 CameraStream::~CameraStream()
 {
     stop();
-    if (_last_jpeg_mutex) {
-        vSemaphoreDelete(_last_jpeg_mutex);
-        _last_jpeg_mutex = nullptr;
+    if (_shared_jpeg_mutex) {
+        vSemaphoreDelete(_shared_jpeg_mutex);
+        _shared_jpeg_mutex = nullptr;
     }
-    free(_last_jpeg_buf);
-    _last_jpeg_buf = nullptr;
+    free(_shared_jpeg_buf);
+    _shared_jpeg_buf = nullptr;
+    if (_frame_ready_sem) {
+        vSemaphoreDelete(_frame_ready_sem);
+        _frame_ready_sem = nullptr;
+    }
     if (_detect_mutex) {
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
     }
+    /* Defensive: stop() should have freed these, but ensure no leak */
+    if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
+    if (_capture_tcb) { heap_caps_free(_capture_tcb); _capture_tcb = nullptr; }
 }
 
 /*============================================================================
@@ -191,15 +203,71 @@ bool CameraStream::start(void)
         return false;
     }
 
+    /* Init detection first — PPA is initialized here, and the JPEG encoder
+     * needs to know whether PPA is active to determine encoding dimensions
+     * (PPA active → 300×300 BGR24, no PPA → 800×800 RGB565). */
     if (!_init_detection()) {
         ESP_LOGW(TAG, "Detection init failed, continuing without detection");
     }
 
-    if (!_start_http_server()) {
-        ESP_LOGE(TAG, "HTTP server init failed");
+    /* Init JPEG encoder — must be after _init_detection() because encoder
+     * dimensions depend on PPA state. For JPEG sensors, this is a no-op. */
+    if (!_init_encoder()) {
+        ESP_LOGE(TAG, "JPEG encoder init failed");
+        _deinit_detection();
+        _deinit_video();
+        _running = false;
+        CameraDriver::instance().release("stream");
+        return false;
+    }
+
+    /* Start independent capture task — runs DQBUF/encode/publish loop
+     * regardless of HTTP client connections.
+     * Use static task creation with PSRAM stack to save ~32KB internal SRAM. */
+    _capture_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    _capture_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!_capture_stack || !_capture_tcb) {
+        ESP_LOGE(TAG, "Capture task PSRAM stack alloc failed");
+        if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
+        if (_capture_tcb) { heap_caps_free(_capture_tcb); _capture_tcb = nullptr; }
+        _deinit_encoder();
         _deinit_video();
         _deinit_detection();
         _running = false;
+        CameraDriver::instance().release("stream");
+        return false;
+    }
+    TaskHandle_t task_handle = xTaskCreateStaticPinnedToCore(
+        _capture_task_fn, "cam_capture", 8192, this, 5,
+        _capture_stack, _capture_tcb, 1);  /* Core 1, priority 5 */
+    if (!task_handle) {
+        ESP_LOGE(TAG, "Capture task create failed");
+        heap_caps_free(_capture_stack); _capture_stack = nullptr;
+        heap_caps_free(_capture_tcb); _capture_tcb = nullptr;
+        _deinit_encoder();
+        _deinit_video();
+        _deinit_detection();
+        _running = false;
+        CameraDriver::instance().release("stream");
+        return false;
+    }
+    _capture_task.store(task_handle, std::memory_order_release);
+
+    if (!_start_http_server()) {
+        ESP_LOGE(TAG, "HTTP server init failed");
+        _running = false;  /* Signal capture task to exit */
+        /* STREAMOFF to unblock DQBUF if capture task is waiting */
+        if (_video_fd >= 0) {
+            int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            ioctl(_video_fd, VIDIOC_STREAMOFF, &type);
+        }
+        /* Wait for capture task to finish */
+        while (_capture_task.load(std::memory_order_acquire) != nullptr) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        _deinit_encoder();
+        _deinit_video();
+        _deinit_detection();
         CameraDriver::instance().release("stream");
         return false;
     }
@@ -210,6 +278,7 @@ bool CameraStream::start(void)
     _frame_count = 0;
     _fps_frame_count = 0;
     _fps_total_bytes = 0;
+    _frame_generation = 0;
     clock_gettime(CLOCK_MONOTONIC, &_fps_window_start);
 
     ESP_LOGI(TAG, "Stream started → http://%s.local/stream (port 81)", shared_mdns_hostname());
@@ -223,15 +292,57 @@ void CameraStream::stop(void)
     bool expected = true;
     if (!_running.compare_exchange_strong(expected, false)) return;
 
-    /* _running is now false — stream handler loop (while(isRunning())) will exit.
-     * httpd_stop() waits for active connections to close; if the MJPEG
-     * stream loop never exits, httpd_stop() blocks indefinitely. */
+    /* _running is now false — capture task loop will exit on next iteration.
+     * stream_handler loop also exits via isRunning().
+     * 
+     * CRITICAL: We must call VIDIOC_STREAMOFF before waiting for capture task,
+     * because the task may be blocked in VIDIOC_DQBUF (blocking call, no timeout).
+     * STREAMOFF causes DQBUF to return an error, unblocking the task.
+     * We only do the V4L2 STREAMOFF here (not full _deinit_video), so the
+     * capture task can still safely exit without crashing on partially-freed resources. */
 
+    /* Step 1: Stop V4L2 streaming to unblock DQBUF in capture task */
+    if (_video_fd >= 0) {
+        int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (ioctl(_video_fd, VIDIOC_STREAMOFF, &type) != 0) {
+            ESP_LOGW(TAG, "VIDIOC_STREAMOFF failed in stop()");
+        }
+    }
+
+    /* Step 2: Wait for capture task to finish (now unblocked from DQBUF) */
+    TaskHandle_t task = _capture_task.load(std::memory_order_acquire);
+    if (task) {
+        /* Give semaphore to unblock any waiting stream_handler clients */
+        xSemaphoreGive(_frame_ready_sem);
+        xSemaphoreGive(_frame_ready_sem);
+        /* Poll until capture task clears its handle */
+        while (_capture_task.load(std::memory_order_acquire) != nullptr) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    /* Step 3: Full cleanup — now safe to free all resources */
     CameraDriver::instance().release("stream");
     _stop_http_server();
     _deinit_mdns();
     _deinit_detection();
     _deinit_video();
+
+    /* Free capture task PSRAM stack and TCB */
+    if (_capture_stack) {
+        heap_caps_free(_capture_stack);
+        _capture_stack = nullptr;
+    }
+    if (_capture_tcb) {
+        heap_caps_free(_capture_tcb);
+        _capture_tcb = nullptr;
+    }
+
+    /* Reset shared JPEG buffer */
+    if (_shared_jpeg_mutex && xSemaphoreTake(_shared_jpeg_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _shared_jpeg_size = 0;
+        xSemaphoreGive(_shared_jpeg_mutex);
+    }
 
     /* Reset FPS publisher handle — will be re-created on next start() */
     _fps_pub = ORB_ADVERT_INVALID;
@@ -346,12 +457,8 @@ bool CameraStream::_init_video(void)
                  (char)((_cam_pixel_format >> 24) & 0xFF),
                  _cam_pixel_format);
 
-        /* Step 7: Skip JPEG encoder init here — it's done lazily on first
-         * MJPEG client connection via _init_encoder().  The encoder's DMA
-         * descriptors require MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL (internal SRAM),
-         * which may be scarce on LCD-4B when LVGL draw buffers are also in
-         * internal RAM.  Deferring to first client gives the system time to
-         * settle and potentially free transient allocations. */
+        /* Step 7: JPEG encoder init is done in start() before capture task.
+         * See _init_encoder() for retry logic with backoff. */
 
         /* Step 8: VIDIOC_STREAMON */
         ESP_LOGI(TAG, "V4L2 STREAMON...");
@@ -407,15 +514,14 @@ void CameraStream::_deinit_video(void)
 }
 
 /*============================================================================
- * Lazy JPEG Encoder Init/Deinit
+ * JPEG Encoder Init/Deinit
  *
  * The JPEG hardware encoder's DMA descriptors (rxlink, txlink) require
  * MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL — they MUST be in internal SRAM.
  * On LCD-4B, internal SRAM is scarce because LVGL draw buffers also live
- * there.  By deferring encoder creation to the first MJPEG client, we:
- *   1. Give the system time to settle (transient allocations freed)
- *   2. Allow PSRAM-based draw buffers to be used (if SPIRAM_TRY_ALLOCATE_DMA_BUFFER)
- *   3. Retry with backoff if internal memory is temporarily fragmented
+ * there.  Encoder is now initialized upfront in start() (no longer lazy)
+ * because the independent capture task needs it immediately.
+ * Retry with backoff if internal memory is temporarily fragmented.
  *============================================================================*/
 bool CameraStream::_init_encoder(void)
 {
@@ -957,22 +1063,37 @@ bool CameraStream::_send_mjpeg_part(httpd_req_t *req, uint8_t *jpeg_data, uint32
     return true;
 }
 
-/* Save latest JPEG snapshot for /api/capture_image endpoint */
-void CameraStream::_save_jpeg_snapshot(uint8_t *jpeg_data, uint32_t jpeg_size)
+/* Store latest JPEG in shared buffer and signal waiting HTTP clients.
+ * Called by capture task after encoding each frame. */
+void CameraStream::_store_shared_jpeg(uint8_t *jpeg_data, uint32_t jpeg_size)
 {
-    if (!_last_jpeg_mutex || xSemaphoreTake(_last_jpeg_mutex, 0) != pdTRUE) return;
-    if (_last_jpeg_capacity < jpeg_size) {
-        uint8_t *new_buf = (uint8_t *)realloc(_last_jpeg_buf, jpeg_size);
+    /* Use short timeout (10ms) instead of non-blocking: if a stream_handler
+     * is copying from the shared buffer, we wait briefly rather than silently
+     * dropping the frame and leaving clients without a semaphore signal. */
+    if (!_shared_jpeg_mutex || xSemaphoreTake(_shared_jpeg_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        /* Mutex unavailable — still signal clients so they don't timeout.
+         * They'll see the same _frame_generation and skip (no duplicate send). */
+        xSemaphoreGive(_frame_ready_sem);
+        xSemaphoreGive(_frame_ready_sem);
+        return;
+    }
+    if (_shared_jpeg_capacity < jpeg_size) {
+        uint8_t *new_buf = (uint8_t *)heap_caps_realloc(_shared_jpeg_buf, jpeg_size, MALLOC_CAP_SPIRAM);
         if (new_buf) {
-            _last_jpeg_buf = new_buf;
-            _last_jpeg_capacity = jpeg_size;
+            _shared_jpeg_buf = new_buf;
+            _shared_jpeg_capacity = jpeg_size;
         }
     }
-    if (_last_jpeg_buf && _last_jpeg_capacity >= jpeg_size) {
-        memcpy(_last_jpeg_buf, jpeg_data, jpeg_size);
-        _last_jpeg_size = jpeg_size;
+    if (_shared_jpeg_buf && _shared_jpeg_capacity >= jpeg_size) {
+        memcpy(_shared_jpeg_buf, jpeg_data, jpeg_size);
+        _shared_jpeg_size = jpeg_size;
     }
-    xSemaphoreGive(_last_jpeg_mutex);
+    _frame_generation.fetch_add(1, std::memory_order_release);
+    xSemaphoreGive(_shared_jpeg_mutex);
+
+    /* Signal stream handlers (counting sem: give once per waiting client slot) */
+    xSemaphoreGive(_frame_ready_sem);
+    xSemaphoreGive(_frame_ready_sem);  /* Second slot for potential 2nd client */
 }
 
 /* Update FPS counters and publish uORB stats every FPS_LOG_INTERVAL_S seconds */
@@ -1058,29 +1179,22 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     heap_caps_free(frame);
 }
 
-/** MJPEG stream handler (port 81) — continuous multipart JPEG stream */
-static esp_err_t stream_handler(httpd_req_t *req)
+/*============================================================================
+ * Independent Capture Task — DQBUF → encode → publish uORB → store shared JPEG
+ *
+ * This task runs continuously while _running is true, regardless of whether
+ * any HTTP client is connected. This ensures uORB topics (fps_stats,
+ * camera_frame) are always published for ULog recording.
+ *============================================================================*/
+void CameraStream::_capture_task_fn(void *arg)
 {
-    CameraStream *cs = (CameraStream *)req->user_ctx;
-    char part_buf[128];
+    CameraStream *cs = (CameraStream *)arg;
     struct v4l2_buffer buf;
-
-    /* Lazy-init JPEG encoder on first MJPEG client connection.
-     * This defers the internal-SRAM-heavy DMA descriptor allocation
-     * until after V4L2 pipeline is stable and transient memory freed. */
-    if (!cs->_encoder_initialized.load(std::memory_order_acquire) && cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
-        if (!cs->_init_encoder()) {
-            ESP_LOGE(TAG, "Cannot start MJPEG stream: JPEG encoder init failed");
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-    }
-
-    httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
     int dqbuf_fail_count = 0;
-    while (cs->isRunning()) {
+
+    ESP_LOGI(TAG, "Capture task started");
+
+    while (cs->_running.load(std::memory_order_relaxed)) {
         /* Dequeue frame */
         memset(&buf, 0, sizeof(buf));
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -1089,31 +1203,29 @@ static esp_err_t stream_handler(httpd_req_t *req)
             ESP_LOGW(TAG, "V4L2 DQBUF failed (errno=%d)", errno);
             dqbuf_fail_count++;
             if (dqbuf_fail_count >= 100) {
-                ESP_LOGE(TAG, "V4L2 DQBUF failed %d times consecutively, stopping stream", dqbuf_fail_count);
+                ESP_LOGE(TAG, "V4L2 DQBUF failed %d times consecutively, stopping", dqbuf_fail_count);
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        dqbuf_fail_count = 0;  /* Reset on success */
+        dqbuf_fail_count = 0;
         if (!(buf.flags & V4L2_BUF_FLAG_DONE)) {
-            ESP_LOGD(TAG, "V4L2 DQBUF buf[%d] not done, requeue", buf.index);
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        /* Bounds check: defensive guard against out-of-range buffer index */
+        /* Bounds check */
         if (buf.index >= cs->_v4l2_buf_count) {
-            ESP_LOGW(TAG, "V4L2 DQBUF returned invalid index %u (max %u), requeue", buf.index, cs->_v4l2_buf_count);
+            ESP_LOGW(TAG, "V4L2 DQBUF invalid index %u (max %u)", buf.index, cs->_v4l2_buf_count);
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        /* Clamp bytesused to buffer length to prevent over-read */
+        /* Clamp bytesused */
         if (buf.bytesused > cs->_v4l2_buf_len[buf.index]) {
-            ESP_LOGW(TAG, "V4L2 bytesused %u > buf len %u, clamping", buf.bytesused, cs->_v4l2_buf_len[buf.index]);
             buf.bytesused = cs->_v4l2_buf_len[buf.index];
         }
 
@@ -1121,229 +1233,251 @@ static esp_err_t stream_handler(httpd_req_t *req)
         esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Every N frames: PPA process + encode JPEG + run inference.
-         * With PPA: V4L2 buffer is passed directly to PPA (DMA read, ~1ms),
-         * then returned. No copy buffer needed. */
+        /* Track whether V4L2 buffer has been returned to the driver.
+         * For JPEG sensors, the buffer must stay held until all consumers
+         * (publish, store) finish using it. For non-JPEG paths, we return
+         * the buffer early (after PPA/copy/encode detaches data). */
+        bool buf_returned = false;
+
+        /*--- PPA + Detection (every N frames) ---*/
         bool detection_run_this_frame = false;
         if (cs->_detector && cs->_model_ready
             && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
 
-            /* Run PPA directly on V4L2 mmap buffer (if available) */
             bool ppa_ok = false;
 #if CONFIG_SOC_PPA_SUPPORTED
             if (cs->_ppa && cs->_ppa->is_initialized()) {
                 ppa_ok = cs->_ppa->process(cs->_v4l2_bufs[buf.index]);
             }
 #endif
-
-            /* Copy V4L2 buffer for CPU fallback (PPA output is independent of V4L2) */
             if (!ppa_ok && cs->_detect_in_buf) {
                 uint32_t copy_sz = buf.bytesused;
                 if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
                 memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
             }
 
-            /* Determine source data BEFORE returning V4L2 buffer.
-             * For JPEG sensors: use raw JPEG directly.
-             * For PPA path: use PPA BGR24 output.
-             * For CPU fallback: use V4L2 RGB565 buffer. */
+            /* Determine JPEG source before returning V4L2 buffer */
             uint8_t *jpeg_src = nullptr;
             uint32_t jpeg_src_size = 0;
-
             if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-                /* JPEG sensor — no re-encoding needed, use raw V4L2 data.
-                 * Must read pointer BEFORE QBUF (buffer returned to driver). */
                 jpeg_src = cs->_v4l2_bufs[buf.index];
                 jpeg_src_size = buf.bytesused;
             }
 
-            /* Return V4L2 buffer immediately after PPA (or copy).
-             * For JPEG sensor path: defer QBUF — the JPEG data IS the V4L2
-             * buffer, so we must keep it until after HTTP send/snapshot/publish.
-             * For non-JPEG: PPA/copy detached data from V4L2, QBUF early is safe. */
+            /* Return V4L2 buffer early for non-JPEG (PPA/copy detached data) */
             if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                buf_returned = true;
             }
 
-            /* Encode JPEG from PPA output (300×300 BGR24) or V4L2 buffer (800×800 RGB565) */
-            uint32_t jpeg_size;
-            uint8_t *jpeg_data;
+            /* Encode JPEG */
+            uint32_t jpeg_size = 0;
+            uint8_t *jpeg_data = nullptr;
+            bool encoder_held = false;
 
             if (jpeg_src) {
-                /* JPEG sensor path: use pre-saved data */
                 jpeg_data = jpeg_src;
                 jpeg_size = jpeg_src_size;
             } else if (ppa_ok) {
-                /* PPA path: encode from PPA BGR24 output (300×300) */
-                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                    continue;
-                }
-                /* Draw detection boxes on PPA output buffer (300×300 BGR24) */
                 cs->_draw_detection_boxes_on_ppa();
+                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+                    goto detect_done;
+                }
+                encoder_held = true;
                 esp_err_t ret = example_encoder_process(cs->_encoder_handle,
                                                          cs->_ppa->out_buf(),
                                                          cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
                                                          cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
                 if (ret != ESP_OK) {
                     xSemaphoreGive(cs->_encoder_sem);
-                    continue;
+                    encoder_held = false;
+                    goto detect_done;
                 }
                 jpeg_data = cs->_jpeg_out_buf;
             } else {
-                /* CPU fallback: PPA not active — encoder is configured for cam format.
-                 * Encode from _detect_in_buf (RGB565 copy of V4L2 buffer). */
-                if (!cs->_detect_in_buf) continue;
+                if (!cs->_detect_in_buf) goto detect_done;
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                    continue;
+                    goto detect_done;
                 }
+                encoder_held = true;
                 uint32_t copy_sz = cs->_detect_in_size;
                 esp_err_t ret = example_encoder_process(cs->_encoder_handle,
                                                          cs->_detect_in_buf, copy_sz,
                                                          cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
                 if (ret != ESP_OK) {
                     xSemaphoreGive(cs->_encoder_sem);
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                    continue;
+                    encoder_held = false;
+                    goto detect_done;
                 }
                 jpeg_data = cs->_jpeg_out_buf;
-                /* Return V4L2 buffer after encoding */
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             }
 
-            /* Send MJPEG part before inference so stream stays continuous */
-            if (!cs->_send_mjpeg_part(req, jpeg_data, jpeg_size, part_buf, sizeof(part_buf))) {
-                if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
-                    xSemaphoreGive(cs->_encoder_sem);
-                } else {
-                    /* JPEG sensor: buffer was not yet returned to V4L2 */
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                }
-                break;
+            /* Publish & store */
+            if (jpeg_data && jpeg_size > 0) {
+                cs->_publish_camera_frame(jpeg_data, jpeg_size);
+                cs->_store_shared_jpeg(jpeg_data, jpeg_size);
             }
-            if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+
+            /* Release encoder semaphore */
+            if (encoder_held && cs->_encoder_sem) {
                 xSemaphoreGive(cs->_encoder_sem);
+                encoder_held = false;
             }
-
-            /* Save JPEG snapshot for /api/capture_image */
-            cs->_save_jpeg_snapshot(jpeg_data, jpeg_size);
-
-            /* Publish camera frame to uORB for ULog recording */
-            cs->_publish_camera_frame(jpeg_data, jpeg_size);
-
-            /* JPEG sensor: all consumers done, now safe to return V4L2 buffer */
-            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+            /* JPEG sensor: return V4L2 buffer after all consumers done */
+            if (!buf_returned && cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                buf_returned = true;
             }
 
-            /* Run inference — PPA output already available, _run_inference reuses it */
             cs->_run_inference(nullptr, 0);
             cs->_update_fps_stats(jpeg_size);
-            vTaskDelay(pdMS_TO_TICKS(50));
             detection_run_this_frame = true;
+detect_done:
+            /* Ensure V4L2 buffer is returned on any error/early-exit path */
+            if (!buf_returned) {
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                buf_returned = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
 
         if (!detection_run_this_frame) {
-            /* boundary is sent by _send_mjpeg_part() below */
-
-            uint32_t jpeg_size;
-            uint8_t *jpeg_data;
+            /*--- Non-detection frame: PPA → encode → publish → store ---*/
+            uint32_t jpeg_size = 0;
+            uint8_t *jpeg_data = nullptr;
+            bool encoder_held = false;
 
             if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-                /* JPEG sensor — use raw V4L2 data directly.
-                 * Must defer QBUF: jpeg_data points into V4L2 mmap buffer,
-                 * which must not be returned to driver until all consumers
-                 * (_send_mjpeg_part, _save_jpeg_snapshot, _publish_camera_frame)
-                 * finish using it. */
                 jpeg_data = cs->_v4l2_bufs[buf.index];
                 jpeg_size = buf.bytesused;
             }
 #if CONFIG_SOC_PPA_SUPPORTED
             else if (cs->_ppa && cs->_ppa->is_initialized()) {
-                /* PPA path: pass V4L2 buffer directly to PPA (DMA read, ~1ms),
-                 * then return V4L2 buffer. No copy needed. */
                 if (cs->_ppa->process(cs->_v4l2_bufs[buf.index])) {
-                    /* Return V4L2 buffer immediately — PPA output is independent */
                     ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-
-                    /* Draw detection boxes on PPA output buffer (300×300 BGR24) */
+                    buf_returned = true;
                     cs->_draw_detection_boxes_on_ppa();
-
                     if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                        continue;
+                        goto non_detect_done;
                     }
+                    encoder_held = true;
                     esp_err_t ret = example_encoder_process(cs->_encoder_handle,
                                                              cs->_ppa->out_buf(),
                                                              cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
                                                              cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
                     if (ret != ESP_OK) {
                         xSemaphoreGive(cs->_encoder_sem);
-                        continue;
+                        encoder_held = false;
+                        goto non_detect_done;
                     }
                     jpeg_data = cs->_jpeg_out_buf;
                 } else {
-                    /* PPA failed — return V4L2 buffer, skip this frame */
-                    ESP_LOGW(TAG, "PPA process failed on non-detection frame");
                     ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                    continue;
+                    buf_returned = true;
+                    goto non_detect_done;
                 }
             }
 #endif
             else {
-                /* CPU fallback: draw boxes on V4L2 buffer, encode from 800×800 RGB565.
-                 * After encoding, jpeg_data points to _jpeg_out_buf (independent of
-                 * V4L2 buffer), so QBUF is safe after encoding completes. */
                 cs->_draw_detection_boxes_on_rgb565(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index]);
-
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                    continue;
+                    goto non_detect_done;
                 }
+                encoder_held = true;
                 esp_err_t ret = example_encoder_process(cs->_encoder_handle,
                                                          cs->_v4l2_bufs[buf.index], buf.bytesused,
                                                          cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
                 if (ret != ESP_OK) {
                     xSemaphoreGive(cs->_encoder_sem);
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                    continue;
+                    encoder_held = false;
+                    goto non_detect_done;
                 }
                 jpeg_data = cs->_jpeg_out_buf;
-                /* Return V4L2 buffer — encoding done, jpeg_data is independent */
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                buf_returned = true;
             }
 
-            /* Send part header + JPEG data */
-            if (!cs->_send_mjpeg_part(req, jpeg_data, jpeg_size, part_buf, sizeof(part_buf))) {
-                if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
-                    xSemaphoreGive(cs->_encoder_sem);
-                } else {
-                    /* JPEG sensor: buffer was not yet returned to V4L2 */
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                }
-                break;
+            /* Publish & store */
+            if (jpeg_data && jpeg_size > 0) {
+                cs->_publish_camera_frame(jpeg_data, jpeg_size);
+                cs->_store_shared_jpeg(jpeg_data, jpeg_size);
             }
 
-            /* Save latest JPEG snapshot for /api/capture_image endpoint */
-            cs->_save_jpeg_snapshot(jpeg_data, jpeg_size);
-
-            /* Publish camera frame to uORB for ULog recording */
-            cs->_publish_camera_frame(jpeg_data, jpeg_size);
-
-            if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+            /* Release encoder semaphore */
+            if (encoder_held && cs->_encoder_sem) {
                 xSemaphoreGive(cs->_encoder_sem);
+                encoder_held = false;
             }
-
-            /* JPEG sensor: all consumers done, now safe to return V4L2 buffer.
-             * Non-JPEG paths already returned the buffer above (PPA: after process,
-             * CPU fallback: after encoding). */
-            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+            /* JPEG sensor: return V4L2 buffer after all consumers done */
+            if (!buf_returned && cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
                 ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                buf_returned = true;
             }
 
             cs->_update_fps_stats(jpeg_size);
-
-            /* Yield CPU to prevent SDIO/WiFi starvation */
+non_detect_done:
+            /* Ensure V4L2 buffer is returned on any error/early-exit path */
+            if (!buf_returned) {
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+                buf_returned = true;
+            }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
+    }
+
+    /* Task is exiting — clear handle so stop() knows we're done */
+    cs->_capture_task.store(nullptr, std::memory_order_release);
+    ESP_LOGI(TAG, "Capture task exiting");
+    vTaskDelete(nullptr);
+}
+
+/** MJPEG stream handler (port 81) — pure consumer, reads shared JPEG buffer */
+static esp_err_t stream_handler(httpd_req_t *req)
+{
+    CameraStream *cs = (CameraStream *)req->user_ctx;
+    char part_buf[128];
+    uint32_t last_gen = 0;
+
+    httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    while (cs->isRunning()) {
+        /* Wait for new frame from capture task (max 2s timeout) */
+        if (xSemaphoreTake(cs->_frame_ready_sem, pdMS_TO_TICKS(2000)) != pdPASS) {
+            continue;
+        }
+
+        /* Skip if we already sent this generation (another client consumed our signal) */
+        uint32_t cur_gen = cs->_frame_generation.load(std::memory_order_acquire);
+        if (cur_gen == last_gen) continue;
+        last_gen = cur_gen;
+
+        /* Read latest JPEG from shared buffer */
+        uint8_t *jpeg_data = nullptr;
+        uint32_t jpeg_size = 0;
+
+        if (cs->_shared_jpeg_mutex &&
+            xSemaphoreTake(cs->_shared_jpeg_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (cs->_shared_jpeg_buf && cs->_shared_jpeg_size > 0) {
+                /* Allocate a local copy — shared buffer may be overwritten by
+                 * capture task before HTTP send completes. At ~5-8KB per JPEG,
+                 * this is affordable from PSRAM. */
+                jpeg_data = (uint8_t *)heap_caps_malloc(cs->_shared_jpeg_size, MALLOC_CAP_SPIRAM);
+                if (jpeg_data) {
+                    memcpy(jpeg_data, cs->_shared_jpeg_buf, cs->_shared_jpeg_size);
+                    jpeg_size = cs->_shared_jpeg_size;
+                }
+            }
+            xSemaphoreGive(cs->_shared_jpeg_mutex);
+        }
+
+        if (!jpeg_data || jpeg_size == 0) continue;
+
+        /* Send MJPEG part */
+        bool ok = cs->_send_mjpeg_part(req, jpeg_data, jpeg_size, part_buf, sizeof(part_buf));
+        heap_caps_free(jpeg_data);
+
+        if (!ok) break;
     }
 
     return ESP_OK;
@@ -1385,32 +1519,6 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     free(json_str);
     return ret;
 }
-
-
-    /** GET /api/capture_image — return the latest JPEG frame as image/jpeg */
-    static esp_err_t capture_image_handler(httpd_req_t *req)
-    {
-        CameraStream *cs = (CameraStream *)req->user_ctx;
-
-        if (!cs->_last_jpeg_mutex) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Snapshot not available");
-            return ESP_FAIL;
-        }
-
-        esp_err_t ret = ESP_FAIL;
-        if (xSemaphoreTake(cs->_last_jpeg_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            if (cs->_last_jpeg_buf && cs->_last_jpeg_size > 0) {
-                httpd_resp_set_type(req, "image/jpeg");
-                ret = httpd_resp_send(req, (char *)cs->_last_jpeg_buf, cs->_last_jpeg_size);
-            } else {
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No frame captured yet");
-            }
-            xSemaphoreGive(cs->_last_jpeg_mutex);
-        } else {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Snapshot busy");
-        }
-        return ret;
-    }
 
 
     /** Detection info JSON handler — person count + max confidence */
@@ -1607,13 +1715,11 @@ bool CameraStream::_start_http_server(void)
     httpd_uri_t uri_quality = { .uri = "/api/set_quality", .method = HTTP_GET, .handler = set_quality_handler, .user_ctx = this };
     httpd_uri_t uri_config  = { .uri = "/api/set_camera_config", .method = HTTP_POST, .handler = set_camera_config_handler, .user_ctx = this };
     httpd_uri_t uri_detect  = { .uri = "/api/get_detection_info", .method = HTTP_GET, .handler = detection_info_handler, .user_ctx = this };
-    httpd_uri_t uri_capture = { .uri = "/api/capture_image", .method = HTTP_GET, .handler = capture_image_handler, .user_ctx = this };
     httpd_register_uri_handler(_httpd_80, &uri_index);
     httpd_register_uri_handler(_httpd_80, &uri_info);
     httpd_register_uri_handler(_httpd_80, &uri_quality);
     httpd_register_uri_handler(_httpd_80, &uri_config);
     httpd_register_uri_handler(_httpd_80, &uri_detect);
-    httpd_register_uri_handler(_httpd_80, &uri_capture);
 
     /* Port 81: MJPEG stream */
     config.server_port += 1;   // 80 → 81 (matches reference: config.server_port += 1)

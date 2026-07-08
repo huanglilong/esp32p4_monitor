@@ -279,34 +279,6 @@ class Esp32HttpService {
     }
   }
 
-  /// Capture a single JPEG image (download, not from stream).
-  Future<Uint8List> captureImage() async {
-    return _capture('/api/capture_image?source=0');
-  }
-
-  /// Capture raw binary image data.
-  Future<Uint8List> captureRaw() async {
-    return _capture('/api/capture_binary?source=0');
-  }
-
-  Future<Uint8List> _capture(String path) async {
-    final c = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 10)
-      ..findProxy = (url) => 'DIRECT';
-    try {
-      final r = await c.getUrl(
-        Uri.parse('http://${_connectedDevice!.host}:80$path'),
-      );
-      final resp = await r.close();
-      return await resp.fold<Uint8List>(
-        Uint8List(0),
-        (p, chunk) => Uint8List.fromList([...p, ...chunk]),
-      );
-    } finally {
-      c.close();
-    }
-  }
-
   /// Set camera JPEG quality (1-100) via raw socket.
   Future<void> setQuality(int quality) async {
     final q = quality.clamp(1, 100);

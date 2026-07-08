@@ -391,26 +391,6 @@ class AppState extends ChangeNotifier {
 
   // ── Actions: Save & Settings ──
 
-  /// Capture and return a single JPEG image frame.
-  Future<Uint8List?> saveImage() async {
-    try {
-      return await _httpService.captureImage();
-    } catch (e) {
-      debugPrint('[AppState] Save image failed: $e');
-      return null;
-    }
-  }
-
-  /// Capture and return raw binary image data.
-  Future<Uint8List?> saveRaw() async {
-    try {
-      return await _httpService.captureRaw();
-    } catch (e) {
-      debugPrint('[AppState] Save raw failed: $e');
-      return null;
-    }
-  }
-
   /// Set JPEG compression quality (1-100).
   Future<void> setQuality(int quality) async {
     _addLog('Setting JPEG quality to $quality');

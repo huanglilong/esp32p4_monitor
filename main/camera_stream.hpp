@@ -79,18 +79,20 @@ public:
     std::atomic<bool>      _encoder_initialized;      /* Atomic: init done, safe to use _encoder_handle/_encoder_sem */
     std::atomic<bool>      _encoder_init_in_progress; /* Atomic: prevents double-init, notifies waiters */
 
-    /* Last JPEG snapshot for /api/capture_image — written by stream handler, read by HTTP handler */
-    SemaphoreHandle_t      _last_jpeg_mutex;
-    uint8_t               *_last_jpeg_buf;
-    uint32_t               _last_jpeg_size;
-    uint32_t               _last_jpeg_capacity;
+    /* Shared JPEG buffer — written by capture task, read by stream handler(s) */
+    SemaphoreHandle_t      _shared_jpeg_mutex;     /* Protects _shared_jpeg_buf/size */
+    uint8_t               *_shared_jpeg_buf;       /* Latest JPEG data (PSRAM) */
+    uint32_t               _shared_jpeg_size;      /* Latest JPEG size */
+    uint32_t               _shared_jpeg_capacity;  /* Buffer capacity */
+    std::atomic<uint32_t>  _frame_generation;      /* Incremented each frame — stream handlers detect new frames */
+    SemaphoreHandle_t      _frame_ready_sem;       /* Signaled by capture task (counting sem, max 2 = max MJPEG clients) */
 
-    /* Lazy JPEG encoder init — called from stream_handler (C callback, needs public access) */
+    /* JPEG encoder init/deinit — called from capture task */
     bool _init_encoder(void);
     void _deinit_encoder(void);
 
-    /* FPS tracking — cross-core: HTTP handler (core 0) writes, LVGL timer (core 1) reads */
-    std::atomic<uint32_t>  _frame_count;       /* Total frames sent */
+    /* FPS tracking — cross-core: capture task writes, LVGL timer reads */
+    std::atomic<uint32_t>  _frame_count;       /* Total frames captured */
     std::atomic<uint32_t>  _fps_frame_count;   /* Frames in current FPS window */
     struct timespec        _fps_window_start;  /* Start of current FPS window */
     std::atomic<uint32_t>  _fps_total_bytes;   /* JPEG bytes in current FPS window */
@@ -124,17 +126,14 @@ public:
                             int x1, int y1, int x2, int y2,
                             uint8_t b, uint8_t g, uint8_t r);
 
-    /* Stream handler helpers — extracted from stream_handler for readability */
+    /* Stream handler helpers */
     void _draw_detection_boxes_on_ppa(void);      /* Draw boxes on PPA BGR24 output + cache msync */
     void _draw_detection_boxes_on_rgb565(uint8_t *buf, uint32_t len);  /* Draw boxes on RGB565 buffer + cache msync */
-    bool _encode_and_send_jpeg(httpd_req_t *req, uint8_t *src, uint32_t src_size,
-                               uint32_t &out_jpeg_size, uint8_t *&out_jpeg_data,
-                               bool v4l2_buf_consumed);  /* Encode JPEG, return false on error (break) */
     bool _send_mjpeg_part(httpd_req_t *req, uint8_t *jpeg_data, uint32_t jpeg_size,
                           char *part_buf, size_t part_buf_size);  /* Send MJPEG boundary+part, return false on error */
-    void _save_jpeg_snapshot(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Cache latest JPEG for /api/capture_image */
     void _update_fps_stats(uint32_t jpeg_size);   /* Update FPS counters and publish uORB */
     void _publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Publish camera_frame uORB topic for ULog recording */
+    void _store_shared_jpeg(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Copy JPEG to shared buffer + signal _frame_ready_sem */
 
     /* Run detection inference on given buffer (same task, no mutex needed) */
     void _run_inference(uint8_t *buffer, uint32_t size);
@@ -157,6 +156,12 @@ private:
     bool _init_detection(void);
     void _deinit_detection(void);
     static void _model_load_task_fn(void *arg);  /* Background model loader */
+
+    /* Capture task: independent frame capture/encode/publish loop */
+    static void _capture_task_fn(void *arg);
+    std::atomic<TaskHandle_t>  _capture_task;       /* Atomic: task writes nullptr on exit, stop() reads */
+    StackType_t               *_capture_stack;      /* PSRAM-allocated stack (8KB words = 32KB) */
+    StaticTask_t              *_capture_tcb;        /* TCB buffer for static task (internal SRAM) */
 
     /* HTTP server */
     httpd_handle_t         _httpd_80;          // Port 80: API + info

@@ -75,7 +75,7 @@ esp32p4_monitor/
 │   ├── phone_app_camera_stream.hpp # Camera Stream App 头文件 (NEW)
 │   ├── phone_app_camera_stream.cpp # Camera Stream App (WiFi状态 + MJPEG切换 + 系统监控)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件
-│   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → HTTP MJPEG + mDNS)
+│   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → capture task + HTTP MJPEG + mDNS)
 │   ├── ppa_preprocessor.hpp       # PPA 硬件预处理 (RGB565→RGB888 resize)
 │   └── ppa_preprocessor.cpp       # PPA SRM client: 缩放+格式转换, CPU 仅做量化
 ├── proto/                                    # uORB .msg 消息定义
@@ -159,7 +159,7 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 
 | Topic | 结构体 | 队列深度 | 发布者 | 订阅者 |
 |-------|--------|:-------:|--------|--------|
-| `fps_stats` | `fps_stats_s` | 3 | CameraStream | CameraStream App UI |
+| `fps_stats` | `fps_stats_s` | 3 | CameraStream (capture task) | CameraStream App UI |
 | `detection_result` | `detection_result_s` | 1 | NPU 检测 task | UI 绘图 timer |
 | `wifi_state` | `wifi_state_s` | 1 | Settings (wifi_scan) | Web Config, UI |
 | `audio_level` | `audio_level_s` | 1 | Audio task | UI 电平表 |
@@ -565,7 +565,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 | 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~5-8KB/帧 @ 300×300) |
 | 推流分辨率 | 300×300 BGR24 (PPA 输出, 非 800×800 RGB565) |
 | 帧率实测 | **~2fps** @ 2fps sensor, CPU ~5% |
-| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/capture_image`, `/api/get_detection_info`, `/api/set_camera_config`), 端口 81: MJPEG `/stream` |
+| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/get_detection_info`, `/api/set_camera_config`), 端口 81: MJPEG `/stream` |
 | Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块) |
 
 **调试过程中发现并修复的关键问题**:
@@ -576,11 +576,11 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **TCP keep-alive**: 所有 httpd 实例启用 TCP keep-alive (idle=5s, interval=5s, count=3), 防止客户端断连后半开 TCP 连接阻塞 select() 导致 HTTP 服务器不可达。
 - **WiFi 断连 httpd 重启**: Web Config (8080) 检测 WiFi 断连后自动停止 httpd 刷除残留 session, WiFi 恢复后自动重启并重新注册 URI, 防止 EHOSTUNREACH/EAGAIN 导致的 session 泄漏耗尽 `max_open_sockets`。URI 注册提取为 `_register_web_config_uris()` 复用。
 - **LWIP_MAX_SOCKETS 扩容**: 22→28, 3 个 httpd 实例内部占用 17 个 socket, 加 WiFi/mDNS/SNTP 后 22 不足导致 `accept()` 返回 `ENOTSOCK`。
-- **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
-- **JPEG 编码器初始化竞态**: 两个并发客户端可同时触发延迟初始化。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护。
-- **JPEG 快照**: stream handler 每帧保存最新 JPEG 到 `_last_jpeg_buf` (mutex 保护), `/api/capture_image` 端点返回最新帧的 `image/jpeg`。
-- **内联人体检测**: CameraStream 在 stream_handler 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→BGR888 resize)，检测框直接绘制在 PPA BGR24 输出 buffer 上再编码为 JPEG。V4L2 buffer 在 PPA 处理后立即归还 (~1ms)，不再持有到编码完成。JPEG 编码器直接消费 PPA 输出 (300×300 BGR24)，编码时间从 ~200ms 降至 ~30ms。
-- **V4L2 QBUF 延迟 (JPEG sensor)**: JPEG sensor 路径中 `jpeg_data` 直接指向 V4L2 mmap buffer，QBUF 必须延迟至所有消费者 (`_send_mjpeg_part`/`_save_jpeg_snapshot`/`_publish_camera_frame`) 完成后。检测帧和非检测帧路径均已统一为延迟 QBUF 模式。PPA 路径 (PPA 输出独立) 和 CPU fallback 路径 (编码后 `jpeg_data` 指向 `_jpeg_out_buf`) 可安全提前 QBUF。
+- **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器在 start() 时直接初始化 (capture task 需要立即使用, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
+- **JPEG 编码器初始化竞态**: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护, 防止并发初始化。
+- **独立 capture task 架构**: 帧采集/编码/uORB 发布从 stream_handler 分离到独立 `_capture_task` (FreeRTOS task)。即使无 HTTP 客户端连接, capture task 仍持续运行 → DQBUF → encode → publish (`fps_stats`, `camera_frame`) → store shared JPEG, 确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: 等待 `_frame_ready_sem` → 从 `_shared_jpeg_buf` 读取最新 JPEG → 发送 MJPEG part。
+- **内联人体检测**: CameraStream 在 capture task 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→BGR888 resize)，检测框直接绘制在 PPA BGR24 输出 buffer 上再编码为 JPEG。V4L2 buffer 在 PPA 处理后立即归还 (~1ms)，不再持有到编码完成。JPEG 编码器直接消费 PPA 输出 (300×300 BGR24)，编码时间从 ~200ms 降至 ~30ms。
+- **V4L2 QBUF 延迟 (JPEG sensor)**: JPEG sensor 路径中 `jpeg_data` 直接指向 V4L2 mmap buffer，QBUF 必须延迟至所有消费者 (`_publish_camera_frame`/`_store_shared_jpeg`) 完成后。PPA 路径 (PPA 输出独立) 和 CPU fallback 路径 (编码后 `jpeg_data` 指向 `_jpeg_out_buf`) 可安全提前 QBUF。
 
 ### 15. esp_hosted (WiFi over SDIO) 稳定性
 

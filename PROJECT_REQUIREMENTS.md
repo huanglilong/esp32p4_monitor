@@ -130,8 +130,8 @@
 | S85 | **Flutter 设备可达性状态** | 设备卡片显示状态徽章：Connected(绿) / Reachable(蓝) / Offline(橙) / History(灰)，TCP 端口 80/8080 探测 | ✅ |
 | R18 | **Web File Manager** | web_config_server 新增 SD 卡文件管理器：递归浏览目录、Download 文件到浏览器、Delete 文件/空目录；与 Audio Recorder 互斥（模式切换），路径穿越防护 | ✅ |
 | R19 | **Flutter File Manager** | Flutter App Settings 页新增文件管理：目录浏览/导航、下载、删除，含确认弹窗 | ✅ |
-| R20 | **CameraStream JPEG 快照** | `/api/capture_image` 端点返回最新 JPEG 帧 (stream handler 每帧缓存到 `_last_jpeg_buf`, mutex 保护) | ✅ |
-| R21 | **CameraStream 内联人体检测** | MJPEG stream_handler 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
+| R20 | ~~**CameraStream JPEG 快照**~~ | `/api/capture_image` 端点已移除，改为独立 capture task 架构 | ❌→移除 |
+| R21 | **CameraStream 内联人体检测** | capture task 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
 | R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, 默认 quality 30 下典型 5-8KB/帧、实测最大 ~9210B；`jpeg_data` 缓冲 10240B 覆盖绝大多数帧)，2fps；Web API `/api/camera_record` 控制启停；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`orb_metadata.o_size_no_padding` (PX4 惯例) 使 ULog writer 不写尾部 padding 字节，修复 pyulog 兼容性；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
 | S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
 | S87 | **AudioDriver deinit mutex 删除竞态** | `deinit()` 先置空 codec handles + yield 让 in-flight 操作退出，再安全删除 `_codec_mutex`；同时重置 `_vol_pub` 防止重启用 stale handle | ✅ |
@@ -268,6 +268,7 @@
 | S212 | **main.cpp assert no-op** | `assert(*disp)` 在 release 构建中被移除，NULL disp 传入后续函数 → NPE。修复: 改为显式 null 检查 + log + return | ✅ |
 | S213 | **main.cpp esp_read_mac 未检查** | `esp_read_mac` 失败时 mac 未初始化，ULog sys_uuid 含垃圾数据。修复: 检查返回值，失败时 memset 清零 | ✅ |
 | S214 | **camera_frame JPEG 超出 ULog 缓冲** | 实测帧 JPEG 达 9210B，超过 `camera_frame_s.jpeg_data[8192]`，触发 `JPEG frame too large for ULog` 告警并丢帧。修复: `proto/camera_frame.msg` 的 `jpeg_data` 数组由 8192 扩至 10240（10KB，覆盖默认 quality 30 下实测 ~9210B 的帧并留余量）；`_publish_camera_frame` 的大小检查自动取 `sizeof(jpeg_data)`，无需改逻辑。注意: 每次发布 uORB 队列 (depth 2，默认单一 ULog 订阅) 在内部 SRAM 占用 2×10240B，较此前 +4KB；彻底消除上限且省 SRAM 的更优方案为 O1（改为 PSRAM 指针，见 review 建议） | ✅ |
+| S215 | **CameraStream 独立 capture task 架构** | 帧采集/编码/uORB 发布从 stream_handler (HTTP callback) 分离到独立 `_capture_task_fn` (FreeRTOS task)。即使无 HTTP 客户端，capture task 仍持续 DQBUF→encode→publish (`fps_stats`, `camera_frame`)→store shared JPEG，确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: `_frame_ready_sem` (counting sem, max 2 clients) → `_shared_jpeg_buf` (PSRAM, mutex) → `_send_mjpeg_part`。`_frame_generation` atomic counter 防止重复帧。移除 `/api/capture_image` 端点及 `_save_jpeg_snapshot`/`_last_jpeg_buf` 相关代码。JPEG encoder 改为 start() 时直接初始化 (不再 lazy init)。 | ✅ |
 
 ### 2.3 系统性能监控
 

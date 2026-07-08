@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../main.dart';
 import '../providers/app_state.dart';
@@ -88,50 +86,6 @@ class _CameraScreenState extends State<CameraScreen> {
         ],
       ),
     );
-  }
-
-  Future<void> _saveImage() async {
-    try {
-      final data = await _state.saveImage();
-      if (data != null) {
-        final path = await _saveFile(data, 'capture', 'jpg');
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('Saved: $path')));
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Save failed: $e')));
-      }
-    }
-  }
-
-  Future<void> _saveRaw() async {
-    try {
-      final data = await _state.saveRaw();
-      if (data != null) {
-        final path = await _saveFile(data, 'raw', 'bin');
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('Saved: $path')));
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Save failed: $e')));
-      }
-    }
-  }
-
-  Future<String> _saveFile(Uint8List data, String prefix, String ext) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final path =
-        '${dir.path}/esp32_${prefix}_${DateTime.now().millisecondsSinceEpoch}.$ext';
-    await File(path).writeAsBytes(data);
-    return path;
   }
 
   Future<void> _setQuality(double val) async {
@@ -470,16 +424,6 @@ class _CameraScreenState extends State<CameraScreen> {
             backgroundColor: Colors.black,
             foregroundColor: Colors.white,
           actions: [
-            IconButton(
-              icon: const Icon(Icons.save_alt),
-              tooltip: 'Save JPEG',
-              onPressed: _saveImage,
-            ),
-            IconButton(
-              icon: const Icon(Icons.save),
-              tooltip: 'Save Raw',
-              onPressed: _saveRaw,
-            ),
             IconButton(
               icon: Icon(
                 _logsVisible ? Icons.terminal : Icons.terminal_outlined,
