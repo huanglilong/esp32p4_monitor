@@ -132,16 +132,19 @@ class Esp32HttpService {
         8080,
         timeout: const Duration(seconds: 5),
       );
-      socket.write(
-        'GET /api/status HTTP/1.0\r\n'
-        'Host: ${device.host}:8080\r\n'
-        '\r\n',
-      );
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      if (!resp.contains('200 OK')) {
-        throw Exception('Server returned non-200');
+      try {
+        socket.write(
+          'GET /api/status HTTP/1.0\r\n'
+          'Host: ${device.host}:8080\r\n'
+          '\r\n',
+        );
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        if (!resp.contains('200 OK')) {
+          throw Exception('Server returned non-200');
+        }
+      } finally {
+        socket.close();
       }
     } catch (e) {
       print('$TAG ❌ Web connect failed: $e');
@@ -291,21 +294,24 @@ class Esp32HttpService {
         80,
         timeout: const Duration(seconds: 5),
       );
-      socket.write(
-        'POST /api/set_camera_config HTTP/1.0\r\n'
-        'Host: ${_connectedDevice!.host}\r\n'
-        'Content-Type: application/json\r\n'
-        'Content-Length: ${body.length}\r\n'
-        '\r\n'
-        '$body',
-      );
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      if (resp.contains('200 OK')) {
-        print('$TAG ✅ Quality set to $q');
-      } else {
-        print('$TAG ⚠️ Response:\n$resp');
+      try {
+        socket.write(
+          'POST /api/set_camera_config HTTP/1.0\r\n'
+          'Host: ${_connectedDevice!.host}\r\n'
+          'Content-Type: application/json\r\n'
+          'Content-Length: ${body.length}\r\n'
+          '\r\n'
+          '$body',
+        );
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        if (resp.contains('200 OK')) {
+          print('$TAG ✅ Quality set to $q');
+        } else {
+          print('$TAG ⚠️ Response:\n$resp');
+        }
+      } finally {
+        socket.close();
       }
     } catch (e) {
       print('$TAG ⚠️ Failed: $e');
@@ -327,18 +333,21 @@ class Esp32HttpService {
         8080,
         timeout: const Duration(seconds: 5),
       );
-      socket.write(
-        'GET /api/status HTTP/1.0\r\n'
-        'Host: ${device.host}:8080\r\n'
-        '\r\n',
-      );
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      // Find JSON body after headers (double \r\n)
-      final bodyStart = resp.indexOf('\r\n\r\n');
-      if (bodyStart < 0) throw Exception('No response body');
-      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      try {
+        socket.write(
+          'GET /api/status HTTP/1.0\r\n'
+          'Host: ${device.host}:8080\r\n'
+          '\r\n',
+        );
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        // Find JSON body after headers (double \r\n)
+        final bodyStart = resp.indexOf('\r\n\r\n');
+        if (bodyStart < 0) throw Exception('No response body');
+        return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      } finally {
+        socket.close();
+      }
     } catch (e) {
       print('$TAG ❌ fetchSettings failed: $e');
       rethrow;
@@ -368,21 +377,24 @@ class Esp32HttpService {
         8080,
         timeout: const Duration(seconds: 5),
       );
-      socket.write(
-        'POST /api/settings HTTP/1.0\r\n'
-        'Host: ${device.host}:8080\r\n'
-        'Content-Type: application/json\r\n'
-        'Content-Length: ${json.length}\r\n'
-        '\r\n'
-        '$json',
-      );
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      if (resp.contains('200 OK')) {
-        print('$TAG ✅ Settings saved');
-      } else {
-        print('$TAG ⚠️ Response:\n$resp');
+      try {
+        socket.write(
+          'POST /api/settings HTTP/1.0\r\n'
+          'Host: ${device.host}:8080\r\n'
+          'Content-Type: application/json\r\n'
+          'Content-Length: ${json.length}\r\n'
+          '\r\n'
+          '$json',
+        );
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        if (resp.contains('200 OK')) {
+          print('$TAG ✅ Settings saved');
+        } else {
+          print('$TAG ⚠️ Response:\n$resp');
+        }
+      } finally {
+        socket.close();
       }
     } catch (e) {
       print('$TAG ⚠️ Failed: $e');
@@ -400,18 +412,21 @@ class Esp32HttpService {
         8080,
         timeout: const Duration(seconds: 5),
       );
-      socket.write(
-        'POST /api/factory_reset HTTP/1.0\r\n'
-        'Host: ${device.host}:8080\r\n'
-        '\r\n',
-      );
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      if (resp.contains('200 OK')) {
-        print('$TAG ✅ Factory reset executed');
-      } else {
-        print('$TAG ⚠️ Response:\n$resp');
+      try {
+        socket.write(
+          'POST /api/factory_reset HTTP/1.0\r\n'
+          'Host: ${device.host}:8080\r\n'
+          '\r\n',
+        );
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        if (resp.contains('200 OK')) {
+          print('$TAG ✅ Factory reset executed');
+        } else {
+          print('$TAG ⚠️ Response:\n$resp');
+        }
+      } finally {
+        socket.close();
       }
     } catch (e) {
       print('$TAG ⚠️ Failed: $e');
@@ -431,22 +446,25 @@ class Esp32HttpService {
         8080,
         timeout: const Duration(seconds: 5),
       );
-      socket.write(
-        'POST /api/camera_stream HTTP/1.0\r\n'
-        'Host: ${device.host}:8080\r\n'
-        'Content-Type: application/json\r\n'
-        'Content-Length: ${body.length}\r\n'
-        '\r\n'
-        '$body',
-      );
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      final bodyStart = resp.indexOf('\r\n\r\n');
-      if (bodyStart < 0) throw Exception('No response body');
-      final json = jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
-      if (json['ok'] != 1) throw Exception(json['error'] ?? 'Toggle failed');
-      print('$TAG ✅ Camera stream ${enable ? "started" : "stopped"}');
+      try {
+        socket.write(
+          'POST /api/camera_stream HTTP/1.0\r\n'
+          'Host: ${device.host}:8080\r\n'
+          'Content-Type: application/json\r\n'
+          'Content-Length: ${body.length}\r\n'
+          '\r\n'
+          '$body',
+        );
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        final bodyStart = resp.indexOf('\r\n\r\n');
+        if (bodyStart < 0) throw Exception('No response body');
+        final json = jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+        if (json['ok'] != 1) throw Exception(json['error'] ?? 'Toggle failed');
+        print('$TAG ✅ Camera stream ${enable ? "started" : "stopped"}');
+      } finally {
+        socket.close();
+      }
     } catch (e) {
       print('$TAG ⚠️ Camera stream toggle failed: $e');
       rethrow;
@@ -463,17 +481,20 @@ class Esp32HttpService {
         8080,
         timeout: const Duration(seconds: 5),
       );
-      socket.write(
-        'GET $path HTTP/1.0\r\n'
-        'Host: ${device.host}:8080\r\n'
-        '\r\n',
-      );
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      final bodyStart = resp.indexOf('\r\n\r\n');
-      if (bodyStart < 0) throw Exception('No response body');
-      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      try {
+        socket.write(
+          'GET $path HTTP/1.0\r\n'
+          'Host: ${device.host}:8080\r\n'
+          '\r\n',
+        );
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        final bodyStart = resp.indexOf('\r\n\r\n');
+        if (bodyStart < 0) throw Exception('No response body');
+        return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      } finally {
+        socket.close();
+      }
     } catch (e) {
       print('$TAG ❌ Audio GET $path failed: $e');
       rethrow;
@@ -509,13 +530,16 @@ class Esp32HttpService {
     final device = _connectedOrThrow;
     try {
       final socket = await Socket.connect(device.host, 8080, timeout: const Duration(seconds: 5));
-      socket.write('POST /api/ulog/start HTTP/1.0\r\nHost: ${device.host}:8080\r\n\r\n');
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      final bodyStart = resp.indexOf('\r\n\r\n');
-      if (bodyStart < 0) throw Exception('No response body');
-      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      try {
+        socket.write('POST /api/ulog/start HTTP/1.0\r\nHost: ${device.host}:8080\r\n\r\n');
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        final bodyStart = resp.indexOf('\r\n\r\n');
+        if (bodyStart < 0) throw Exception('No response body');
+        return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      } finally {
+        socket.close();
+      }
     } catch (e) {
       print('$TAG ❌ ULog start failed: $e');
       rethrow;
@@ -527,13 +551,16 @@ class Esp32HttpService {
     final device = _connectedOrThrow;
     try {
       final socket = await Socket.connect(device.host, 8080, timeout: const Duration(seconds: 5));
-      socket.write('POST /api/ulog/stop HTTP/1.0\r\nHost: ${device.host}:8080\r\n\r\n');
-      await socket.flush();
-      final resp = await _readHttpResponse(socket);
-      socket.close();
-      final bodyStart = resp.indexOf('\r\n\r\n');
-      if (bodyStart < 0) throw Exception('No response body');
-      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      try {
+        socket.write('POST /api/ulog/stop HTTP/1.0\r\nHost: ${device.host}:8080\r\n\r\n');
+        await socket.flush();
+        final resp = await _readHttpResponse(socket);
+        final bodyStart = resp.indexOf('\r\n\r\n');
+        if (bodyStart < 0) throw Exception('No response body');
+        return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+      } finally {
+        socket.close();
+      }
     } catch (e) {
       print('$TAG ❌ ULog stop failed: $e');
       rethrow;
@@ -614,7 +641,7 @@ class Esp32HttpService {
         cancelOnError: true,
       );
 
-      final raw = await rawCompleter.future; // No timeout — wait for onDone or Content-Length
+      final raw = await rawCompleter.future.timeout(const Duration(seconds: 30));
       if (raw.isEmpty) {
         print('$TAG ❌ filesDownload: empty response for $path');
         return Uint8List(0);
@@ -725,6 +752,38 @@ class Esp32HttpService {
       return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
     } catch (e) {
       print('$TAG ❌ File delete failed: $e');
+      rethrow;
+    } finally {
+      socket?.close();
+    }
+  }
+
+  /// POST /api/files/delete_batch — Delete multiple files at once.
+  Future<Map<String, dynamic>> filesDeleteBatch(List<String> paths) async {
+    final device = _connectedOrThrow;
+    final body = jsonEncode({'paths': paths});
+    Socket? socket;
+    try {
+      socket = await Socket.connect(
+        device.host,
+        8080,
+        timeout: const Duration(seconds: 10),
+      );
+      socket.write(
+        'POST /api/files/delete_batch HTTP/1.0\r\n'
+        'Host: ${device.host}:8080\r\n'
+        'Content-Type: application/json\r\n'
+        'Content-Length: ${body.length}\r\n'
+        '\r\n'
+        '$body',
+      );
+      await socket.flush();
+      final resp = await _readHttpResponse(socket);
+      final bodyStart = resp.indexOf('\r\n\r\n');
+      if (bodyStart < 0) throw Exception('No response body');
+      return jsonDecode(resp.substring(bodyStart + 4)) as Map<String, dynamic>;
+    } catch (e) {
+      print('$TAG ❌ Batch file delete failed: $e');
       rethrow;
     } finally {
       socket?.close();

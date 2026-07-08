@@ -47,6 +47,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _fmLoading = false;
   String _fmError = '';
   String _fmCapText = '';
+  bool _fmSelectMode = false;
+  final Set<String> _fmSelected = {};
 
   @override
   void initState() => super.initState();
@@ -138,12 +140,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       try {
         final s = await _http!.audioRecordStatus();
+        if (!mounted) return;
         // Server returns {"recording":1,"seconds":N,"bytes":N} — no "ok" field.
-        if (mounted && s['recording'] == 1) {
+        if (s['recording'] == 1) {
           setState(() {
             _recordingSeconds = (s['seconds'] as num?)?.toInt() ?? _recordingSeconds;
             _recordingBytes = (s['bytes'] as num?)?.toInt() ?? _recordingBytes;
           });
+        } else {
+          // Recording stopped externally (web UI, SD full, etc.) — sync UI.
+          _timerCounter?.cancel(); _statusTimer?.cancel();
+          _timerCounter = null; _statusTimer = null;
+          setState(() => _isRecording = false);
+          _fmLoad();
         }
       } catch (_) {}
     });
@@ -343,6 +352,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _fmDeleteSelected() async {
+    if (_fmSelected.isEmpty) return;
+    final names = _fmSelected.toList()..sort();
+    final base = _fmDir.endsWith('/') ? _fmDir : '$_fmDir/';
+    final paths = names.map((n) => '$base$n').toList();
+
+    final confirm = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: Text('Delete selected files?'),
+      content: Text('${names.length} file(s):\n${names.take(10).join('\n')}${names.length > 10 ? '\n... and ${names.length - 10} more' : ''}'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('Delete ${names.length}', style: TextStyle(color: Colors.redAccent))),
+      ],
+    ));
+    if (confirm != true || !mounted) return;
+
+    try {
+      final r = await _http!.filesDeleteBatch(paths);
+      if (!mounted) return;
+      final deleted = r['deleted'] as int? ?? 0;
+      final failed = r['failed'] as int? ?? 0;
+      _fmSelectMode = false;
+      _fmSelected.clear();
+      _fmLoad();
+      if (failed == 0) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Deleted $deleted file(s)')));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Deleted $deleted, $failed failed'),
+          backgroundColor: Colors.orange,
+        ));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   /// Open a .ulg file from SD card in the ULog viewer.
   void _fmOpenUlog(String name) {
     final base = _fmDir.endsWith('/') ? _fmDir : '$_fmDir/';
@@ -485,7 +533,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ]))),
         const SizedBox(height: 8),
         // === SD Card Files (directory browser + play/download/delete) ===
-        Text('SD Card', style: tt.titleSmall),
+        Row(children: [
+          Expanded(child: Text('SD Card', style: tt.titleSmall)),
+          if (_fmSelectMode)
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Text('${_fmSelected.length} selected', style: TextStyle(color: Colors.orange[300], fontSize: 12)),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _fmSelected.isEmpty ? null : _fmDeleteSelected,
+                icon: const Icon(Icons.delete_sweep, size: 18, color: Colors.redAccent),
+                label: Text('Delete (${_fmSelected.length})', style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+              ),
+              const SizedBox(width: 4),
+              TextButton(
+                onPressed: () => setState(() { _fmSelectMode = false; _fmSelected.clear(); }),
+                child: const Text('Done', style: TextStyle(fontSize: 12)),
+              ),
+            ])
+          else
+            TextButton.icon(
+              onPressed: () => setState(() { _fmSelectMode = true; _fmSelected.clear(); }),
+              icon: const Icon(Icons.checklist, size: 16),
+              label: const Text('Select', style: TextStyle(fontSize: 12)),
+            ),
+        ]),
         if (_fmCapText.isNotEmpty)
           Text(_fmCapText, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
         const SizedBox(height: 4),
@@ -504,17 +575,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final isMp3 = !isDir && name.toLowerCase().endsWith('.mp3');
             final isUlg = !isDir && name.toLowerCase().endsWith('.ulg');
             final isPlaying = _playingFile == name;
+            final isSelected = _fmSelected.contains(name);
             return ListTile(
               visualDensity: VisualDensity.compact,
               dense: true,
-              leading: Icon(
-                isDir ? Icons.folder : isMp3 ? (isPlaying ? Icons.volume_up : Icons.music_note) : isUlg ? Icons.videocam : Icons.insert_drive_file,
-                color: isDir ? Colors.amber : isPlaying ? Colors.green : isUlg ? Colors.deepPurple : null,
-              ),
+              leading: _fmSelectMode
+                  ? Icon(
+                      isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+                      color: isSelected ? Colors.orange : Colors.grey,
+                      size: 22,
+                    )
+                  : Icon(
+                      isDir ? Icons.folder : isMp3 ? (isPlaying ? Icons.volume_up : Icons.music_note) : isUlg ? Icons.videocam : Icons.insert_drive_file,
+                      color: isDir ? Colors.amber : isPlaying ? Colors.green : isUlg ? Colors.deepPurple : null,
+                    ),
               title: Text(name, overflow: TextOverflow.ellipsis),
               subtitle: isDir ? null : Text(_b((f['size'] as num?)?.toInt() ?? 0), style: const TextStyle(fontSize: 11)),
-              onTap: isDir ? () => _fmNavigate(name) : isUlg ? () => _fmOpenUlog(name) : null,
-              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              onTap: _fmSelectMode
+                  ? () => setState(() {
+                        if (isSelected) { _fmSelected.remove(name); } else { _fmSelected.add(name); }
+                      })
+                  : isDir ? () => _fmNavigate(name) : isUlg ? () => _fmOpenUlog(name) : null,
+              trailing: _fmSelectMode ? null : Row(mainAxisSize: MainAxisSize.min, children: [
                 if (isMp3)
                   isPlaying
                       ? IconButton(icon: const Icon(Icons.stop_circle, color: Colors.red, size: 22), onPressed: _stopPlayback)

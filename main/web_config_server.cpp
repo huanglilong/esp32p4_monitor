@@ -1711,6 +1711,100 @@ static esp_err_t h_files_delete(httpd_req_t *req) {
     return ESP_OK;
 }
 
+/* POST /api/files/delete_batch — body: {"paths": ["xxx", "yyy"]} */
+static esp_err_t h_files_delete_batch(httpd_req_t *req) {
+    if (!__sd_ensure()) {
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD card not available\"}");
+        return ESP_OK;
+    }
+
+    audio_lock();
+    if (s_is_recording || s_playing) {
+        audio_unlock();
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Audio is active\"}");
+        return ESP_OK;
+    }
+    s_fm_busy = true;
+    audio_unlock();
+
+    /* Reject oversized request bodies upfront to avoid silent truncation */
+    const size_t kMaxBody = 4096;
+    if (req->content_len > kMaxBody) {
+        s_fm_busy = false;
+        char err[80];
+        snprintf(err, sizeof(err), "{\"ok\":0,\"error\":\"Request too large (max %u bytes)\"}", (unsigned)kMaxBody);
+        httpd_resp_sendstr(req, err);
+        return ESP_OK;
+    }
+
+    /* Heap-allocate receive buffer to avoid httpd task stack overflow
+     * (buf[4096] + fpath[320] + struct stat + __path_sanitize full[256] ≈ 5KB
+     *  on an 8KB stack — same pattern as h_files_download) */
+    char *buf = (char *)malloc(kMaxBody);
+    if (!buf) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Out of memory\"}");
+        return ESP_OK;
+    }
+
+    int received = httpd_req_recv(req, buf, kMaxBody - 1);
+    if (received <= 0) {
+        free(buf);
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Empty body\"}");
+        return ESP_OK;
+    }
+    buf[received] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Invalid JSON\"}");
+        return ESP_OK;
+    }
+
+    cJSON *j_paths = cJSON_GetObjectItem(root, "paths");
+    if (!j_paths || !cJSON_IsArray(j_paths)) {
+        s_fm_busy = false;
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Missing paths array\"}");
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    int deleted = 0, failed = 0;
+    char fpath[320];
+
+    cJSON *item;
+    cJSON_ArrayForEach(item, j_paths) {
+        if (!cJSON_IsString(item) || !item->valuestring) {
+            failed++;
+            continue;
+        }
+        bool safe = __path_sanitize(item->valuestring, fpath, sizeof(fpath));
+        if (!safe) { failed++; continue; }
+
+        struct stat st;
+        if (stat(fpath, &st) != 0) { failed++; continue; }
+
+        int ret = S_ISDIR(st.st_mode) ? rmdir(fpath) : unlink(fpath);
+        if (ret == 0) {
+            ESP_LOGI(TAG, "Batch deleted: %s", fpath);
+            deleted++;
+        } else {
+            failed++;
+        }
+    }
+
+    cJSON_Delete(root);
+    s_fm_busy = false;
+
+    char resp[128];
+    snprintf(resp, sizeof(resp), "{\"ok\":1,\"deleted\":%d,\"failed\":%d}", deleted, failed);
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
 /* ULog endpoints */
 static esp_err_t ulog_status_handler(httpd_req_t *req)
 {
@@ -1914,19 +2008,23 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_fm_list = { .uri = "/api/files/list", .method = HTTP_GET, .handler = h_files_list };
     httpd_uri_t uri_fm_dl   = { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_files_download };
     httpd_uri_t uri_fm_del  = { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_files_delete };
+    httpd_uri_t uri_fm_del_batch = { .uri = "/api/files/delete_batch", .method = HTTP_POST, .handler = h_files_delete_batch };
     httpd_register_uri_handler(hd, &uri_fm_list);
     httpd_register_uri_handler(hd, &uri_fm_dl);
     httpd_register_uri_handler(hd, &uri_fm_del);
+    httpd_register_uri_handler(hd, &uri_fm_del_batch);
 
     /* CORS preflight (OPTIONS) handlers for POST endpoints */
     httpd_uri_t uri_cors_settings = { .uri = "/api/settings", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
     httpd_uri_t uri_cors_cam = { .uri = "/api/camera_stream", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
     httpd_uri_t uri_cors_reset = { .uri = "/api/factory_reset", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
     httpd_uri_t uri_cors_fm_del = { .uri = "/api/files/delete", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_uri_t uri_cors_fm_del_batch = { .uri = "/api/files/delete_batch", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
     httpd_register_uri_handler(hd, &uri_cors_settings);
     httpd_register_uri_handler(hd, &uri_cors_cam);
     httpd_register_uri_handler(hd, &uri_cors_reset);
     httpd_register_uri_handler(hd, &uri_cors_fm_del);
+    httpd_register_uri_handler(hd, &uri_cors_fm_del_batch);
 
     /* ULog endpoints */
     httpd_uri_t uri_ulog_status = { .uri = "/api/ulog/status", .method = HTTP_GET, .handler = ulog_status_handler, .user_ctx = NULL };
@@ -2064,7 +2162,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 27;  /* 5 core + 6 audio + 3 file mgr + 4 CORS + 5 ULog + 2 system + 2 spare */
+    config.max_uri_handlers = 29;  /* 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 2 spare */
     config.max_open_sockets = 12;  /* Headroom for Web UI keep-alive connections; lru_purge keeps accept() always active */
     config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
                                       stack vars + ESP_LOGI → uart_write → recursive mutex
