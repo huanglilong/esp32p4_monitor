@@ -30,7 +30,7 @@ public:
     static PeripheralManager& instance(void);
 
     /* ---- Board detection ---- */
-    bool has_lcd(void) const { return _has_lcd; }
+    bool has_lcd(void) const { return _has_lcd.load(std::memory_order_acquire); }
     void set_has_lcd(bool v);
 
     /* ---- SD Card (delegates to SDCardDriver, init-once) ---- */
@@ -65,5 +65,5 @@ private:
     PeripheralManager();
     ~PeripheralManager() = default;
 
-    bool _has_lcd;
+    std::atomic<bool> _has_lcd{false};
 };

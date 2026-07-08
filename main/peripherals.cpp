@@ -27,7 +27,7 @@ PeripheralManager::PeripheralManager() :
  *============================================================================*/
 void PeripheralManager::set_has_lcd(bool v)
 {
-    _has_lcd = v;
+    _has_lcd.store(v, std::memory_order_release);
     /* Propagate board type to drivers */
     AudioDriver::instance().set_has_lcd(v);
     SDCardDriver::instance().set_has_lcd(v);
