@@ -272,6 +272,19 @@
 | S216 | **SRAM 优化: 禁用 EAP + DVP** | ① `CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n` — 项目仅用 WPA2-PSK，EAP 未使用，禁用后节省 ~1.1 KB IRAM + ~21 KB PSRAM 代码 (tfpsacrypto) ② `CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n` — 此板仅用 MIPI CSI，DVP 驱动未使用。DIRAM 总节省 1,114 bytes (1.1 KB)，External RAM 节省 21,600 bytes (21.1 KB) | ✅ |
 | S217 | **Camera Frame Recording 绑定 Camera Stream** | 移除 Web UI 和 API 的独立 "Camera Frame Recording" 按键 (HTML card + JS + `/api/camera_record` POST/GET/OPTIONS 端点)，改为 Camera Stream enable/disable 自动控制 recording: `CameraStream::start()` 自动 `_recording_enabled=true`，`stop()` 已有 `_recording_enabled=false`；Web `camera_stream_handler` enable 时 `set_recording(true)`，disable 时先 `set_recording(false)` 再 stop。`/api/status` 新增 `cam_recording` 字段，Web UI cam_status 显示 "Streaming + Recording" 状态。`max_uri_handlers` 30→27 (移除 3 个 camera_record handler) | ✅ |
 | S218 | **ULog 自动启动 (WiFi+SNTP)** | SNTP 初始化从 `PhoneAppSettings` 移至 `web_config_server` (两块板都运行，WIFI6 无 LCD 不启动 Settings App)；WiFi 连接后 web_config_task 启动 SNTP，SNTP 同步回调中 `ulog_writer_set_wall_clock(true)` + 检查 `ULOG_STATE_IDLE` 才 `ulog_writer_start()` (已录制时跳过)；Web/Flutter Start/Stop 控制保留 (手动 Stop 后不会自动重启，手动 Start 后 SNTP 同步不重复启动) | ✅ |
+| S219 | **CameraStream model load task 早期退出信号** | `_model_load_task_fn` 中 COCODetect 创建失败时直接 `vTaskDelete(NULL)` 退出，未设置 `_model_load_task_exited` 或清除 `_model_load_task`，导致 `_deinit_detection()` 挂起 15s 后对已回收句柄调用 `vTaskDelete()`。修复: 早期退出路径添加 flag 清理 + `_detector` 改用显式 `.store()` + `_detect_results.clear()` 加 `_detect_mutex` 保护 | ✅ |
+| S220 | **s_sntp_synced volatile→atomic** | `s_sntp_synced` 从 SNTP 回调 (lwIP tcpip task, 任意 core) 写入，从 `web_config_task` 读取。`volatile` 不保证双核原子性和内存序。修复: 改为 `std::atomic<bool>` + `.store(release)`/`.load(acquire)` | ✅ |
+| S221 | **s_audio_task TaskHandle_t→atomic** | `s_audio_task` 由 audio_task (core 0) 写入，HTTP handler (任意 core) 读写，无同步。修复: 改为 `std::atomic<TaskHandle_t>` + 显式 load/store/exchange | ✅ |
+| S222 | **_wifi_scan_task TaskHandle_t→atomic** | `_wifi_scan_task` 由 scan task (任意 core) 写入，UI/析构 (core 1) 读写，无同步。修复: 改为 `std::atomic<TaskHandle_t>` + 显式 load/store/exchange | ✅ |
+| S223 | **PhoneAppAudio _task_handle→atomic** | `_task_handle` 由 audio task (core 0) 写入，析构/close (任意 core) 读取，无同步。修复: 改为 `std::atomic<TaskHandle_t>` + 显式 load/store/exchange | ✅ |
+| S224 | **AudioDriver gpio_config 返回值检查** | `gpio_config(&pa_conf)` 返回值未检查，PA GPIO 配置失败时静默无输出。修复: 添加返回值检查 + 错误日志 | ✅ |
+| S225 | **Logger vTaskDelete 过期句柄** | `logger_deinit()` 检测到 `writer_exited` 后立即 `vTaskDelete(s_log.writer_task)`，但 writer 可能刚自删而 idle task 尚未回收 TCB。修复: 添加 10ms yield + 重新检查 `writer_exited` 后再决定是否 force-kill | ✅ |
+| S226 | **g_has_lcd volatile→atomic** | `g_has_lcd` 在 `app_main` (core 0) 写入，`web_config_server` task (任意 core) 读取。`volatile` 不保证双核内存序。修复: 改为 `std::atomic<bool>` + `.store(release)`/`.load(acquire)` | ✅ |
+| S227 | **_wifi_connect_task TaskHandle_t→atomic** | `_wifi_connect_task` 由 connect task (任意 core) 写入，UI (core 1) 读取，无同步。修复: 改为 `std::atomic<TaskHandle_t>` + 显式 store(release)，匹配 S221/S222/S223 模式 | ✅ |
+| S228 | **PeripheralManager _has_lcd→atomic** | `PeripheralManager::_has_lcd` 为普通 `bool`，跨核读写无同步。修复: 改为 `std::atomic<bool>` + `.store(release)`/`.load(acquire)`，匹配 AudioDriver/SDCardDriver 模式 | ✅ |
+| S229 | **s_rec_pub orb_advert_t→atomic** | `s_rec_pub` 为普通 `orb_advert_t`，懒初始化。修复: 改为 `std::atomic<orb_advert_t>` + 显式 load/store，匹配项目中所有其他 publisher handle 模式 | ✅ |
+| S230 | **h_play __audio_init 锁顺序** | `h_play()` 在 `audio_lock()` 之前调用 `__audio_init()`，并发请求可竞态 `s_audio_inited`。修复: 将 `audio_lock()` 移到 `__audio_init()` 之前，匹配 `h_rec_start` 锁序 | ✅ |
+| S231 | **h_rec_stop s_rec_path 竞态** | `s_rec_path` 在 `audio_unlock()` 之后读取，并发 `h_rec_start` 可覆写。修复: 在释放锁前复制到本地缓冲区 | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -419,6 +432,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-08 | +S219~S231 代码审查 Round 2 修复 (13 个 CRITICAL/HIGH/MEDIUM): CameraStream model load 早期退出信号(S219), s_sntp_synced volatile→atomic(S220), s_audio_task TaskHandle→atomic(S221), _wifi_scan_task TaskHandle→atomic(S222), PhoneAppAudio _task_handle→atomic(S223), AudioDriver gpio_config 返回值检查(S224), Logger vTaskDelete 过期句柄(S225), g_has_lcd volatile→atomic(S226), _wifi_connect_task TaskHandle→atomic(S227), PeripheralManager _has_lcd→atomic(S228), s_rec_pub orb_advert_t→atomic(S229), h_play __audio_init 锁顺序(S230), h_rec_stop s_rec_path 竞态(S231) |
 | 2026-07-08 | +S184~S213 代码审查 Round 1 修复 (30 个 CRITICAL/HIGH/MEDIUM): Logger snprintf 栈溢出(S184)/data_sem UAF(S185)/writer force-kill 持锁(S186)/句柄悬挂(S187)/sd_level 竞态(S188), Web 路径穿越(S189)/cJSON NULL(S190)/s_running 竞态(S191)/mutex 泄漏(S192)/httpd_start 泄漏(S193)/NVS cache 竞态(S194)/free→cJSON_free(S195), CameraStream V4L2 buf 越界(S196)/model-load force-kill(S197)/dummy_buf NULL(S198)/snprintf 截断(S199)/bytesused 越界(S200)/encoder dims 零值(S201), PhoneAppCamera pipeline 泄漏(S202)/buf.index 越界(S203), PhoneAppSettings 事件组泄漏(S204)/WiFi OFF/ON abort(S205)/connect task UAF(S206)/_wifi_ip 未填充(S207), PhoneAppCameraStream 析构 handler UAF(S208), AudioDriver init rollback mutex UAF(S209), SystemMonitor force-kill 持锁(S210), SDCardDriver _has_lcd 竞态(S211), main.cpp assert no-op(S212)/esp_read_mac 未检查(S213) |
 | 2026-07-08 | +S177~S180 HTTP 服务器不可达修复(S177: LWIP_MAX_SOCKETS 22→28 + TCP keep-alive + WiFi 断连 httpd 重启), SystemMonitor 内存告警 80%→85%(S178), Flutter ULog 视频查看器(S179: ulog_parser.dart + ulog_viewer_screen.dart), Flutter filesDownload 可靠性(S180: chunked 检测修正 + O(n²)消除) |
 | 2026-07-08 | R17 更新: Camera Stream 和 Audio 不再互斥 (硬件独立: MIPI CSI vs I2S)，所有 `__cam_running()` 检查已移除 |
