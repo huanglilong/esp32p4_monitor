@@ -161,10 +161,11 @@ static void _stop_audio_task_if_running(void)
         vTaskDelete(s_audio_task.exchange(nullptr, std::memory_order_acq_rel));
     }
 
-    /* Free static task buffers (xTaskCreateStaticPinnedToCore does not free them).
-     * Safe: task has exited (self-deleted or force-killed above). */
+    /* Free PSRAM-allocated stack (xTaskCreateStaticPinnedToCore does not free it).
+     * TCB is pre-allocated and reused — not freed here.
+     * Stack is safe to free immediately: FreeRTOS doesn't reference it
+     * after the task exits (idle task only reclaims the TCB). */
     if (s_audio_stack) { heap_caps_free(s_audio_stack); s_audio_stack = NULL; }
-    if (s_audio_tcb)  { heap_caps_free(s_audio_tcb);  s_audio_tcb = NULL; }
 }
 
 /* Audio recording task: I2S RX → shine MP3 → SD card */
@@ -1052,6 +1053,12 @@ static bool __audio_init(void) {
     if (s_audio_inited) return true;
     if (!PeripheralManager::instance().init_sdcard()) { ESP_LOGE(TAG,"SD init fail"); return false; }
     PeripheralManager::instance().init_audio();
+    /* Pre-allocate TCB for audio task — reused across start/stop cycles.
+     * ~340B internal SRAM, avoids TCB use-after-free race with idle task. */
+    if (!s_audio_tcb) {
+        s_audio_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!s_audio_tcb) { ESP_LOGE(TAG, "Failed to allocate audio TCB"); return false; }
+    }
     s_audio_inited = true;
     return true;
 }
@@ -1131,11 +1138,8 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     if (!s_audio_task.load(std::memory_order_acquire)) {
         s_audio_running = true;
         s_audio_stack = (StackType_t *)heap_caps_malloc(12 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        s_audio_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (!s_audio_stack || !s_audio_tcb) {
-            ESP_LOGE(TAG, "Failed to allocate audio task buffers");
-            if (s_audio_stack) { heap_caps_free(s_audio_stack); s_audio_stack = NULL; }
-            if (s_audio_tcb) { heap_caps_free(s_audio_tcb); s_audio_tcb = NULL; }
+        if (!s_audio_stack) {
+            ESP_LOGE(TAG, "Failed to allocate audio task stack");
             s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
         }
         TaskHandle_t h = xTaskCreateStaticPinnedToCore(audio_task, "w_audio", 12 * 1024, NULL, 1, s_audio_stack, s_audio_tcb, 0);
@@ -1143,7 +1147,6 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         if (h == NULL) {
             ESP_LOGE(TAG, "Failed to create audio task");
             heap_caps_free(s_audio_stack); s_audio_stack = NULL;
-            heap_caps_free(s_audio_tcb);  s_audio_tcb = NULL;
             s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
         }
     }
@@ -2332,10 +2335,13 @@ cleanup:
         vSemaphoreDelete(s_nvs_cache_mutex);
         s_nvs_cache_mutex = NULL;
     }
+    /* Free pre-allocated TCB — safe at shutdown since audio task has exited. */
+    if (s_audio_tcb) { heap_caps_free(s_audio_tcb); s_audio_tcb = NULL; }
     if (s_wifi_state_sub >= 0) {
         orb_unsubscribe(s_wifi_state_sub);
         s_wifi_state_sub = -1;
     }
+
     s_running = false;
     s_task_handle = NULL;
     vTaskDelete(NULL);
@@ -2413,6 +2419,8 @@ void web_config_server_stop(void)
         vSemaphoreDelete(s_nvs_cache_mutex);
         s_nvs_cache_mutex = NULL;
     }
+    /* Free pre-allocated TCB — safe at shutdown since audio task has exited. */
+    if (s_audio_tcb) { heap_caps_free(s_audio_tcb); s_audio_tcb = NULL; }
     if (s_wifi_state_sub >= 0) {
         orb_unsubscribe(s_wifi_state_sub);
         s_wifi_state_sub = -1;
