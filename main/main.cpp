@@ -38,6 +38,23 @@
 #include "ulog_writer.h"
 #include "uorb.h"
 
+#ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
+#include "cap_im_wechat.h"
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
+#include "cap_im_feishu.h"
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_QQ
+#include "cap_im_qq.h"
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_TG
+#include "cap_im_tg.h"
+#endif
+#if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+#include "cap_im_platform.h"
+#endif
+
 static const char *TAG = "monitor";
 
 /* Auto-detected: true if GT911 touch (I2C 0x5D) responds → LCD-4B board.
@@ -516,6 +533,73 @@ extern "C" void app_main(void)
 
     /* Boot WiFi auto-connect — AFTER SD card mount (C6 SDIO claims host ctrl) */
     PhoneAppSettings::bootWifiAutoConnect();
+
+    /* ── ESP-Claw IM Channel Init (after WiFi, before Web Config) ── */
+#if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+    {
+        ESP_LOGI(TAG, "Initializing ESP-Claw IM platform...");
+        cap_im_platform_register_groups();
+
+#ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
+        {
+            /* Load WeChat credentials from NVS if previously configured */
+            nvs_handle_t nvs_h;
+            if (nvs_open("claw_im", NVS_READONLY, &nvs_h) == ESP_OK) {
+                char token[256] = {0};
+                char base_url[160] = {0};
+                size_t len;
+                len = sizeof(token);
+                if (nvs_get_str(nvs_h, "wx_token", token, &len) == ESP_OK && len > 1) {
+                    len = sizeof(base_url);
+                    nvs_get_str(nvs_h, "wx_base_url", base_url, &len);
+                    cap_im_wechat_client_config_t cfg = {
+                        .token = token,
+                        .base_url = base_url[0] ? base_url : "https://ilinkai.weixin.qq.com",
+                        .cdn_base_url = "https://novac2c.cdn.weixin.qq.com/c2c",
+                        .account_id = "default",
+                        .app_id = "bot",
+                        .client_version = "131329",
+                        .route_tag = NULL,
+                    };
+                    cap_im_wechat_set_client_config(&cfg);
+                    cap_im_wechat_start();
+                    ESP_LOGI(TAG, "WeChat iLink Bot started (token from NVS)");
+                } else {
+                    ESP_LOGI(TAG, "WeChat: no token in NVS, use Web Config to scan QR");
+                }
+                nvs_close(nvs_h);
+            }
+        }
+#endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
+
+#ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
+        /* Feishu init: load app_id + app_secret from NVS and start */
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_QQ
+        /* QQ init: load app_id + app_secret from NVS and start */
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_TG
+        {
+            nvs_handle_t nvs_h;
+            if (nvs_open("claw_im", NVS_READONLY, &nvs_h) == ESP_OK) {
+                char tg_token[256] = {0};
+                size_t len = sizeof(tg_token);
+                if (nvs_get_str(nvs_h, "tg_token", tg_token, &len) == ESP_OK && len > 1) {
+                    cap_im_tg_set_token(tg_token);
+                    cap_im_tg_start();
+                    ESP_LOGI(TAG, "Telegram Bot started (token from NVS)");
+                } else {
+                    ESP_LOGI(TAG, "Telegram: no token in NVS");
+                }
+                nvs_close(nvs_h);
+            }
+        }
+#endif /* CONFIG_APP_CLAW_CAP_IM_TG */
+
+        ESP_LOGI(TAG, "ESP-Claw IM platform initialized");
+    }
+#endif /* IM channels enabled */
 
     web_config_server_start();
 

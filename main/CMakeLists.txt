@@ -123,6 +123,16 @@ target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
 
+# ─────────────────────────────────────────────────────────────────
+#  ESP-Claw IM Platform: conditional dependency
+#  When any IM channel is enabled, link cap_im_platform so main.cpp
+#  can include its headers and call its APIs.
+# ─────────────────────────────────────────────────────────────────
+if(CONFIG_APP_CLAW_CAP_IM_WECHAT OR CONFIG_APP_CLAW_CAP_IM_FEISHU OR
+   CONFIG_APP_CLAW_CAP_IM_QQ OR CONFIG_APP_CLAW_CAP_IM_TG)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::cap_im_platform)
+endif()
+
 # Get LVGL component library to suppress warnings
 function(get_component_library component_name output_var)
     idf_build_get_property(build_components BUILD_COMPONENTS)
