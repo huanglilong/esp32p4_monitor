@@ -1021,7 +1021,7 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     if (!_recording_enabled.load(std::memory_order_acquire)) return;
     if (!jpeg_data || jpeg_size == 0) return;
 
-    /* JPEG size must fit in camera_frame_s.jpeg_data[12288] */
+    /* JPEG size must fit in camera_frame_s.jpeg_data[10240] */
     if (jpeg_size > sizeof(((camera_frame_s *)0)->jpeg_data)) {
         ESP_LOGW(TAG, "JPEG frame too large for ULog (%u > %u), skipping",
                  (unsigned)jpeg_size, (unsigned)sizeof(((camera_frame_s *)0)->jpeg_data));
@@ -1037,7 +1037,7 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     }
     if (_frame_pub.load(std::memory_order_relaxed) < 0) return;
 
-    /* camera_frame_s is ~12KB — too large for httpd task stack (4KB default).
+    /* camera_frame_s is ~10KB — too large for httpd task stack (4KB default).
      * Allocate from PSRAM heap to avoid stack overflow. */
     camera_frame_s *frame = (camera_frame_s *)heap_caps_malloc(sizeof(camera_frame_s), MALLOC_CAP_SPIRAM);
     if (!frame) {
