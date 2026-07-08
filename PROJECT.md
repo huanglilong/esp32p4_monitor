@@ -573,6 +573,8 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **`<iframe>` 不兼容 MJPEG**: Chrome 只能在 `<img>` 标签中渲染 MJPEG 流, `<iframe>` 无法显示。
 - **JPEG 缓存对齐**: HW 编码器输出缓冲区需 `esp_cache_msync` 且大小向上取整到 128B 缓存行边界。
 - **客户端断连处理**: `httpd_resp_send_chunk` 失败时 `break` 优雅退出, 避免 `httpd_sock_err` 刷屏。
+- **TCP keep-alive**: 所有 httpd 实例启用 TCP keep-alive (idle=5s, interval=5s, count=3), 防止客户端断连后半开 TCP 连接阻塞 select() 导致 HTTP 服务器不可达。
+- **WiFi 断连 httpd 重启**: Web Config (8080) 检测 WiFi 断连后自动停止 httpd 刷除残留 session, WiFi 恢复后自动重启并重新注册 URI, 防止 EHOSTUNREACH/EAGAIN 导致的 session 泄漏耗尽 `max_open_sockets`。
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: 两个并发客户端可同时触发延迟初始化。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护。
 - **JPEG 快照**: stream handler 每帧保存最新 JPEG 到 `_last_jpeg_buf` (mutex 保护), `/api/capture_image` 端点返回最新帧的 `image/jpeg`。
@@ -596,6 +598,8 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - 帧率降至 ~2fps (VTS=24600) 降低 DMA 压力: ISP 带宽 ~1.3 MB/s
 
 > **已知风险**: 高带宽入站 TCP (>200KB/s) 在 v2.12.7 仍可能触发死锁 (#197)。Camera Stream 为出站 (MJPEG ~98KB/s @ 7fps), 验证稳定。
+
+> **已修复 (2026-07-08)**: 客户端断连后 HTTP 服务器不可达。根因: `LWIP_MAX_SOCKETS=22` 太小 — 3 个 httpd 实例内部占用 17 个 socket (listen+ctrl×2+data), 加上 WiFi/mDNS/SNTP 后, socket 表耗尽导致 `accept()` 返回 `ENOTSOCK` (128), 监听 socket 失效, HTTP 永久不可达。修复: ① `LWIP_MAX_SOCKETS` 22→28 ② 所有 httpd 启用 TCP keep-alive ③ Web Config WiFi 断连自动重启 httpd。
 
 ### 16. 多板支持 (GT911 I2C 自动检测)
 
@@ -738,6 +742,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 - **2026-07-07**: 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，释放 **~64 KB** IRAM
 - **2026-07-07**: ASP 音频任务栈 8KB 移至 PSRAM (`task_stack_in_ext=true` — GMF 内部用 WithCaps 处理), 共省 **~8 KB**
 - **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 共省 **~30 KB** pbuf 头部
+- **2026-07-08**: LWIP_MAX_SOCKETS 22→28 (3 httpd 实例内部占用 17 个 socket, 22 太紧导致 accept() ENOTSOCK), httpd 启用 TCP keep-alive + WiFi 断连重启
 - **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
 - **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
 - **2026-07-06**: detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)

@@ -1513,6 +1513,12 @@ bool CameraStream::_start_http_server(void)
      * 1 browser tab (parallel API + resource requests). */
     config.max_open_sockets = 3;
     config.core_id = 0;  /* Pin to Core 0 — Core 1 runs LVGL rendering */
+    /* TCP keep-alive: detect dead connections quickly so sockets don't
+     * leak when clients disconnect abruptly (ECONNRESET/EAGAIN). */
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 5;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
     /* All registered URIs are exact paths — use default exact-match
      * instead of wildcard matching (faster, more secure). */
 

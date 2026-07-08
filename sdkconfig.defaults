@@ -146,12 +146,16 @@ CONFIG_ESP_HOSTED_SLAVE_RESET_ON_EVERY_HOST_BOOTUP=y
 # Larger send buffer allows TCP to batch more data per SDIO transaction,
 # reducing the number of small SDIO transfers that compete with C6 control msgs.
 # 64KB window provides good throughput for MJPEG stream + file download.
-# Keep MAX_SOCKETS=22 for future features (MQTT, WebSocket, OTA, etc.).
+# MAX_SOCKETS: 3 httpd instances use (3+3)+(2+3)+(3+3)=17 sockets internally
+# (max_open_sockets + listen + ctrl_send + ctrl_recv each).  Plus WiFi/SDIO
+# control sockets, mDNS, SNTP, etc.  22 was too tight — accept() could return
+# ENOTSOCK (128) when socket table is exhausted, making HTTP permanently
+# unreachable.  Bumped to 28 for headroom.
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65536
 CONFIG_LWIP_TCP_WND_DEFAULT=65536
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
-CONFIG_LWIP_MAX_SOCKETS=22
+CONFIG_LWIP_MAX_SOCKETS=28
 
 CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE=y
 

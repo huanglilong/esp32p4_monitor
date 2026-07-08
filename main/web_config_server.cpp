@@ -1852,6 +1852,82 @@ static esp_err_t cors_preflight_handler(httpd_req_t *req)
 }
 
 /*============================================================================
+ * URI Registration (extracted for httpd restart on WiFi recovery)
+ *============================================================================*/
+static void _register_web_config_uris(httpd_handle_t hd)
+{
+    /* Core */
+    httpd_uri_t uri_index = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
+    httpd_uri_t uri_status = { .uri = "/api/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL };
+    httpd_uri_t uri_settings = { .uri = "/api/settings", .method = HTTP_POST, .handler = settings_handler, .user_ctx = NULL };
+    httpd_uri_t uri_cam = { .uri = "/api/camera_stream", .method = HTTP_POST, .handler = camera_stream_handler, .user_ctx = NULL };
+    httpd_uri_t uri_reset = { .uri = "/api/factory_reset", .method = HTTP_POST, .handler = factory_reset_handler, .user_ctx = NULL };
+    httpd_register_uri_handler(hd, &uri_index);
+    httpd_register_uri_handler(hd, &uri_status);
+    httpd_register_uri_handler(hd, &uri_settings);
+    httpd_register_uri_handler(hd, &uri_cam);
+    httpd_register_uri_handler(hd, &uri_reset);
+
+    /* Audio recording / playback */
+    httpd_uri_t uri_r_start = { .uri = "/api/audio/record_start", .method = HTTP_GET, .handler = h_rec_start };
+    httpd_uri_t uri_r_stop  = { .uri = "/api/audio/record_stop",  .method = HTTP_GET, .handler = h_rec_stop };
+    httpd_uri_t uri_r_stat  = { .uri = "/api/audio/record_status",.method = HTTP_GET, .handler = h_rec_status };
+    httpd_uri_t uri_a_list  = { .uri = "/api/audio/list",         .method = HTTP_GET, .handler = h_list };
+    httpd_uri_t uri_a_play  = { .uri = "/api/audio/play",          .method = HTTP_GET, .handler = h_play };
+    httpd_uri_t uri_a_stop  = { .uri = "/api/audio/stop",          .method = HTTP_GET, .handler = h_stop };
+    httpd_register_uri_handler(hd, &uri_r_start);
+    httpd_register_uri_handler(hd, &uri_r_stop);
+    httpd_register_uri_handler(hd, &uri_r_stat);
+    httpd_register_uri_handler(hd, &uri_a_list);
+    httpd_register_uri_handler(hd, &uri_a_play);
+    httpd_register_uri_handler(hd, &uri_a_stop);
+
+    /* File Manager */
+    httpd_uri_t uri_fm_list = { .uri = "/api/files/list", .method = HTTP_GET, .handler = h_files_list };
+    httpd_uri_t uri_fm_dl   = { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_files_download };
+    httpd_uri_t uri_fm_del  = { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_files_delete };
+    httpd_register_uri_handler(hd, &uri_fm_list);
+    httpd_register_uri_handler(hd, &uri_fm_dl);
+    httpd_register_uri_handler(hd, &uri_fm_del);
+
+    /* CORS preflight (OPTIONS) handlers for POST endpoints */
+    httpd_uri_t uri_cors_settings = { .uri = "/api/settings", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_uri_t uri_cors_cam = { .uri = "/api/camera_stream", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_uri_t uri_cors_reset = { .uri = "/api/factory_reset", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_uri_t uri_cors_fm_del = { .uri = "/api/files/delete", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_register_uri_handler(hd, &uri_cors_settings);
+    httpd_register_uri_handler(hd, &uri_cors_cam);
+    httpd_register_uri_handler(hd, &uri_cors_reset);
+    httpd_register_uri_handler(hd, &uri_cors_fm_del);
+
+    /* ULog endpoints */
+    httpd_uri_t uri_ulog_status = { .uri = "/api/ulog/status", .method = HTTP_GET, .handler = ulog_status_handler, .user_ctx = NULL };
+    httpd_uri_t uri_ulog_start = { .uri = "/api/ulog/start", .method = HTTP_POST, .handler = ulog_start_handler, .user_ctx = NULL };
+    httpd_uri_t uri_ulog_stop = { .uri = "/api/ulog/stop", .method = HTTP_POST, .handler = ulog_stop_handler, .user_ctx = NULL };
+    httpd_uri_t uri_ulog_cors = { .uri = "/api/ulog/start", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_uri_t uri_ulog_cors2 = { .uri = "/api/ulog/stop", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_register_uri_handler(hd, &uri_ulog_status);
+    httpd_register_uri_handler(hd, &uri_ulog_start);
+    httpd_register_uri_handler(hd, &uri_ulog_stop);
+    httpd_register_uri_handler(hd, &uri_ulog_cors);
+    httpd_register_uri_handler(hd, &uri_ulog_cors2);
+
+    /* Camera frame recording */
+    httpd_uri_t uri_cam_rec = { .uri = "/api/camera_record", .method = HTTP_POST, .handler = camera_record_handler, .user_ctx = NULL };
+    httpd_uri_t uri_cam_rec_status = { .uri = "/api/camera_record", .method = HTTP_GET, .handler = camera_record_status_handler, .user_ctx = NULL };
+    httpd_uri_t uri_cors_cam_rec = { .uri = "/api/camera_record", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
+    httpd_register_uri_handler(hd, &uri_cam_rec);
+    httpd_register_uri_handler(hd, &uri_cam_rec_status);
+    httpd_register_uri_handler(hd, &uri_cors_cam_rec);
+
+    /* System stats */
+    httpd_uri_t uri_sys_stats = { .uri = "/api/system_stats", .method = HTTP_GET, .handler = h_system_stats, .user_ctx = NULL };
+    httpd_uri_t uri_sys_alerts = { .uri = "/api/system_alerts", .method = HTTP_GET, .handler = h_system_alerts, .user_ctx = NULL };
+    httpd_register_uri_handler(hd, &uri_sys_stats);
+    httpd_register_uri_handler(hd, &uri_sys_alerts);
+}
+
+/*============================================================================
  * Task
  *============================================================================*/
 static void web_config_task(void *arg)
@@ -1901,6 +1977,14 @@ static void web_config_task(void *arg)
                                       needs deep call chain; logger vprintf hook adds more */
     config.lru_purge_enable = true;
     config.core_id = 0;  /* Pin to Core 0 — Core 1 runs LVGL rendering */
+    /* TCP keep-alive: detect dead connections quickly so sockets don't
+     * leak when clients disconnect abruptly (ECONNRESET/EAGAIN).  Without
+     * keep-alive, a half-closed TCP can block select() indefinitely,
+     * preventing new connections and making the server appear unreachable. */
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 5;        /* seconds before first probe */
+    config.keep_alive_interval = 5;    /* seconds between probes */
+    config.keep_alive_count = 3;       /* failed probes → close */
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server on port %d", WEB_CONFIG_PORT);
@@ -1908,134 +1992,7 @@ static void web_config_task(void *arg)
         return;
     }
 
-    httpd_uri_t uri_index = {
-        .uri = "/", .method = HTTP_GET,
-        .handler = index_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_status = {
-        .uri = "/api/status", .method = HTTP_GET,
-        .handler = status_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_settings = {
-        .uri = "/api/settings", .method = HTTP_POST,
-        .handler = settings_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_cam = {
-        .uri = "/api/camera_stream", .method = HTTP_POST,
-        .handler = camera_stream_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_reset = {
-        .uri = "/api/factory_reset", .method = HTTP_POST,
-        .handler = factory_reset_handler, .user_ctx = NULL
-    };
-
-    httpd_register_uri_handler(s_httpd, &uri_index);
-    httpd_register_uri_handler(s_httpd, &uri_status);
-    httpd_register_uri_handler(s_httpd, &uri_settings);
-    httpd_register_uri_handler(s_httpd, &uri_cam);
-    httpd_register_uri_handler(s_httpd, &uri_reset);
-
-    /* Audio recording / playback */
-    httpd_uri_t uri_r_start = { .uri = "/api/audio/record_start", .method = HTTP_GET, .handler = h_rec_start };
-    httpd_uri_t uri_r_stop  = { .uri = "/api/audio/record_stop",  .method = HTTP_GET, .handler = h_rec_stop };
-    httpd_uri_t uri_r_stat  = { .uri = "/api/audio/record_status",.method = HTTP_GET, .handler = h_rec_status };
-    httpd_uri_t uri_a_list  = { .uri = "/api/audio/list",         .method = HTTP_GET, .handler = h_list };
-    httpd_uri_t uri_a_play  = { .uri = "/api/audio/play",          .method = HTTP_GET, .handler = h_play };
-    httpd_uri_t uri_a_stop  = { .uri = "/api/audio/stop",          .method = HTTP_GET, .handler = h_stop };
-    httpd_register_uri_handler(s_httpd, &uri_r_start);
-    httpd_register_uri_handler(s_httpd, &uri_r_stop);
-    httpd_register_uri_handler(s_httpd, &uri_r_stat);
-    httpd_register_uri_handler(s_httpd, &uri_a_list);
-    httpd_register_uri_handler(s_httpd, &uri_a_play);
-    httpd_register_uri_handler(s_httpd, &uri_a_stop);
-
-    /* File Manager */
-    httpd_uri_t uri_fm_list = { .uri = "/api/files/list", .method = HTTP_GET, .handler = h_files_list };
-    httpd_uri_t uri_fm_dl   = { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_files_download };
-    httpd_uri_t uri_fm_del  = { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_files_delete };
-    httpd_register_uri_handler(s_httpd, &uri_fm_list);
-    httpd_register_uri_handler(s_httpd, &uri_fm_dl);
-    httpd_register_uri_handler(s_httpd, &uri_fm_del);
-
-    /* CORS preflight (OPTIONS) handlers for POST endpoints */
-    httpd_uri_t uri_cors_settings = {
-        .uri = "/api/settings", .method = HTTP_OPTIONS,
-        .handler = cors_preflight_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_cors_cam = {
-        .uri = "/api/camera_stream", .method = HTTP_OPTIONS,
-        .handler = cors_preflight_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_cors_reset = {
-        .uri = "/api/factory_reset", .method = HTTP_OPTIONS,
-        .handler = cors_preflight_handler, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(s_httpd, &uri_cors_settings);
-    httpd_register_uri_handler(s_httpd, &uri_cors_cam);
-    httpd_register_uri_handler(s_httpd, &uri_cors_reset);
-
-    /* CORS preflight for file delete */
-    httpd_uri_t uri_cors_fm_del = {
-        .uri = "/api/files/delete", .method = HTTP_OPTIONS,
-        .handler = cors_preflight_handler, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(s_httpd, &uri_cors_fm_del);
-
-    /* ULog endpoints */
-    httpd_uri_t uri_ulog_status = {
-        .uri = "/api/ulog/status", .method = HTTP_GET,
-        .handler = ulog_status_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_ulog_start = {
-        .uri = "/api/ulog/start", .method = HTTP_POST,
-        .handler = ulog_start_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_ulog_stop = {
-        .uri = "/api/ulog/stop", .method = HTTP_POST,
-        .handler = ulog_stop_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_ulog_cors = {
-        .uri = "/api/ulog/start", .method = HTTP_OPTIONS,
-        .handler = cors_preflight_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_ulog_cors2 = {
-        .uri = "/api/ulog/stop", .method = HTTP_OPTIONS,
-        .handler = cors_preflight_handler, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(s_httpd, &uri_ulog_status);
-    httpd_register_uri_handler(s_httpd, &uri_ulog_start);
-    httpd_register_uri_handler(s_httpd, &uri_ulog_stop);
-    httpd_register_uri_handler(s_httpd, &uri_ulog_cors);
-    httpd_register_uri_handler(s_httpd, &uri_ulog_cors2);
-
-    /* Camera frame recording endpoints */
-    httpd_uri_t uri_cam_rec = {
-        .uri = "/api/camera_record", .method = HTTP_POST,
-        .handler = camera_record_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_cam_rec_status = {
-        .uri = "/api/camera_record", .method = HTTP_GET,
-        .handler = camera_record_status_handler, .user_ctx = NULL
-    };
-    httpd_uri_t uri_cors_cam_rec = {
-        .uri = "/api/camera_record", .method = HTTP_OPTIONS,
-        .handler = cors_preflight_handler, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(s_httpd, &uri_cam_rec);
-    httpd_register_uri_handler(s_httpd, &uri_cam_rec_status);
-    httpd_register_uri_handler(s_httpd, &uri_cors_cam_rec);
-
-    /* System stats endpoint */
-    httpd_uri_t uri_sys_stats = {
-        .uri = "/api/system_stats", .method = HTTP_GET,
-        .handler = h_system_stats, .user_ctx = NULL
-    };
-    httpd_uri_t uri_sys_alerts = {
-        .uri = "/api/system_alerts", .method = HTTP_GET,
-        .handler = h_system_alerts, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(s_httpd, &uri_sys_stats);
-    httpd_register_uri_handler(s_httpd, &uri_sys_alerts);
+    _register_web_config_uris(s_httpd);
 
     /* mDNS: advertise web config on the local network */
     if (shared_mdns_ensure()) {
@@ -2063,9 +2020,58 @@ static void web_config_task(void *arg)
     }
 
     /* Idle — HTTP server runs in its own internal threads.
-     * Check s_running flag for clean exit when web_config_server_stop() is called. */
+     * Check s_running flag for clean exit when web_config_server_stop() is called.
+     * Periodically log httpd health and detect WiFi disconnection to prevent
+     * stale TCP sessions from blocking the httpd select() loop. */
+    int health_log_counter = 0;
+    bool prev_wifi_up = true;
     while (s_running) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+        bool wifi_up = wifi_sta_is_connected();
+
+        /* When WiFi goes down, stop httpd to flush stale TCP sessions.
+         * Without this, half-open connections from the WiFi outage can
+         * exhaust max_open_sockets and block new connections even after
+         * WiFi recovers. Restarting httpd is the cleanest way to reset. */
+        if (prev_wifi_up && !wifi_up && s_httpd) {
+            ESP_LOGW(TAG, "WiFi down — stopping httpd to flush stale sessions");
+            httpd_stop(s_httpd);
+            s_httpd = NULL;
+        }
+        /* When WiFi is up but httpd is not running, start it.
+         * This handles both WiFi recovery and httpd_start failure retry. */
+        if (wifi_up && !s_httpd) {
+            ESP_LOGI(TAG, "WiFi up — starting httpd on port %d", WEB_CONFIG_PORT);
+            httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+            config.server_port = WEB_CONFIG_PORT;
+            config.ctrl_port   = WEB_CONFIG_PORT + 1;
+            config.max_uri_handlers = 30;
+            config.max_open_sockets = 3;
+            config.stack_size = 8192;
+            config.lru_purge_enable = true;
+            config.core_id = 0;
+            config.keep_alive_enable = true;
+            config.keep_alive_idle = 5;
+            config.keep_alive_interval = 5;
+            config.keep_alive_count = 3;
+            if (httpd_start(&s_httpd, &config) == ESP_OK) {
+                _register_web_config_uris(s_httpd);
+                ESP_LOGI(TAG, "httpd started successfully");
+            } else {
+                ESP_LOGE(TAG, "httpd start failed — will retry next cycle");
+            }
+        }
+        prev_wifi_up = wifi_up;
+
+        if (++health_log_counter >= 30) {  /* every 30s */
+            health_log_counter = 0;
+            if (s_httpd) {
+                ESP_LOGI(TAG, "httpd health: handle=%p, wifi=%s",
+                         s_httpd, wifi_up ? "UP" : "DOWN");
+            } else {
+                ESP_LOGW(TAG, "httpd health: handle=NULL, wifi=%s", wifi_up ? "UP" : "DOWN");
+            }
+        }
     }
 
     /* Clean exit path: stop HTTP server and mDNS from within the task */
