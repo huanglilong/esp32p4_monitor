@@ -584,11 +584,45 @@ extern "C" void app_main(void)
 #endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
 
 #ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
-        /* Feishu init: load app_id + app_secret from NVS and start */
-#endif
+        {
+            nvs_handle_t nvs_h;
+            if (nvs_open("claw_im", NVS_READONLY, &nvs_h) == ESP_OK) {
+                char app_id[64] = {0}, app_secret[128] = {0};
+                size_t len;
+                len = sizeof(app_id);
+                if (nvs_get_str(nvs_h, "fs_app_id", app_id, &len) == ESP_OK && len > 1) {
+                    len = sizeof(app_secret);
+                    nvs_get_str(nvs_h, "fs_app_secret", app_secret, &len);
+                    cap_im_feishu_set_credentials(app_id, app_secret);
+                    cap_im_feishu_start();
+                    ESP_LOGI(TAG, "Feishu Bot started (app_id from NVS)");
+                } else {
+                    ESP_LOGI(TAG, "Feishu: no credentials in NVS");
+                }
+                nvs_close(nvs_h);
+            }
+        }
+#endif /* CONFIG_APP_CLAW_CAP_IM_FEISHU */
 #ifdef CONFIG_APP_CLAW_CAP_IM_QQ
-        /* QQ init: load app_id + app_secret from NVS and start */
-#endif
+        {
+            nvs_handle_t nvs_h;
+            if (nvs_open("claw_im", NVS_READONLY, &nvs_h) == ESP_OK) {
+                char app_id[64] = {0}, app_secret[128] = {0};
+                size_t len;
+                len = sizeof(app_id);
+                if (nvs_get_str(nvs_h, "qq_app_id", app_id, &len) == ESP_OK && len > 1) {
+                    len = sizeof(app_secret);
+                    nvs_get_str(nvs_h, "qq_app_secret", app_secret, &len);
+                    cap_im_qq_set_credentials(app_id, app_secret);
+                    cap_im_qq_start();
+                    ESP_LOGI(TAG, "QQ Bot started (app_id from NVS)");
+                } else {
+                    ESP_LOGI(TAG, "QQ: no credentials in NVS");
+                }
+                nvs_close(nvs_h);
+            }
+        }
+#endif /* CONFIG_APP_CLAW_CAP_IM_QQ */
 #ifdef CONFIG_APP_CLAW_CAP_IM_TG
         {
             nvs_handle_t nvs_h;

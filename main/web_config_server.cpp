@@ -58,6 +58,15 @@
 #ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
 #include "cap_im_wechat.h"
 #endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
+#include "cap_im_feishu.h"
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_QQ
+#include "cap_im_qq.h"
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_TG
+#include "cap_im_tg.h"
+#endif
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
     defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
 #include "cap_im_platform.h"
@@ -2268,8 +2277,104 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
 }
 
 /*============================================================================
- * URI Registration (extracted for httpd restart on WiFi recovery)
+ * Feishu / QQ / Telegram Configuration API
  *============================================================================*/
+#ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
+static esp_err_t h_feishu_config(httpd_req_t *req)
+{
+    char *body = (char *)calloc(1, req->content_len + 1);
+    if (!body) return ESP_ERR_NO_MEM;
+    int ret = httpd_req_recv(req, body, req->content_len);
+    if (ret <= 0) { free(body); return ESP_FAIL; }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) return ESP_FAIL;
+    cJSON *app_id_j = cJSON_GetObjectItemCaseSensitive(root, "app_id");
+    cJSON *app_secret_j = cJSON_GetObjectItemCaseSensitive(root, "app_secret");
+    if (app_id_j && app_secret_j && cJSON_IsString(app_id_j) && cJSON_IsString(app_secret_j)) {
+        nvs_handle_t nvs_h;
+        if (nvs_open("claw_im", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_str(nvs_h, "fs_app_id", app_id_j->valuestring);
+            nvs_set_str(nvs_h, "fs_app_secret", app_secret_j->valuestring);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
+    }
+    cJSON_Delete(root);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+#endif
+
+#ifdef CONFIG_APP_CLAW_CAP_IM_QQ
+static esp_err_t h_qq_config(httpd_req_t *req)
+{
+    char *body = (char *)calloc(1, req->content_len + 1);
+    if (!body) return ESP_ERR_NO_MEM;
+    int ret = httpd_req_recv(req, body, req->content_len);
+    if (ret <= 0) { free(body); return ESP_FAIL; }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) return ESP_FAIL;
+    cJSON *app_id_j = cJSON_GetObjectItemCaseSensitive(root, "app_id");
+    cJSON *app_secret_j = cJSON_GetObjectItemCaseSensitive(root, "app_secret");
+    if (app_id_j && app_secret_j && cJSON_IsString(app_id_j) && cJSON_IsString(app_secret_j)) {
+        nvs_handle_t nvs_h;
+        if (nvs_open("claw_im", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_str(nvs_h, "qq_app_id", app_id_j->valuestring);
+            nvs_set_str(nvs_h, "qq_app_secret", app_secret_j->valuestring);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
+    }
+    cJSON_Delete(root);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+#endif
+
+#ifdef CONFIG_APP_CLAW_CAP_IM_TG
+static esp_err_t h_tg_config(httpd_req_t *req)
+{
+    char *body = (char *)calloc(1, req->content_len + 1);
+    if (!body) return ESP_ERR_NO_MEM;
+    int ret = httpd_req_recv(req, body, req->content_len);
+    if (ret <= 0) { free(body); return ESP_FAIL; }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) return ESP_FAIL;
+    cJSON *token_j = cJSON_GetObjectItemCaseSensitive(root, "token");
+    if (token_j && cJSON_IsString(token_j)) {
+        nvs_handle_t nvs_h;
+        if (nvs_open("claw_im", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_str(nvs_h, "tg_token", token_j->valuestring);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
+    }
+    cJSON_Delete(root);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+#endif
 static void _register_web_config_uris(httpd_handle_t hd)
 {
     /* Core */
@@ -2366,6 +2471,20 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_register_uri_handler(hd, &uri_llm_get);
     httpd_register_uri_handler(hd, &uri_llm_set);
     httpd_register_uri_handler(hd, &cors_llm_get);
+
+    /* ── Feishu / QQ / Telegram Config API ── */
+#ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
+    { httpd_uri_t u = { .uri = "/api/feishu/config", .method = HTTP_POST, .handler = h_feishu_config }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/feishu/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_QQ
+    { httpd_uri_t u = { .uri = "/api/qq/config", .method = HTTP_POST, .handler = h_qq_config }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/qq/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_TG
+    { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_POST, .handler = h_tg_config }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+#endif
 }
 
 /*============================================================================
