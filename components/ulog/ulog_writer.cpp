@@ -642,10 +642,9 @@ void ulog_writer_deinit(ulog_writer_t *writer)
         ulog_writer_stop(writer);
     }
     ringbuf_deinit(&writer->ringbuf);
-    /* Free pre-allocated TCB — yield first to let idle task reclaim it
-     * from the termination list if the writer task just exited. */
-    vTaskDelay(pdMS_TO_TICKS(10));
-    if (writer->task_tcb) { heap_caps_free(writer->task_tcb); writer->task_tcb = nullptr; }
+    /* TCB is pre-allocated at init and never freed — ~340B internal SRAM,
+     * negligible cost for a permanent singleton in embedded firmware.
+     * Avoids TCB use-after-free race with idle task entirely. */
     writer->state = ULOG_STATE_UNINIT;
     ESP_LOGI(TAG, "Deinitialized");
 }

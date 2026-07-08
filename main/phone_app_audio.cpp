@@ -71,17 +71,13 @@ PhoneAppAudio::~PhoneAppAudio()
             vTaskDelete(_task_handle.exchange(nullptr, std::memory_order_acq_rel));
         }
     }
-    /* Free static task buffers (xTaskCreateStatic does not free them).
+    /* Free PSRAM-allocated stack (xTaskCreateStatic does not free them).
      * Defensive: close() normally frees the stack, but guard against any
      * path that destroys the object before close() ran. */
     if (_audio_stack) { heap_caps_free(_audio_stack); _audio_stack = nullptr; }
-    /* TCB is pre-allocated at construction — free it here.
-     * Yield first to let idle task reclaim the TCB from the termination
-     * list if the task just exited (via close or destructor wait path).
-     * Without this yield, heap_caps_free corrupts FreeRTOS's internal
-     * linked list (xTasksWaitingTermination). */
-    vTaskDelay(pdMS_TO_TICKS(10));
-    if (_audio_tcb)  { heap_caps_free(_audio_tcb);  _audio_tcb = nullptr; }
+    /* TCB is pre-allocated at construction and never freed — ~340B internal
+     * SRAM, negligible cost for a permanent singleton in embedded firmware.
+     * Avoids TCB use-after-free race with idle task entirely. */
     /* Delete update timer (defensive — close() normally does this) */
     if (_update_timer) {
         lv_timer_delete(_update_timer);
