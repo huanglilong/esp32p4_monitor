@@ -41,9 +41,9 @@
 static const char *TAG = "monitor";
 
 /* Auto-detected: true if GT911 touch (I2C 0x5D) responds → LCD-4B board.
- * volatile: written once in app_main (core 0), read from web_config_server
- * task (any core). volatile ensures cross-core visibility for write-once flag. */
-volatile bool g_has_lcd = false;
+ * atomic: written once in app_main (core 0), read from web_config_server
+ * task (any core). std::atomic ensures cross-core visibility. */
+std::atomic<bool> g_has_lcd{false};
 
 /*============================================================================
  * mDNS hostnames:
@@ -469,11 +469,12 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "NVS initialized");
 
     /* 0b. Auto-detect LCD via GT911 I2C probe */
-    g_has_lcd = detect_lcd_via_i2c();
-    PeripheralManager::instance().set_has_lcd(g_has_lcd);
-    ESP_LOGI(TAG, "LCD detected: %s", g_has_lcd ? "YES (LCD-4B)" : "NO (WIFI6)");
+    bool has_lcd = detect_lcd_via_i2c();
+    g_has_lcd.store(has_lcd, std::memory_order_release);
+    PeripheralManager::instance().set_has_lcd(has_lcd);
+    ESP_LOGI(TAG, "LCD detected: %s", has_lcd ? "YES (LCD-4B)" : "NO (WIFI6)");
 
-    if (g_has_lcd) {
+    if (has_lcd) {
         /* === LCD-4B: BSP display init (powers LDO4), then SD before WiFi === */
         lv_display_t *disp = NULL;
         monitor_init_display(&disp);
@@ -572,7 +573,7 @@ extern "C" void app_main(void)
         strlcpy(cfg.sys_name, "esp32p4_monitor", sizeof(cfg.sys_name));
         snprintf(cfg.ver_sw, sizeof(cfg.ver_sw), "IDF %s", esp_get_idf_version());
         snprintf(cfg.ver_hw, sizeof(cfg.ver_hw), "%s",
-                 g_has_lcd ? "ESP32-P4-WIFI6-LCD-4B" : "ESP32-P4-WIFI6");
+                 g_has_lcd.load(std::memory_order_acquire) ? "ESP32-P4-WIFI6-LCD-4B" : "ESP32-P4-WIFI6");
         strlcpy(cfg.sys_uuid, sys_uuid, sizeof(cfg.sys_uuid));
         strlcpy(cfg.sys_os_name, "FreeRTOS", sizeof(cfg.sys_os_name));
         strlcpy(cfg.sys_os_ver, esp_get_idf_version(), sizeof(cfg.sys_os_ver));
