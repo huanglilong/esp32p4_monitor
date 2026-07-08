@@ -187,8 +187,15 @@ void logger_deinit(void)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     if (!s_log.writer_exited && s_log.writer_task) {
-        /* Safety: force-kill only if writer didn't exit on its own */
-        vTaskDelete(s_log.writer_task);
+        /* Safety: force-kill only if writer didn't exit on its own.
+         * Re-check after a short yield: the writer may have just set
+         * writer_exited and called vTaskDelete(NULL) — the idle task
+         * needs time to reclaim the TCB before we can safely reference
+         * or skip the handle. */
+        vTaskDelay(pdMS_TO_TICKS(10));
+        if (!s_log.writer_exited) {
+            vTaskDelete(s_log.writer_task);
+        }
     }
     s_log.writer_task = nullptr;
 
