@@ -1998,8 +1998,14 @@ static bool web_config_self_probe(void)
 
     bool ok = false;
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-        const char *req = "GET /api/status HTTP/1.0\r\n\r\n";
+        /* Use HTTP/1.1 with Connection: close for clean server-side lifecycle.
+         * HTTP/1.0 caused http_parser HPE_INVALID_URL (errno 16) because the
+         * server sometimes received only a partial request (0/24 bytes parsed)
+         * before the client closed — the truncated request line looked invalid. */
+        const char *req = "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         if (send(fd, req, strlen(req), 0) > 0) {
+            /* Signal end-of-request so the server doesn't wait for more data. */
+            shutdown(fd, SHUT_WR);
             char buf[64];
             int n;
             bool got_any = false;
