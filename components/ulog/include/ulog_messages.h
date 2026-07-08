@@ -59,7 +59,7 @@ extern "C" {
 /** File header (first 16 bytes of the file). */
 typedef struct {
     uint8_t  magic[8];      /**< ULOG_MAGIC */
-    uint64_t timestamp;     /**< File creation timestamp (µs since Unix epoch) */
+    uint64_t timestamp;     /**< File creation timestamp (µs since boot) */
 } ulog_file_header_s;
 
 /** Common message header (every message starts with these 3 bytes). */

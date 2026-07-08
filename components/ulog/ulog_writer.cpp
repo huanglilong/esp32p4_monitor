@@ -820,18 +820,10 @@ static esp_err_t write_file_header(ulog_writer_t *writer)
     ulog_file_header_s hdr;
     memcpy(hdr.magic, ULOG_MAGIC, ULOG_MAGIC_LEN);
 
-    if (writer->has_wall_clock) {
-        /* Use real UTC time from SNTP */
-        struct timespec ts;
-        if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
-            hdr.timestamp = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-        } else {
-            hdr.timestamp = esp_timer_get_time() + (uint64_t)1700000000ULL * 1000000ULL;
-        }
-    } else {
-        /* No RTC — approximate with hardcoded epoch offset */
-        hdr.timestamp = esp_timer_get_time() + (uint64_t)1700000000ULL * 1000000ULL;
-    }
+    /* File header timestamp must be in the same time domain as data message
+     * timestamps — microseconds since boot (esp_timer).
+     * Tools like ulog_info convert to UTC using boot_time_utc_us. */
+    hdr.timestamp = esp_timer_get_time();
     return write_all(writer, &hdr, sizeof(hdr));
 }
 

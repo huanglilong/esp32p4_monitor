@@ -908,6 +908,9 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **Non-detection JPEG QBUF 延迟** (S181): 非检测帧 JPEG sensor 路径 QBUF 在消费者完成前发出，V4L2 buffer 可能被驱动覆写。修复: 与检测帧路径统一，JPEG sensor 延迟 QBUF 至所有消费者完成；CPU fallback 编码后立即 QBUF (jpeg_data 已独立于 V4L2 buffer)
 - [x] **AudioDriver deinit mutex 竞态** (S182): `deinit()` 用 10ms 延时等待 in-flight codec 操作，但 `set_volume`/`set_mic_gain` 可持锁 100ms，mutex 可能在 in-flight 操作仍持有时被删除。修复: 新增 `_codec_ops_in_flight` 原子计数器，codec 操作入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
 - [x] **Logger deinit mutex 竞态** (S183): `logger_deinit()` 用 10ms 延时等待 in-flight `_logger_push`，但可持 `buf_mutex` 100ms。修复: 新增 `push_in_flight` 原子计数器，`_logger_push` 入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
+- [x] **ULog 文件 header timestamp 错误** (v2.5):
+  - **问题**: `ulog_info` 显示 start time `495425:08:53`、duration `0:00:00`。根因: `write_file_header()` 写入 UTC 绝对时间 (或 `boot_time + epoch_offset`) 作为 header timestamp，但 PX4 ULog 规范要求 header timestamp 为 **microseconds since boot**（与 data message 时间域一致）。pyulog 用 `boot_time_utc_us + header_timestamp` 计算 start time、用 `last_data_timestamp - header_timestamp` 计算 duration，时间域不匹配导致巨大误差和负数 duration。
+  - **修复**: `write_file_header()` 始终使用 `esp_timer_get_time()` (microseconds since boot)，移除 UTC 转换逻辑。同时修正 `ulog_file_header_s.timestamp` 注释 (原 `µs since Unix epoch` → `µs since boot`)。
 
 ## TODO
 
