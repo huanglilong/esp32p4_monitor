@@ -305,8 +305,22 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path,
     writer->state = ULOG_STATE_IDLE;
     writer->task_handle = NULL;
     writer->task_stack = nullptr;
-    writer->task_tcb = nullptr;
     strlcpy(writer->sd_mount_path, sd_mount_path, sizeof(writer->sd_mount_path));
+
+    /* Pre-allocate TCB in internal SRAM at init time.
+     * TCB is small (~340B) and reused across start/stop cycles.
+     * This avoids freeing the TCB while FreeRTOS idle task may still
+     * reference it from xTasksWaitingTermination after vTaskDelete(NULL).
+     * The stack is allocated separately from PSRAM on each start()
+     * and freed on each stop() — it's large (8KB) and safe to free
+     * immediately since the idle task doesn't reference the stack. */
+    writer->task_tcb = (StaticTask_t *)heap_caps_malloc(
+        sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!writer->task_tcb) {
+        ESP_LOGE(TAG, "Failed to allocate writer TCB");
+        writer->state = ULOG_STATE_ERROR;
+        return ESP_FAIL;
+    }
 
     /* Copy config from application */
     writer->session_counter = config->session_counter;
@@ -460,20 +474,16 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
      * internal SRAM — xTaskCreate would allocate the 8KB stack from
      * scarce internal memory, which fails when LVGL + LWIP consume
      * most of it. PSRAM on ESP32-P4 is DMA-capable and suitable for
-     * task stacks. */
+     * task stacks.
+     * TCB was pre-allocated in init() and reused across start/stop cycles. */
 #ifndef CONFIG_ULOG_TASK_STACK_SIZE
 #define CONFIG_ULOG_TASK_STACK_SIZE 8192
 #endif
     writer->task_exited.store(false, std::memory_order_release);
     writer->task_stack = (StackType_t *)heap_caps_malloc(
         CONFIG_ULOG_TASK_STACK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    writer->task_tcb = (StaticTask_t *)heap_caps_malloc(
-        sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!writer->task_stack || !writer->task_tcb) {
-        ESP_LOGE(TAG, "Failed to allocate writer task buffers (stack=%p, tcb=%p)",
-                 writer->task_stack, writer->task_tcb);
-        if (writer->task_stack) { heap_caps_free(writer->task_stack); writer->task_stack = nullptr; }
-        if (writer->task_tcb)  { heap_caps_free(writer->task_tcb);  writer->task_tcb = nullptr; }
+    if (!writer->task_stack) {
+        ESP_LOGE(TAG, "Failed to allocate writer task stack");
         close(writer->fd);
         writer->fd = -1;
         writer->state = ULOG_STATE_ERROR;
@@ -492,7 +502,6 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
     if (writer->task_handle == NULL) {
         ESP_LOGE(TAG, "Failed to create writer task");
         heap_caps_free(writer->task_stack); writer->task_stack = nullptr;
-        heap_caps_free(writer->task_tcb);  writer->task_tcb = nullptr;
         close(writer->fd);
         writer->fd = -1;
         writer->state = ULOG_STATE_ERROR;
@@ -533,14 +542,13 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
         writer->task_handle = NULL;
     }
 
-    /* Free static task buffers (xTaskCreateStatic does not free them).
-     * Yield first to let the idle task reclaim the TCB from the
-     * termination list — vTaskDelete(NULL) adds the TCB to
-     * xTasksWaitingTermination, and freeing it while still linked
-     * corrupts the kernel's internal list. */
+    /* Free PSRAM-allocated stack (xTaskCreateStatic does not free it).
+     * The stack is safe to free immediately since FreeRTOS doesn't
+     * reference it after vTaskDelete — the idle task only reclaims
+     * the TCB, which we keep allocated across stop/start cycles.
+     * Yield first to ensure the task has fully exited. */
     vTaskDelay(pdMS_TO_TICKS(10));
     if (writer->task_stack) { heap_caps_free(writer->task_stack); writer->task_stack = nullptr; }
-    if (writer->task_tcb)  { heap_caps_free(writer->task_tcb);  writer->task_tcb = nullptr; }
 
     /* Drain remaining ring buffer data to file.
      * Skip if writer was force-killed (mutex may be locked). */
@@ -634,6 +642,9 @@ void ulog_writer_deinit(ulog_writer_t *writer)
         ulog_writer_stop(writer);
     }
     ringbuf_deinit(&writer->ringbuf);
+    /* Free pre-allocated TCB — safe here because stop() already waited
+     * for the task to exit, and deinit() is only called at shutdown. */
+    if (writer->task_tcb) { heap_caps_free(writer->task_tcb); writer->task_tcb = nullptr; }
     writer->state = ULOG_STATE_UNINIT;
     ESP_LOGI(TAG, "Deinitialized");
 }
