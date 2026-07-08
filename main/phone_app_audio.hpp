@@ -34,6 +34,9 @@ private:
     /* Audio state */
     TaskHandle_t       _task_handle;
     std::atomic<bool>  _task_running;
+    /* Static task buffers — stack in PSRAM to save internal SRAM (mirrors CameraStream model_load pattern) */
+    StackType_t       *_audio_stack;      /* 12KB, PSRAM */
+    StaticTask_t      *_audio_tcb;        /* small, internal SRAM */
 
     /* Recording state */
     std::atomic<bool>  _is_recording;

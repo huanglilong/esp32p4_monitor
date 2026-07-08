@@ -97,6 +97,8 @@ static std::atomic<bool>  s_mdns_running{false};
 
 static bool           s_audio_inited = false;
 static TaskHandle_t   s_audio_task = NULL;
+static StackType_t   *s_audio_stack = NULL;   /* 12KB, PSRAM (saves internal SRAM) */
+static StaticTask_t  *s_audio_tcb = NULL;     /* small, internal SRAM */
 static std::atomic<bool>  s_audio_running{false};
 static std::atomic<bool>  s_is_recording{false};
 static shine_t        s_shine = NULL;
@@ -154,6 +156,11 @@ static void _stop_audio_task_if_running(void)
         vTaskDelete(s_audio_task);
         s_audio_task = NULL;
     }
+
+    /* Free static task buffers (xTaskCreateStaticPinnedToCore does not free them).
+     * Safe: task has exited (self-deleted or force-killed above). */
+    if (s_audio_stack) { heap_caps_free(s_audio_stack); s_audio_stack = NULL; }
+    if (s_audio_tcb)  { heap_caps_free(s_audio_tcb);  s_audio_tcb = NULL; }
 }
 
 /* Audio recording task: I2S RX → shine MP3 → SD card */
@@ -1135,8 +1142,21 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     if (!__audio_init())  { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
     if (!s_audio_task) {
         s_audio_running = true;
-        if (xTaskCreatePinnedToCore(audio_task, "w_audio", 12*1024, NULL, 1, &s_audio_task, 0) != pdPASS)
-            { s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
+        s_audio_stack = (StackType_t *)heap_caps_malloc(12 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_audio_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!s_audio_stack || !s_audio_tcb) {
+            ESP_LOGE(TAG, "Failed to allocate audio task buffers");
+            if (s_audio_stack) { heap_caps_free(s_audio_stack); s_audio_stack = NULL; }
+            if (s_audio_tcb) { heap_caps_free(s_audio_tcb); s_audio_tcb = NULL; }
+            s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
+        }
+        s_audio_task = xTaskCreateStaticPinnedToCore(audio_task, "w_audio", 12 * 1024, NULL, 1, s_audio_stack, s_audio_tcb, 0);
+        if (s_audio_task == NULL) {
+            ESP_LOGE(TAG, "Failed to create audio task");
+            heap_caps_free(s_audio_stack); s_audio_stack = NULL;
+            heap_caps_free(s_audio_tcb);  s_audio_tcb = NULL;
+            s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
+        }
     }
     s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!s_pcm_buf) {
