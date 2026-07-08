@@ -18,7 +18,9 @@
 # Git
 1. every git commit must be approved by user!
 2. git push is forbidden!
-3. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
+3. **one issue, one commit** — each commit must address exactly ONE issue/feature/bugfix. Never bundle multiple unrelated changes into a single commit. If a task involves multiple issues, create separate commits for each one.
+4. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
+5. before committing, verify the build passes (`idf.py build`) to ensure the commit does not introduce regressions
 
 ## ESP-DIF Build, Flash, and Monitor
 1. source ~/.espressif/v6.x/esp-idf/export.sh
@@ -37,6 +39,6 @@
 
 ## Project Code Review and fix issues
 1. regularly review the code for potential issues and improvements, keep code clean and maintainable, and follow best practices. Use /review command to request a review of the code, and /fix command to fix any issues found.
-2. one issue, one commit, fix them promptly and document the changes made and build to verify
+2. **one issue, one commit** — fix each issue in its own separate commit. Do not combine fixes for multiple issues into one commit. Fix them promptly, document the changes made, and build to verify each fix individually.
 3. after fixed all issues, run /review for overall review and check if any issues remain, if so, repeat step 1-3 until reach a max of 3 rounds of review, if still have issues, report to user for further instructions
 4. update all relevant documentation files (*.md)
