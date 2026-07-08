@@ -100,11 +100,12 @@
 ### Software Features
 - **MIPI DSI** 720×720 LCD + GT911 Touch (ESP-Brookesia Phone UI, LVGL v9.2.2)
 - **MIPI CSI** OV5647 camera (V4L2, ~5fps, HW JPEG, ESP-DL human detection, PPA-accelerated preprocessing)
-- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, inline detection, JPEG snapshot)
+- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, inline detection, JPEG snapshot, TCP keep-alive)
 - **Audio** Dual mic monitoring + MP3 recording (Shine encoder, SD card) + Music playback (ESP-GMF)
-- **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control)
-- **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery and settings
+- **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera frame recording, WiFi recovery httpd restart)
+- **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video viewer (parse .ulg frames, slideshow, save)
 - **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
-- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation)
+- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible)
+- **System Monitor** Per-core CPU busy%, heap/PSRAM tracking, resource alerts (uORB + ULog + Web API)
 - **Multi-board** Auto-detect LCD-4B / WIFI6 via GT911 I2C probe, single firmware
 - **Driver Architecture** PeripheralManager facade → AudioDriver + SDCardDriver + CameraDriver

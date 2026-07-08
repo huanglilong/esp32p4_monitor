@@ -565,7 +565,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 | 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~5-8KB/帧 @ 300×300) |
 | 推流分辨率 | 300×300 BGR24 (PPA 输出, 非 800×800 RGB565) |
 | 帧率实测 | **~2fps** @ 2fps sensor, CPU ~5% |
-| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/capture_image`), 端口 81: MJPEG `/stream` |
+| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/capture_image`, `/api/get_detection_info`, `/api/set_camera_config`), 端口 81: MJPEG `/stream` |
 | Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块) |
 
 **调试过程中发现并修复的关键问题**:
@@ -574,7 +574,8 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **JPEG 缓存对齐**: HW 编码器输出缓冲区需 `esp_cache_msync` 且大小向上取整到 128B 缓存行边界。
 - **客户端断连处理**: `httpd_resp_send_chunk` 失败时 `break` 优雅退出, 避免 `httpd_sock_err` 刷屏。
 - **TCP keep-alive**: 所有 httpd 实例启用 TCP keep-alive (idle=5s, interval=5s, count=3), 防止客户端断连后半开 TCP 连接阻塞 select() 导致 HTTP 服务器不可达。
-- **WiFi 断连 httpd 重启**: Web Config (8080) 检测 WiFi 断连后自动停止 httpd 刷除残留 session, WiFi 恢复后自动重启并重新注册 URI, 防止 EHOSTUNREACH/EAGAIN 导致的 session 泄漏耗尽 `max_open_sockets`。
+- **WiFi 断连 httpd 重启**: Web Config (8080) 检测 WiFi 断连后自动停止 httpd 刷除残留 session, WiFi 恢复后自动重启并重新注册 URI, 防止 EHOSTUNREACH/EAGAIN 导致的 session 泄漏耗尽 `max_open_sockets`。URI 注册提取为 `_register_web_config_uris()` 复用。
+- **LWIP_MAX_SOCKETS 扩容**: 22→28, 3 个 httpd 实例内部占用 17 个 socket, 加 WiFi/mDNS/SNTP 后 22 不足导致 `accept()` 返回 `ENOTSOCK`。
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器延迟初始化 (首个 MJPEG 客户端连接时才创建, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: 两个并发客户端可同时触发延迟初始化。修复: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护。
 - **JPEG 快照**: stream handler 每帧保存最新 JPEG 到 `_last_jpeg_buf` (mutex 保护), `/api/capture_image` 端点返回最新帧的 `image/jpeg`。
@@ -640,18 +641,28 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | 懒加载 | SD 卡 + 音频首次访问时才初始化 (`__audio_init()`) |
 | 清理 | `web_config_server_stop()` 刷新编码器、关闭文件、释放 SD/音频 |
 
-**API 端点** (6 个):
+**API 端点** (6 个音频 + 3 个文件管理 + 3 个 ULog + 3 个 Camera Record + 2 个 System + 5 个核心 + 8 个 CORS = 30 个 handler):
+- `GET /` — Web UI 首页
+- `GET /api/status` — 设备状态
+- `POST /api/settings` — 保存 WiFi/音量
+- `POST /api/camera_stream` — 开/关 Camera Stream
+- `POST /api/factory_reset` — 恢复出厂设置
 - `GET /api/audio/record_start` — 开始录音
 - `GET /api/audio/record_stop` — 停止录音
 - `GET /api/audio/record_status` — 录音状态 (秒数, 字节数)
 - `GET /api/audio/list` — 列出 `.mp3` 文件
 - `GET /api/audio/play?file=xxx.mp3` — 播放文件
 - `GET /api/audio/stop` — 停止播放
-
-**ULog API 端点** (3 个):
+- `GET /api/files/list?dir=/` — 列出目录内容 (JSON)
+- `GET /api/files/download?path=xxx` — 下载文件 (binary)
+- `POST /api/files/delete` — 删除文件 (body: `{"path": "xxx"}`)
 - `GET /api/ulog/status` — 日志状态 (running/filepath/bytes_written)
 - `POST /api/ulog/start` — 开始 ULog 录制
 - `POST /api/ulog/stop` — 停止 ULog 录制
+- `POST /api/camera_record` — 开始/停止 Camera Frame ULog 录制
+- `GET /api/camera_record` — Camera Frame 录制状态
+- `GET /api/system_stats` — CPU/内存/任务快照
+- `GET /api/system_alerts` — CPU/内存告警状态 + 阈值
 
 ### 19. Web File Manager (web_config_server 文件管理)
 
@@ -664,11 +675,6 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | 删除 | `POST /api/files/delete` → 删除文件/空目录, 含前端确认弹窗 |
 | 安全 | 路径穿越防护 (`..`, 绝对路径限制 `/sdcard/` 前缀) |
 | 互斥 | 与 Audio Recorder 模式互斥: 切换时自动停止录音/播放; 录音中禁止文件操作 |
-
-**API 端点** (3 个):
-- `GET /api/files/list?dir=/` — 列出目录内容 (JSON)
-- `GET /api/files/download?path=xxx` — 下载文件 (binary)
-- `POST /api/files/delete` — 删除文件 (body: `{"path": "xxx"}`)
 
 **板级兼容**: `monitor_init_audio()` 根据 `g_has_lcd` 自动选择:
 - **LCD-4B**: ES8311 DAC (0x30) + ES7210 ADC (0x80, 双麦)
@@ -688,6 +694,7 @@ GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 | **Settings 配置** | WiFi/音量/Camera Stream 开关 + 恢复出厂设置 |
 | **音频录制** | 调用 8080 API 远程录制 MP3 到 SD 卡 |
 | **音频播放** | 远程播放 SD 卡上已录制的 MP3 文件 |
+| **ULog 视频查看** | 下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图 + 幻灯片 + 保存 |
 | **平台支持** | macOS, iOS, Linux, Android |
 
 **核心文件** (`flutter_app/lib/`):
@@ -695,10 +702,12 @@ GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 screens/
 ├── home_screen.dart         # 设备发现 + 连接入口
 ├── camera_screen.dart       # 摄像头实时画面 (全窗口)
-└── settings_screen.dart     # 配置 + 录音/播放 (手机比例)
+├── settings_screen.dart     # 配置 + 录音/播放 + 文件管理 + ULog (手机比例)
+└── ulog_viewer_screen.dart  # ULog 视频查看 (缩略图/幻灯片/保存)
 services/
 ├── http_service.dart        # 8080/81 API 封装
 ├── device_discovery.dart    # mDNS + HTTP 发现
+├── ulog_parser.dart         # ULog 二进制解析器 (camera_frame JPEG 提取)
 └── connected_device_store.dart
 providers/
 └── app_state.dart           # 全局状态管理
@@ -743,6 +752,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 - **2026-07-07**: ASP 音频任务栈 8KB 移至 PSRAM (`task_stack_in_ext=true` — GMF 内部用 WithCaps 处理), 共省 **~8 KB**
 - **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 共省 **~30 KB** pbuf 头部
 - **2026-07-08**: LWIP_MAX_SOCKETS 22→28 (3 httpd 实例内部占用 17 个 socket, 22 太紧导致 accept() ENOTSOCK), httpd 启用 TCP keep-alive + WiFi 断连重启
+- **2026-07-08**: SystemMonitor 内存告警阈值 80%→85% (减少 Internal SRAM 误报)
 - **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
 - **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
 - **2026-07-06**: detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)
@@ -880,3 +890,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - **TCP 窗口/发送缓冲增大** (S175): TCP SND_BUF/WND 从 32KB 增至 64KB，减少 SDIO 小包竞争
   - **Core 负载均衡** (S176): httpd 3 实例绑定 Core 0 (core_id=0)，LVGL timer 周期 5→20ms，降低 Core 1 负载
   - **CameraStream stream_handler 重构**: 提取 `_draw_detection_boxes_on_ppa()`, `_draw_detection_boxes_on_rgb565()`, `_send_mjpeg_part()`, `_save_jpeg_snapshot()`, `_update_fps_stats()` 辅助方法，减少代码重复
+- [x] **HTTP 服务器不可达修复** (S177): 客户端断连后 HTTP 服务器永久不可达。根因: `LWIP_MAX_SOCKETS=22` 太小 — 3 个 httpd 实例内部占用 17 个 socket (listen+ctrl×2+data each)，加上 WiFi/mDNS/SNTP 后 socket 表耗尽导致 `accept()` 返回 `ENOTSOCK (128)`。修复: ① `LWIP_MAX_SOCKETS` 22→28 ② 所有 httpd 启用 TCP keep-alive (idle=5s, interval=5s, count=3) ③ Web Config WiFi 断连自动停止 httpd + WiFi 恢复后自动重启并重新注册 URI ④ 提取 `_register_web_config_uris()` 复用
+- [x] **SystemMonitor 内存告警阈值提升** (S178): `CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT` 从 80% 提升至 85%，减少 Internal SRAM 误报 (LVGL + LWIP 常态占用 ~70%)
+- [x] **Flutter ULog 视频查看器** (S179): 新增 `ulog_parser.dart` (移植 Python ULog 解析器到 Dart) + `ulog_viewer_screen.dart` (下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图网格，幻灯片播放，键盘导航，InteractiveViewer 缩放，单帧/全帧保存)；Settings 页 .ulg 文件可点击查看 + "Open Local .ulg" 按钮扫描本地已下载文件
+- [x] **Flutter filesDownload 可靠性修复** (S180): 移除 `_isChunkedBody` 自动检测 (非 chunked 下载误判)，仅当 `Transfer-Encoding: chunked` 头存在时 dechunk (RFC 7230)；O(n²) `rawBuf.toBytes().length` 替换为 int 计数器；HTTP/1.0 超时 30s→10s

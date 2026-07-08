@@ -34,3 +34,9 @@
 ## Permission
 1. allow read/write access to all files and directories and tools in the workspace
 2. allow read only access to files and directories outside the workspace, unless explicitly granted write access
+
+## Project Code Review and fix issues
+1. regularly review the code for potential issues and improvements, keep code clean and maintainable, and follow best practices. Use /review command to request a review of the code, and /fix command to fix any issues found.
+2. if any issues are found, one issue one commit, fix them promptly and document the changes made
+3. every commit should be build to verify
+4. after fixed all issues, run /review for overall review and check if any issues remain, if so, repeat step 1-3 until reach a max of 3 rounds of review, if still have issues, report to user for further instructions

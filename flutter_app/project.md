@@ -67,11 +67,11 @@
 |------|------|------|
 | `lib/services/http_service.dart` | HTTP 通信层 | MJPEG 流解析 + capture/save/setQuality；所有 HttpClient 添加 `findProxy = 'DIRECT'` 绕过 Linux 系统代理 |
 | `lib/services/device_discovery.dart` | 设备发现 | mDNS `_http._tcp` + HTTP 端口探测；添加 `joinMulticast()` 修复 Linux 组播接收；添加 `_detectLocalSubnet()` 回退探测本机网段 |
-| `lib/services/ulog_parser.dart` | ULog 解析器 | 解析 PX4 ULog 二进制格式，提取 camera_frame JPEG 帧（移植自 tools/ulog_extract_frames.py） |
+| `lib/services/ulog_parser.dart` | ULog 解析器 | 解析 PX4 ULog 二进制格式，提取 camera_frame JPEG 帧（移植自 tools/ulog_extract_frames.py），支持 o_size_no_padding |
 | `lib/providers/app_state.dart` | 全局状态 | 帧限流、save/setQuality 委托 |
 | `lib/screens/camera_screen.dart` | 摄像头画面 | API 按钮、Quality 滑块（300ms防抖）、文件保存到系统临时目录 |
-| `lib/screens/ulog_viewer_screen.dart` | ULog 视频查看 | 下载/解析 .ulg 文件，帧缩略图网格，幻灯片播放，单帧/全帧保存 |
-| `lib/screens/settings_screen.dart` | 设置+音频+文件管理 | WiFi/音量/ULog 录制控制 + SD 卡文件浏览器（.ulg 点击查看，.mp3 播放） |
+| `lib/screens/ulog_viewer_screen.dart` | ULog 视频查看 | 下载/解析 .ulg 文件，帧缩略图网格 + 自动滚动，幻灯片播放，键盘箭头导航，InteractiveViewer 缩放，单帧/全帧保存 |
+| `lib/screens/settings_screen.dart` | 设置+音频+文件管理 | WiFi/音量/ULog 录制控制 + SD 卡文件浏览器（.ulg 点击查看，.mp3 播放）+ "Open Local .ulg" 按钮 |
 | `lib/widgets/image_viewer.dart` | 图像渲染 | `gaplessPlayback: true` 消除闪烁 |
 | `macos/Runner/*.entitlements` | 沙箱权限 | 添加 `network.client` 出站网络权限 |
 
@@ -122,6 +122,7 @@ Transfer-Encoding: chunked
 - [x] Linux 组播修复：添加 `joinMulticast()` + `findProxy: 'DIRECT'` + 网段回退检测
 - [x] ULog 视频查看：.ulg 文件下载 → 解析 camera_frame JPEG 帧 → 缩略图网格 + 幻灯片播放 + 单帧/全帧保存
 - [x] 全页面文字可选中复制（每个 Scaffold 外包 SelectionArea）
+- [x] filesDownload 可靠性修复：仅 Transfer-Encoding: chunked 时 dechunk (RFC 7230)，O(n²) toBytes 消除，超时 10s
 
 ### 🔜 待优化
 

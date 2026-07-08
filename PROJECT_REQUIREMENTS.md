@@ -35,7 +35,7 @@
 | R14 | **多板自动检测** | GT911 I2C (0x5D) 探测，自动适配 LCD-4B / WIFI6，单一固件 | ✅ |
 | R15 | **Web 音频录制** | WIFI6 无屏板通过 Web :8080 录制，Shine MP3 → SD 卡，Start/End 按钮 | ✅ |
 | R16 | **Web 音频播放** | WIFI6 无屏板通过 Web :8080 播放 SD 卡 MP3，esp_audio_simple_player | ✅ |
-| R17 | **Camera Stream 互斥保护** | Web 音频功能仅在 Camera Stream 未运行时可用，UI 隐藏 + API 阻断 | ✅ |
+| R17 | **Camera Stream 互斥保护** | ~~Web 音频功能仅在 Camera Stream 未运行时可用，UI 隐藏 + API 阻断~~ → **已移除**: Camera (MIPI CSI) 和 Audio (I2S) 使用独立硬件，无需互斥。所有 `__cam_running()` 检查已移除 | ✅ |
 
 ### 2.2 稳定性与性能
 
@@ -230,6 +230,10 @@
 | S174 | **AudioDriver PA GPIO 硬编码** | `gpio_config_t` 的 `pin_bit_mask` 使用字面量 `(1ULL << 53)`，而 `AUDIO_PA_GPIO` 宏已存在。修复: 使用 `(1ULL << AUDIO_PA_GPIO)` 宏 | ✅ |
 | S175 | **TCP 窗口/发送缓冲增大** | Camera MJPEG 流通过 SDIO 传输大量 TCP 数据，小窗口导致频繁小包传输与 C6 控制消息竞争。修复: TCP SND_BUF/WND 从 32KB 增至 64KB | ✅ |
 | S176 | **Core 1 负载过高** | Core1 占 27% vs Core0 占 8%。原因: httpd (3实例) 未绑核默认跑 Core1 与 LVGL 竞争；LVGL timer 5ms 过于频繁。修复: (1) httpd core_id=0 (2) LVGL timer_period 5→20ms | ✅ |
+| S177 | **HTTP 服务器不可达修复** | 客户端断连后 HTTP 永久不可达。根因: `LWIP_MAX_SOCKETS=22` 太小，3 个 httpd 内部占 17 个 socket，socket 表耗尽 → `accept()` 返回 `ENOTSOCK`。修复: ① `LWIP_MAX_SOCKETS` 22→28 ② 所有 httpd 启用 TCP keep-alive ③ Web Config WiFi 断连自动重启 httpd + WiFi 恢复后重注册 URI ④ 提取 `_register_web_config_uris()` 复用 | ✅ |
+| S178 | **SystemMonitor 内存告警阈值提升** | `CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT` 从 80% 提升至 85%，减少 Internal SRAM 误报 (LVGL + LWIP 常态占用 ~70%) | ✅ |
+| S179 | **Flutter ULog 视频查看器** | 新增 `ulog_parser.dart` (移植 Python ULog 解析器) + `ulog_viewer_screen.dart` (下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图网格，幻灯片播放，键盘导航，InteractiveViewer 缩放，单帧/全帧保存)；Settings 页 .ulg 可点击查看 + "Open Local .ulg" 按钮 | ✅ |
+| S180 | **Flutter filesDownload 可靠性** | 移除 `_isChunkedBody` 自动检测 (非 chunked 误判)，仅 `Transfer-Encoding: chunked` 头存在时 dechunk (RFC 7230)；O(n²) `toBytes().length` → int 计数器；超时 30s→10s | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -242,12 +246,12 @@
 | M5 | **Web API `/api/system_stats`** | HTTP JSON 端点返回当前 CPU/内存/任务快照，供 Flutter App 或浏览器远程监控 | ✅ |
 | M6 | **Kconfig 可配置** | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` (采样间隔)、`LOG_INTERVAL` (日志频率)、`TOP_N`、`TASK_STACK` | ✅ |
 | M7 | **异常告警 — CPU 高负载** | CPU > 90% 时发布 `system_alert` uORB (CPU_HIGH)，ESP_LOGW 输出告警，包含 Top-1 任务名和 CPU%（绝对 CPU%，0-100% 单核） | ✅ |
-| M8 | **异常告警 — 内存高占用** | Internal SRAM 或 PSRAM 使用率 > 80% 时发布 `system_alert` uORB (MEM_INTERNAL_HIGH / MEM_PSRAM_HIGH) | ✅ |
+| M8 | **异常告警 — 内存高占用** | Internal SRAM 或 PSRAM 使用率 > 85% (原 80%，提升以减少误报) 时发布 `system_alert` uORB (MEM_INTERNAL_HIGH / MEM_PSRAM_HIGH) | ✅ |
 | M9 | **告警分级** | WARNING (阈值~+5%) / CRITICAL (阈值+10%) 两级严重度 | ✅ |
 | M10 | **告警冷却** | 同类型告警最小间隔 30s (可配置)，防止告警洪泛 | ✅ |
 | M11 | **告警 uORB 持久化** | `system_alert` 注册到 ULog writer，SD 卡 `.ulg` 文件记录告警事件 | ✅ |
 | M12 | **告警 Web API** | `GET /api/system_alerts` 返回当前 CPU/内存/PSRAM 告警状态 + 阈值配置 | ✅ |
-| M13 | **告警 Kconfig** | `CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT` (90%)、`MEM_ALERT_PCT` (80%)、`ALERT_COOLDOWN_S` (30) | ✅ |
+| M13 | **告警 Kconfig** | `CONFIG_APP_SYS_MONITOR_CPU_ALERT_PCT` (90%)、`MEM_ALERT_PCT` (85%)、`ALERT_COOLDOWN_S` (30) | ✅ |
 
 ---
 
@@ -312,7 +316,7 @@
 | K1 | ✅ 已修复 | **Camera 帧缓冲跨核并发** | 分配私有 `_detect_in_buf`, mutex 内 memcpy 后释放再推理 (S110) |
 | K2 | 🟢 低 | Audio 无用的 PSRAM 分配 (1920B) | 开销极小 |
 | K3 | 🟢 低 | Music 部分低优先级边界情况 | 见 project_design.md §4.10 |
-| K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已生效** | 所有 6 个端点均已加 `__cam_running()` 检查 (2026-07-02) |
+| K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已移除** | Camera (MIPI CSI) 和 Audio (I2S) 使用独立硬件，无需互斥。所有 `__cam_running()` 检查已移除 |
 | K5 | 🟢 低 | CameraStream/web_config_server 大文件模块化 | 单文件超 1800/87KB，可拆分为独立模块 (V4L2Pipeline, AudioRecorder, WiFiManager 等)。部分已提取辅助方法 (S159) |
 | K6 | 🟢 低 | Logger 重入风险 | esp_log_set_vprintf 回调中调用 ESP_LOG 可能递归 |
 | K7 | ✅ 已修复 | Web `s_audio_running` 跨核竞态 | `volatile bool` → `std::atomic<bool>` (v2.4) |
@@ -377,6 +381,8 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-08 | +S177~S180 HTTP 服务器不可达修复(S177: LWIP_MAX_SOCKETS 22→28 + TCP keep-alive + WiFi 断连 httpd 重启), SystemMonitor 内存告警 80%→85%(S178), Flutter ULog 视频查看器(S179: ulog_parser.dart + ulog_viewer_screen.dart), Flutter filesDownload 可靠性(S180: chunked 检测修正 + O(n²)消除) |
+| 2026-07-08 | R17 更新: Camera Stream 和 Audio 不再互斥 (硬件独立: MIPI CSI vs I2S)，所有 `__cam_running()` 检查已移除 |
 | 2026-07-04 | +S86~S95 Bug 与性能修复: web audio_unlock 泄漏(S86), AudioDriver deinit 竞态(S87), set_volume stale publish(S88), set_mic_gain WIFI6(S89), mDNS mutex TOCTOU(S90), 显示锁死锁(S91), g_has_lcd volatile(S92), app_main 任务回收(S93), ULog SD 检查(S94), web uORB 订阅泄漏(S95) |
 | 2026-07-04 | +R18 Web File Manager: SD 卡文件浏览器 (list/download/delete)，与 Audio Recorder 模式互斥，路径穿越防护 |
 | 2026-07-04 | +S84 S85 Flutter 设备列表排序 (新扫描优先/历史在后) + 设备可达性状态徽章 (Connected/Reachable/Offline/History) |
