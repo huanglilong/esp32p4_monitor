@@ -594,12 +594,14 @@ class Esp32HttpService {
       // Read entire raw response via onDone (HTTP/1.0 server closes connection when done)
       final rawCompleter = Completer<Uint8List>();
       final rawBuf = BytesBuilder();
+      int totalReceived = 0; // Track byte count without O(n²) toBytes()
       int? contentLength;
       int headerEnd = -1;
 
       socket.cast<List<int>>().listen(
         (chunk) {
           rawBuf.add(chunk);
+          totalReceived += chunk.length;
 
           // Try to parse Content-Length from headers once we have them
           if (contentLength == null) {
@@ -621,7 +623,6 @@ class Esp32HttpService {
 
           // If we know Content-Length, complete as soon as body is fully received
           if (contentLength != null && headerEnd >= 0 && !rawCompleter.isCompleted) {
-            final totalReceived = rawBuf.toBytes().length;
             if (totalReceived >= headerEnd + contentLength!) {
               rawCompleter.complete(rawBuf.toBytes());
             }
@@ -661,20 +662,20 @@ class Esp32HttpService {
 
       final headersStr = utf8.decode(raw.sublist(0, bodyStart - 4));
       print('$TAG 📥 filesDownload headers: ${headersStr.replaceAll('\r\n', ' | ')}');
-      print('$TAG 📥 filesDownload body first 20 bytes: ${raw.sublist(bodyStart, (bodyStart + 20).clamp(0, raw.length)).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
 
-      // Detect chunked encoding: either explicit header or body starts with hex chunk size
-      // IMPORTANT: chunked takes priority over Content-Length (RFC 7230)
-      final isChunkedHeader = RegExp(r'Transfer-Encoding:\s*chunked', caseSensitive: false)
+      // Chunked takes priority over Content-Length (RFC 7230)
+      // Only dechunk when Transfer-Encoding: chunked is explicitly declared.
+      // Do NOT auto-detect chunked by inspecting body bytes — that causes
+      // false positives on files whose first bytes happen to be hex + \r\n.
+      final isChunked = RegExp(r'Transfer-Encoding:\s*chunked', caseSensitive: false)
           .hasMatch(headersStr);
-      final bodyLooksChunked = _isChunkedBody(raw, bodyStart);
 
-      if (isChunkedHeader || bodyLooksChunked) {
-        print('$TAG 📥 filesDownload: dechunking (header=$isChunkedHeader, detected=$bodyLooksChunked)');
+      if (isChunked) {
+        print('$TAG 📥 filesDownload: dechunking (Transfer-Encoding: chunked)');
         return _dechunk(raw, bodyStart);
       }
 
-      // Content-Length only if NOT chunked
+      // Content-Length — slice body directly
       final clMatch = RegExp(r'Content-Length:\s*(\d+)', caseSensitive: false)
           .firstMatch(headersStr);
       if (clMatch != null) {
@@ -692,25 +693,6 @@ class Esp32HttpService {
     } finally {
       socket?.close();
     }
-  }
-
-  /// Check if body starts with a chunked encoding pattern (hex size + \r\n).
-  static bool _isChunkedBody(Uint8List data, int bodyStart) {
-    if (bodyStart >= data.length) return false;
-    // Find first \r\n after bodyStart
-    int lineEnd = -1;
-    for (int i = bodyStart; i < data.length - 1; i++) {
-      if (data[i] == 13 && data[i + 1] == 10) {
-        lineEnd = i;
-        break;
-      }
-    }
-    if (lineEnd <= bodyStart) return false;
-    // Check if the line is a valid hex number
-    final line = String.fromCharCodes(data.sublist(bodyStart, lineEnd));
-    final hexPart = line.split(';').first.trim();
-    if (hexPart.isEmpty || hexPart.length > 8) return false;
-    return int.tryParse(hexPart, radix: 16) != null;
   }
 
   /// Decode chunked transfer encoding body.

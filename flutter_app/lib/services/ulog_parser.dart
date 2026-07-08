@@ -66,14 +66,22 @@ class UlogParser {
     if (data.length < 16) {
       return UlogParseResult(frames: [], error: 'File too small (${data.length} bytes)');
     }
-    final hexHeader = data.take(8).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+
+    // Check for valid ULog magic header
+    bool hasUlogMagic = true;
     for (int i = 0; i < 8; i++) {
       if (data[i] != _ulogMagic[i]) {
-        return UlogParseResult(
-          frames: [],
-          error: 'Not a valid ULog file (header: $hexHeader, expected: 55 4c 6f 67 01 12 35 01)',
-        );
+        hasUlogMagic = false;
+        break;
       }
+    }
+
+    if (!hasUlogMagic) {
+      final hexHeader = data.take(8).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+      return UlogParseResult(
+        frames: [],
+        error: 'Not a valid ULog file (header: $hexHeader, expected: 55 4c 6f 67 01 12 35 01)',
+      );
     }
 
     // Parse definitions section — find camera_frame subscription
