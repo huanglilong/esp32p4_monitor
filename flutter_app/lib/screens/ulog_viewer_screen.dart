@@ -255,7 +255,7 @@ class _UlogViewerScreenState extends State<UlogViewerScreen> {
   String _fmtBytes(int b) {
     if (b < 1024) return '$b B';
     if (b < 1048576) return '${(b / 1024).toStringAsFixed(1)} KB';
-    return '${(b / 1048576).toStringAsFixed(1)} MB';
+    return '${(b / 1048576).toStringAsFixed(2)} MB';
   }
 
   String get _title =>

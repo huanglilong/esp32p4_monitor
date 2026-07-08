@@ -59,7 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!_initialized) {
       _initialized = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) { _loadSettings(); _loadUlogStatus(); _fmLoad(); }
+        if (mounted) { _loadSettings(); _loadUlogStatus(); _loadRecordingStatus(); _fmLoad(); }
       });
     }
   }
@@ -112,13 +112,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (r['ok'] == 1) {
         // Server stops any active playback when recording starts — sync local state
         setState(() { _isRecording = true; _recordingSeconds = 0; _recordingBytes = 0; _playingFile = null; });
-        _timerCounter = Timer.periodic(const Duration(seconds: 1), (_) { if (mounted) setState(() => _recordingSeconds++); });
-        _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-          try {
-            final s = await _http!.audioRecordStatus();
-            if (mounted && s['ok'] == 1) setState(() { _recordingSeconds = s['seconds'] ?? _recordingSeconds; _recordingBytes = s['bytes'] ?? _recordingBytes; });
-          } catch (_) {}
-        });
+        _armRecordingTimers();
       } else {
         _showError(r['error'] as String? ?? 'Record failed');
       }
@@ -132,6 +126,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted && r['ok'] != 1) _showError(r['error'] as String? ?? 'Stop failed');
     } catch (e) { _showError('Stop: $e'); }
     if (mounted) { setState(() => _isRecording = false); _fmLoad(); }
+  }
+
+  /// Arm the live-update timers while audio recording is active.
+  void _armRecordingTimers() {
+    _timerCounter?.cancel();
+    _statusTimer?.cancel();
+    _timerCounter = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _recordingSeconds++);
+    });
+    _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      try {
+        final s = await _http!.audioRecordStatus();
+        // Server returns {"recording":1,"seconds":N,"bytes":N} — no "ok" field.
+        if (mounted && s['recording'] == 1) {
+          setState(() {
+            _recordingSeconds = (s['seconds'] as num?)?.toInt() ?? _recordingSeconds;
+            _recordingBytes = (s['bytes'] as num?)?.toInt() ?? _recordingBytes;
+          });
+        }
+      } catch (_) {}
+    });
+  }
+
+  /// Detect an audio recording already in progress (e.g. started from the web
+  /// UI or elsewhere) when this screen opens, and resume live updates.
+  Future<void> _loadRecordingStatus() async {
+    try {
+      final s = await _http!.audioRecordStatus();
+      if (!mounted) return;
+      if (s['recording'] == 1) {
+        setState(() {
+          _isRecording = true;
+          _recordingSeconds = (s['seconds'] as num?)?.toInt() ?? 0;
+          _recordingBytes = (s['bytes'] as num?)?.toInt() ?? 0;
+        });
+        _armRecordingTimers();
+      }
+    } catch (_) {}
   }
 
   Future<void> _playFile(String f) async {
@@ -164,11 +196,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final r = await _http!.ulogStatus();
       if (!mounted) return;
+      final running = r['running'] == true;
       setState(() {
-        _ulogRunning = r['running'] == true;
+        _ulogRunning = running;
         _ulogBytes = (r['bytes_written'] as num?)?.toInt() ?? 0;
         _ulogFilepath = r['filepath'] as String? ?? '';
       });
+      // Keep polling live while logging. Also covers the case where ULog is
+      // already running on the device when this screen opens (or after
+      // navigating back), so the KB/running display doesn't freeze.
+      if (running && _ulogTimer == null) {
+        _ulogTimer = Timer.periodic(const Duration(seconds: 2), (_) => _loadUlogStatus());
+      } else if (!running && _ulogTimer != null) {
+        _ulogTimer!.cancel();
+        _ulogTimer = null;
+      }
     } catch (_) {}
   }
 
@@ -179,7 +221,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (r['ok'] == 1) {
         setState(() => _ulogRunning = true);
         _loadUlogStatus();
-        _ulogTimer = Timer.periodic(const Duration(seconds: 2), (_) => _loadUlogStatus());
       } else {
         _showError(r['error'] as String? ?? 'ULog start failed');
       }
@@ -222,7 +263,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final fk = r['free_kb'] as num?;
       if (tk != null && tk > 0) {
         final free = fk?.toDouble() ?? 0, total = tk.toDouble(), used = total - free;
-        String fmt(double v) => v > 1048576 ? '${(v / 1048576).toStringAsFixed(1)}GB' : v > 1024 ? '${(v / 1024).toStringAsFixed(1)}MB' : '${v.toInt()}KB';
+        String fmt(double v) => v > 1048576 ? '${(v / 1048576).toStringAsFixed(1)}GB' : v > 1024 ? '${(v / 1024).toStringAsFixed(2)}MB' : '${v.toInt()}KB';
         cap = '${fmt(used)} used / ${fmt(total)}';
       }
       final cur = r['current'] as String? ?? _fmDir;
@@ -375,7 +416,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   String _t(int s) => '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
-  String _b(int b) => b < 1024 ? '$b B' : b < 1048576 ? '${(b / 1024).toStringAsFixed(1)} KB' : '${(b / 1048576).toStringAsFixed(1)} MB';
+  String _b(int b) => b < 1024 ? '$b B' : b < 1048576 ? '${(b / 1024).toStringAsFixed(1)} KB' : '${(b / 1048576).toStringAsFixed(2)} MB';
 
   @override
   Widget build(BuildContext context) {
