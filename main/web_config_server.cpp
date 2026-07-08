@@ -2047,7 +2047,7 @@ static void web_config_task(void *arg)
 
     /* Idle — HTTP server runs in its own internal threads.
      * Check s_running flag for clean exit when web_config_server_stop() is called.
-     * Periodically log httpd health and detect WiFi disconnection to prevent
+     * Periodically probe httpd health and detect WiFi disconnection to prevent
      * stale TCP sessions from blocking the httpd select() loop. */
     int health_log_counter = 0;
     int probe_fail_count = 0;
@@ -2106,15 +2106,12 @@ static void web_config_task(void *arg)
             health_log_counter = 0;
             if (web_config_self_probe()) {
                 probe_fail_count = 0;
-                ESP_LOGI(TAG, "httpd health: handle=%p, wifi=UP, probe=OK", s_httpd);
             } else if (++probe_fail_count >= 2) {  /* ~30s of failures */
                 ESP_LOGW(TAG, "httpd probe FAILED %d times — restarting httpd to recover",
                          probe_fail_count);
                 httpd_stop(s_httpd);
                 s_httpd = NULL;
                 probe_fail_count = 0;
-            } else {
-                ESP_LOGW(TAG, "httpd probe failed (will retry) — handle=%p, wifi=UP", s_httpd);
             }
         }
     }
