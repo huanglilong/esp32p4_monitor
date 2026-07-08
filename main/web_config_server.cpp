@@ -411,14 +411,6 @@ static const char *WEB_UI_HTML =
 "<button id=\"btn_ulog_stop\" onclick=\"onUlogStop()\" style=\"flex:0 0 auto;width:auto;padding:12px 16px;background:#e65100;display:none\">Stop</button></div>"
 "<div id=\"ulog_stat\" style=\"font-size:12px;color:#a0a0b0;margin-top:8px;min-height:16px\"></div>"
 "</div>"
-"<div class=\"card\">"
-"<h2>Camera Frame Recording</h2>"
-"<p style=\"font-size:12px;color:#a0a0b0;margin:0 0 8px\">Record JPEG frames to ULog file (requires Camera Stream + ULog running)</p>"
-"<div style=\"display:flex;gap:8px\">"
-"<button id=\"btn_cam_rec_start\" onclick=\"onCamRecStart()\" style=\"flex:1\">Start Recording</button>"
-"<button id=\"btn_cam_rec_stop\" onclick=\"onCamRecStop()\" style=\"flex:0 0 auto;width:auto;padding:12px 16px;background:#e65100;display:none\">Stop Recording</button></div>"
-"<div id=\"cam_rec_stat\" style=\"font-size:12px;color:#a0a0b0;margin-top:8px;min-height:16px\"></div>"
-"</div>"
 "<button onclick=\"saveSettings()\">Save Settings</button>"
 "<div id=\"status\"></div>"
 "<div style=\"margin-top:24px;padding-top:16px;border-top:1px solid #0f3460\">"
@@ -441,14 +433,13 @@ static const char *WEB_UI_HTML =
 "document.getElementById('vol_val').textContent=j.volume||60;"
 "document.getElementById('cam_stream').checked=j.cam_stream!=0;"
 "let cs=document.getElementById('cam_status');"
-"cs.textContent=j.cam_running?'● Streaming active':'○ Stopped';"
+"cs.textContent=j.cam_running?(j.cam_recording?'● Streaming + Recording':'● Streaming active'):'○ Stopped';"
 "cs.style.color=j.cam_running?'#4caf50':'#a0a0b0';"
 "document.getElementById('audio_card').style.display='block';"
 "document.getElementById('files_card').style.display='none';"
 "fmMode=false;"
 "loadFiles();"
 "loadUlogStatus();"
-"loadCamRecStatus();"
 "updateUI()}catch(e){showStatus('Failed to load settings','error')}}"
 "function showStatus(msg,cls){let s=document.getElementById('status');"
 "s.textContent=msg;s.className=cls}"
@@ -460,7 +451,7 @@ static const char *WEB_UI_HTML =
 "let j=await r.json();"
 "if(j.ok){document.getElementById('cam_stream').checked=j.enabled;"
 "let cs=document.getElementById('cam_status');"
-"cs.textContent=j.running?'● Streaming active':'○ Stopped';"
+"cs.textContent=j.running?(j.recording?'● Streaming + Recording':'● Streaming active'):'○ Stopped';"
 "cs.style.color=j.running?'#4caf50':'#a0a0b0';"
 "document.getElementById('files_card').style.display='none';"
 "fmMode=false;"
@@ -628,30 +619,6 @@ static const char *WEB_UI_HTML =
 "let j=await r.json();"
 "showStatus('ULog stopped','success');loadUlogStatus()}"
 "catch(e){showStatus('ULog error','error')}}"
-"var camRecTimer=null;"
-"async function loadCamRecStatus(){"
-"try{let r=await fetch('/api/camera_record');let j=await r.json();"
-"let s=document.getElementById('cam_rec_stat');"
-"let bs=document.getElementById('btn_cam_rec_start');"
-"let bp=document.getElementById('btn_cam_rec_stop');"
-"if(j.recording){s.textContent='● Recording frames to ULog';s.style.color='#4caf50';bs.style.display='none';bp.style.display='block'}"
-"else{s.textContent=j.stream_running?'○ Ready (stream active)':'○ Stream not running';s.style.color='#a0a0b0';bs.style.display='block';bp.style.display='none'}}"
-"catch(e){}}"
-"async function onCamRecStart(){"
-"showStatus('Starting camera recording...','info');"
-"try{let r=await fetch('/api/camera_record',{method:'POST',"
-"headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:1})});"
-"let j=await r.json();"
-"if(j.ok){showStatus('Camera recording started','success');loadCamRecStatus();camRecTimer=setInterval(loadCamRecStatus,2000)}"
-"else showStatus('Camera recording error: '+(j.error||'failed'),'error')}"
-"catch(e){showStatus('Connection error','error')}}"
-"async function onCamRecStop(){"
-"clearInterval(camRecTimer);camRecTimer=null;"
-"try{let r=await fetch('/api/camera_record',{method:'POST',"
-"headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:0})});"
-"let j=await r.json();"
-"showStatus('Camera recording stopped','success');loadCamRecStatus()}"
-"catch(e){showStatus('Error','error')}}"
 "loadStatus();"
 "</script></body></html>";
 
@@ -714,6 +681,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "volume", volume);
     cJSON_AddNumberToObject(root, "cam_stream", cam_en);
     cJSON_AddBoolToObject(root, "cam_running", cam_running);
+    cJSON_AddBoolToObject(root, "cam_recording", CameraStream::instance().is_recording());
 
     char *json_str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -939,8 +907,16 @@ static esp_err_t camera_stream_handler(httpd_req_t *req)
         if (!CameraStream::instance().isRunning()) {
             ESP_LOGI(TAG, "Starting camera stream...");
             CameraStream::instance().start();
+            /* start() auto-enables recording on success; if it failed,
+             * isRunning() is false — don't set recording on a dead stream */
+        }
+        /* For an already-running stream, enable recording explicitly */
+        if (CameraStream::instance().isRunning()) {
+            CameraStream::instance().set_recording(true);
         }
     } else {
+        /* Auto-disable camera frame recording when stream stops */
+        CameraStream::instance().set_recording(false);
         if (CameraStream::instance().isRunning()) {
             ESP_LOGI(TAG, "Stopping camera stream...");
             CameraStream::instance().stop();
@@ -953,63 +929,11 @@ static esp_err_t camera_stream_handler(httpd_req_t *req)
     cJSON_Delete(root);
 
     bool running = CameraStream::instance().isRunning();
-    char resp[128];
-    snprintf(resp, sizeof(resp),
-             "{\"ok\":1,\"enabled\":%s,\"running\":%s}",
-             enable ? "true" : "false", running ? "true" : "false");
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
-}
-
-static esp_err_t camera_record_handler(httpd_req_t *req)
-{
-    char buf[128];
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (received <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
-        return ESP_FAIL;
-    }
-    buf[received] = '\0';
-
-    cJSON *root = cJSON_Parse(buf);
-    if (!root) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-        return ESP_FAIL;
-    }
-
-    cJSON *j_enable = cJSON_GetObjectItem(root, "enable");
-    bool enable = (j_enable && j_enable->valueint != 0);
-
-    /* Camera stream must be running to record frames */
-    if (enable && !CameraStream::instance().isRunning()) {
-        const char *resp = "{\"ok\":0,\"error\":\"Camera stream not running\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
-        cJSON_Delete(root);
-        return ESP_OK;
-    }
-
-    CameraStream::instance().set_recording(enable);
-    cJSON_Delete(root);
-
     bool recording = CameraStream::instance().is_recording();
     char resp[128];
     snprintf(resp, sizeof(resp),
-             "{\"ok\":1,\"recording\":%s}", recording ? "true" : "false");
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
-}
-
-static esp_err_t camera_record_status_handler(httpd_req_t *req)
-{
-    bool recording = CameraStream::instance().is_recording();
-    bool running = CameraStream::instance().isRunning();
-    char resp[128];
-    snprintf(resp, sizeof(resp),
-             "{\"recording\":%s,\"stream_running\":%s}",
-             recording ? "true" : "false", running ? "true" : "false");
+             "{\"ok\":1,\"enabled\":%s,\"running\":%s,\"recording\":%s}",
+             enable ? "true" : "false", running ? "true" : "false", recording ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
@@ -1953,14 +1877,6 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_register_uri_handler(hd, &uri_ulog_cors);
     httpd_register_uri_handler(hd, &uri_ulog_cors2);
 
-    /* Camera frame recording */
-    httpd_uri_t uri_cam_rec = { .uri = "/api/camera_record", .method = HTTP_POST, .handler = camera_record_handler, .user_ctx = NULL };
-    httpd_uri_t uri_cam_rec_status = { .uri = "/api/camera_record", .method = HTTP_GET, .handler = camera_record_status_handler, .user_ctx = NULL };
-    httpd_uri_t uri_cors_cam_rec = { .uri = "/api/camera_record", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
-    httpd_register_uri_handler(hd, &uri_cam_rec);
-    httpd_register_uri_handler(hd, &uri_cam_rec_status);
-    httpd_register_uri_handler(hd, &uri_cors_cam_rec);
-
     /* System stats */
     httpd_uri_t uri_sys_stats = { .uri = "/api/system_stats", .method = HTTP_GET, .handler = h_system_stats, .user_ctx = NULL };
     httpd_uri_t uri_sys_alerts = { .uri = "/api/system_alerts", .method = HTTP_GET, .handler = h_system_alerts, .user_ctx = NULL };
@@ -2073,7 +1989,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 30;  /* 5 core + 6 audio + 3 file mgr + 5 CORS + 5 ULog + 3 camera_record + 2 system + 1 spare */
+    config.max_uri_handlers = 27;  /* 5 core + 6 audio + 3 file mgr + 4 CORS + 5 ULog + 2 system + 2 spare */
     config.max_open_sockets = 12;  /* Headroom for Web UI keep-alive connections; lru_purge keeps accept() always active */
     config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
                                       stack vars + ESP_LOGI → uart_write → recursive mutex

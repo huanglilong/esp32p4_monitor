@@ -11,7 +11,7 @@
 - **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
 - **多板支持** 通过 GT911 I2C 自动检测 LCD-4B / WIFI6，单一固件适配
 - **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS, SD 卡文件管理器 (浏览/下载/删除)
-- **Camera Frame Recording** JPEG 帧录制到 ULog 文件 (PPA 300×300 路径, ~5-8KB/帧, 2fps, Web API 控制)
+- **Camera Frame Recording** JPEG 帧录制到 ULog 文件 (PPA 300×300 路径, ~5-8KB/帧, 2fps, 自动随 Camera Stream 启停)
 
 ### ESP-Brookesia App 列表
 

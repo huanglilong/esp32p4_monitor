@@ -281,6 +281,9 @@ bool CameraStream::start(void)
     _frame_generation = 0;
     clock_gettime(CLOCK_MONOTONIC, &_fps_window_start);
 
+    /* Auto-enable camera frame recording — recording is now tied to stream state */
+    _recording_enabled.store(true, std::memory_order_release);
+
     ESP_LOGI(TAG, "Stream started → http://%s.local/stream (port 81)", shared_mdns_hostname());
     return true;
 }
