@@ -1919,7 +1919,16 @@ static bool web_config_self_probe(void)
          * server sometimes received only a partial request (0/24 bytes parsed)
          * before the client closed — the truncated request line looked invalid. */
         const char *req = "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        if (send(fd, req, strlen(req), 0) > 0) {
+        /* Send the full request before signalling EOF. A short send() must not
+         * be cut off by shutdown(SHUT_WR), or the server gets a truncated
+         * request (HPE_INVALID_URL / partial request). */
+        ssize_t sent = 0, total = (ssize_t)strlen(req);
+        while (sent < total) {
+            ssize_t r = send(fd, req + sent, (size_t)(total - sent), 0);
+            if (r <= 0) break;
+            sent += r;
+        }
+        if (sent == total) {
             /* Signal end-of-request so the server doesn't wait for more data. */
             shutdown(fd, SHUT_WR);
             char buf[64];
