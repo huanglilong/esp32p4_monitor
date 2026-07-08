@@ -1254,8 +1254,13 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
     if (f) fclose(f);
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
     audio_unlock();
-    char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", s_rec_path, (unsigned long)s_rec_bytes.load(std::memory_order_relaxed));
-    ESP_LOGI(TAG,"Saved: %s (%lu)", s_rec_path, (unsigned long)s_rec_bytes.load(std::memory_order_relaxed));
+    /* Copy s_rec_path before unlocking — after audio_unlock(), a concurrent
+     * h_rec_start could overwrite s_rec_path while we're formatting the response. */
+    char saved_path[128];
+    strlcpy(saved_path, s_rec_path, sizeof(saved_path));
+    uint32_t saved_bytes = s_rec_bytes.load(std::memory_order_relaxed);
+    char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", saved_path, (unsigned long)saved_bytes);
+    ESP_LOGI(TAG,"Saved: %s (%lu)", saved_path, (unsigned long)saved_bytes);
     httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
