@@ -11,7 +11,6 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "example_config.h"
-#include "esp_sntp.h"
 #include <string.h>
 #include <stdio.h>
 #include <atomic>
@@ -1082,20 +1081,6 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
         }
         /* Update mDNS delegated hostname IP now that WiFi has an address */
         shared_mdns_update_delegate_ip();
-        /* Start SNTP to sync wall-clock time (needed for ULog date-based naming) */
-        if (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET) {
-            esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-            esp_sntp_setservername(0, "pool.ntp.org");
-            esp_sntp_set_time_sync_notification_cb([](struct timeval *tv) {
-                struct tm tm;
-                localtime_r(&tv->tv_sec, &tm);
-                ESP_LOGI(TAG, "SNTP synchronized: %04d-%02d-%02d %02d:%02d:%02d",
-                         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                         tm.tm_hour, tm.tm_min, tm.tm_sec);
-            });
-            esp_sntp_init();
-            ESP_LOGI(TAG, "SNTP started — wall-clock time will sync shortly");
-        }
     }
 }
 

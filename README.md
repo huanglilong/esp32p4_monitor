@@ -105,7 +105,7 @@
 - **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording, WiFi recovery httpd restart)
 - **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video viewer (parse .ulg frames, slideshow, save)
 - **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
-- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible)
+- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible, auto-start on WiFi+SNTP)
 - **System Monitor** Per-core CPU busy%, heap/PSRAM tracking, resource alerts (uORB + ULog + Web API)
 - **Multi-board** Auto-detect LCD-4B / WIFI6 via GT911 I2C probe, single firmware
 - **Driver Architecture** PeripheralManager facade → AudioDriver + SDCardDriver + CameraDriver

@@ -61,6 +61,9 @@
 /* ULog writer */
 #include "ulog_writer.h"
 
+/* SNTP */
+#include "esp_sntp.h"
+
 /* System Monitor */
 #include "system_monitor.hpp"
 
@@ -627,6 +630,66 @@ static const char *WEB_UI_HTML =
  *============================================================================*/
 /* WiFi state from uORB — published by PhoneAppSettings */
 static orb_sub_t s_wifi_state_sub = -1;
+
+/* SNTP initialized flag — prevent double init */
+static bool s_sntp_initialized = false;
+
+/* SNTP synced flag — set by callback (lwIP task), consumed by web_config_task.
+ * ulog_writer_start() does heavy file I/O (statvfs, opendir, write, xTaskCreate)
+ * that overflows the lwIP tcpip task's 3KB stack, so the actual start is
+ * deferred to the web_config_task loop (8KB stack). */
+static volatile bool s_sntp_synced = false;
+
+/* Start SNTP and register lightweight callback to signal time sync.
+ * Called once when WiFi first gets an IP address. */
+static void sntp_start_and_ulog_autostart(void)
+{
+    if (s_sntp_initialized) return;
+
+    /* If SNTP was already initialized elsewhere (shouldn't happen after we
+     * removed it from PhoneAppSettings, but defensive), just mark synced
+     * if time is already available and let the main loop handle ULog start. */
+    if (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+        s_sntp_synced = true;
+        s_sntp_initialized = true;
+        ulog_writer_set_wall_clock(ulog_writer_get(), true);
+        return;
+    }
+    if (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_RESET) {
+        /* SNTP init already done but not yet synced — register our callback */
+        s_sntp_initialized = true;
+        esp_sntp_set_time_sync_notification_cb([](struct timeval *tv) {
+            struct tm tm;
+            localtime_r(&tv->tv_sec, &tm);
+            ESP_LOGI(TAG, "SNTP synchronized: %04d-%02d-%02d %02d:%02d:%02d",
+                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec);
+            ulog_writer_set_wall_clock(ulog_writer_get(), true);
+            s_sntp_synced = true;
+        });
+        return;
+    }
+
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_set_time_sync_notification_cb([](struct timeval *tv) {
+        struct tm tm;
+        localtime_r(&tv->tv_sec, &tm);
+        ESP_LOGI(TAG, "SNTP synchronized: %04d-%02d-%02d %02d:%02d:%02d",
+                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                 tm.tm_hour, tm.tm_min, tm.tm_sec);
+        /* Only set wall-clock flag + signal main loop.
+         * Do NOT call ulog_writer_start() here — it does heavy file I/O
+         * (statvfs, opendir, write, xTaskCreate) that overflows the
+         * lwIP tcpip task's 3KB stack. The web_config_task loop
+         * (8KB stack) will handle the actual start. */
+        ulog_writer_set_wall_clock(ulog_writer_get(), true);
+        s_sntp_synced = true;
+    });
+    esp_sntp_init();
+    s_sntp_initialized = true;
+    ESP_LOGI(TAG, "SNTP started — wall-clock time will sync shortly");
+}
 
 static bool wifi_sta_is_connected(void)
 {
@@ -1994,6 +2057,9 @@ static void web_config_task(void *arg)
     ESP_LOGI(TAG, "WiFi connected, starting web config server on port %d...",
              WEB_CONFIG_PORT);
 
+    /* Start SNTP for wall-clock time; ULog auto-starts on SNTP sync */
+    sntp_start_and_ulog_autostart();
+
     {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
@@ -2052,8 +2118,28 @@ static void web_config_task(void *arg)
     int health_log_counter = 0;
     int probe_fail_count = 0;
     bool prev_wifi_up = true;
+    bool ulog_autostart_done = false;
     while (s_running) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+
+        /* ULog auto-start: deferred from SNTP callback (which runs in lwIP
+         * tcpip task with only 3KB stack — too small for ulog_writer_start()'s
+         * heavy file I/O). Check the flag set by the callback and start here
+         * in the web_config_task (8KB stack). Only auto-start once per boot;
+         * if user manually stops ULog, it stays stopped. */
+        if (s_sntp_synced && !ulog_autostart_done) {
+            ulog_autostart_done = true;
+            ulog_writer_t *ulog = ulog_writer_get();
+            if (ulog_writer_get_state(ulog) == ULOG_STATE_IDLE) {
+                esp_err_t err = ulog_writer_start(ulog);
+                if (err == ESP_OK) {
+                    ESP_LOGI(TAG, "ULog auto-started after SNTP sync");
+                } else {
+                    ESP_LOGW(TAG, "ULog auto-start failed: %s", esp_err_to_name(err));
+                }
+            }
+        }
+
         bool wifi_up = wifi_sta_is_connected();
 
         /* When WiFi goes down, stop httpd to flush stale TCP sessions.
