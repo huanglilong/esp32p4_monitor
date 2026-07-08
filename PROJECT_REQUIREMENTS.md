@@ -286,6 +286,8 @@
 | S230 | **h_play __audio_init 锁顺序** | `h_play()` 在 `audio_lock()` 之前调用 `__audio_init()`，并发请求可竞态 `s_audio_inited`。修复: 将 `audio_lock()` 移到 `__audio_init()` 之前，匹配 `h_rec_start` 锁序 | ✅ |
 | S231 | **h_rec_stop s_rec_path 竞态** | `s_rec_path` 在 `audio_unlock()` 之后读取，并发 `h_rec_start` 可覆写。修复: 在释放锁前复制到本地缓冲区 | ✅ |
 | S232 | **ULog writer task 内部 SRAM 不足** | `xTaskCreate` 从内部 SRAM 分配 8KB 栈，LVGL+LWIP 占用后不足导致创建失败。修复: 改用 `xTaskCreateStatic` + PSRAM 栈 + 内部 SRAM TCB，匹配 audio_task/model_load_task 模式 | ✅ |
+| S233 | **h_rec_stop s_rec_path 拷贝位置错误** | S231 修复将 `strlcpy(saved_path)` 放在 `audio_unlock()` 之后，仍存在竞态。修复: 移到 `audio_unlock()` 之前 | ✅ |
+| S234 | **ULog writer TCB 释放竞态** | writer task 自删后 `vTaskDelete(NULL)` 将 TCB 加入终止链表，立即 `heap_caps_free(task_tcb)` 可能破坏内核链表。修复: 释放前加 10ms yield 等待 idle task 回收 | ✅ |
 
 ### 2.3 系统性能监控
 
