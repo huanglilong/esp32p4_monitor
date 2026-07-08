@@ -228,7 +228,7 @@
 | S172 | **SystemMonitor stop() eTaskGetState 竞态** | `stop()` 使用 `eTaskGetState(handle)` 检查已自删任务，与 idle task TCB 回收竞态。修复: 新增 `_task_exited` atomic flag，任务退出前设置，stop() 轮询替代 eTaskGetState (遵循 S74 模式)；轮询超时使用 `CONFIG_APP_SYS_MONITOR_INTERVAL_MS + 500` 确保覆盖一个完整任务周期 | ✅ |
 | S173 | **bsp_i2c_get_handle extern 去重** | `audio_driver.cpp` 和 `camera_stream.cpp` 各自声明 `extern "C" bsp_i2c_get_handle()`。修复: 统一定义在 `example_config.h`，移除重复声明 | ✅ |
 | S174 | **AudioDriver PA GPIO 硬编码** | `gpio_config_t` 的 `pin_bit_mask` 使用字面量 `(1ULL << 53)`，而 `AUDIO_PA_GPIO` 宏已存在。修复: 使用 `(1ULL << AUDIO_PA_GPIO)` 宏 | ✅ |
-| S175 | **TCP 窗口/发送缓冲增大** | Camera MJPEG 流通过 SDIO 传输大量 TCP 数据，小窗口导致频繁小包传输与 C6 控制消息竞争。修复: TCP SND_BUF/WND 从 32KB 增至 64KB | ✅ |
+| S175 | **TCP 窗口/发送缓冲调整** | Camera MJPEG 流通过 SDIO 传输大量 TCP 数据，小窗口导致频繁小包传输与 C6 控制消息竞争。先从 32KB→64KB，后回退至 32KB。**注意**: 64KB 超出未开启 WND_SCALE 时 Kconfig 上限 65535，若需 >65535 必须开启 `CONFIG_LWIP_WND_SCALE=y` + `CONFIG_LWIP_TCP_RCV_SCALE≥1`，否则 clean rebuild 静默钳制为 5760。最终选择 32KB (32768)，无需 WND_SCALE | ✅ |
 | S176 | **Core 1 负载过高** | Core1 占 27% vs Core0 占 8%。原因: httpd (3实例) 未绑核默认跑 Core1 与 LVGL 竞争；LVGL timer 5ms 过于频繁。修复: (1) httpd core_id=0 (2) LVGL timer_period 5→20ms | ✅ |
 | S177 | **HTTP 服务器不可达修复** | 客户端断连后 HTTP 永久不可达。根因: `LWIP_MAX_SOCKETS=22` 太小，3 个 httpd 内部占 17 个 socket，socket 表耗尽 → `accept()` 返回 `ENOTSOCK`。修复: ① `LWIP_MAX_SOCKETS` 22→28 ② 所有 httpd 启用 TCP keep-alive ③ Web Config WiFi 断连自动重启 httpd + WiFi 恢复后重注册 URI ④ 提取 `_register_web_config_uris()` 复用 | ✅ |
 | S178 | **SystemMonitor 内存告警阈值提升** | `CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT` 从 80% 提升至 85%，减少 Internal SRAM 误报 (LVGL + LWIP 常态占用 ~70%) | ✅ |
@@ -269,6 +269,7 @@
 | S213 | **main.cpp esp_read_mac 未检查** | `esp_read_mac` 失败时 mac 未初始化，ULog sys_uuid 含垃圾数据。修复: 检查返回值，失败时 memset 清零 | ✅ |
 | S214 | **camera_frame JPEG 超出 ULog 缓冲** | 实测帧 JPEG 达 9210B，超过 `camera_frame_s.jpeg_data[8192]`，触发 `JPEG frame too large for ULog` 告警并丢帧。修复: `proto/camera_frame.msg` 的 `jpeg_data` 数组由 8192 扩至 10240（10KB，覆盖默认 quality 30 下实测 ~9210B 的帧并留余量）；`_publish_camera_frame` 的大小检查自动取 `sizeof(jpeg_data)`，无需改逻辑。注意: 每次发布 uORB 队列 (depth 2，默认单一 ULog 订阅) 在内部 SRAM 占用 2×10240B，较此前 +4KB；彻底消除上限且省 SRAM 的更优方案为 O1（改为 PSRAM 指针，见 review 建议） | ✅ |
 | S215 | **CameraStream 独立 capture task 架构** | 帧采集/编码/uORB 发布从 stream_handler (HTTP callback) 分离到独立 `_capture_task_fn` (FreeRTOS task)。即使无 HTTP 客户端，capture task 仍持续 DQBUF→encode→publish (`fps_stats`, `camera_frame`)→store shared JPEG，确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: `_frame_ready_sem` (counting sem, max 2 clients) → `_shared_jpeg_buf` (PSRAM, mutex) → `_send_mjpeg_part`。`_frame_generation` atomic counter 防止重复帧。移除 `/api/capture_image` 端点及 `_save_jpeg_snapshot`/`_last_jpeg_buf` 相关代码。JPEG encoder 改为 start() 时直接初始化 (不再 lazy init)。 | ✅ |
+| S216 | **SRAM 优化: 禁用 EAP + DVP** | ① `CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n` — 项目仅用 WPA2-PSK，EAP 未使用，禁用后节省 ~1.1 KB IRAM + ~21 KB PSRAM 代码 (tfpsacrypto) ② `CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n` — 此板仅用 MIPI CSI，DVP 驱动未使用。DIRAM 总节省 1,114 bytes (1.1 KB)，External RAM 节省 21,600 bytes (21.1 KB) | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -456,3 +457,4 @@
 | 2026-07-02 | +S37 Flutter Settings 页面: WiFi/音量/Camera Stream + 录音/播放 |
 | 2026-07-02 | +K4 Web 音频 Camera Stream 互斥未生效 (诊断中，已加 noinline + debug log) |
 | 2026-07-02 | **修复**: K4/R17 全部 6 个 Web 音频端点均加 `__cam_running()` 检查；CameraStream `_detector`/`_frame_count`/`_fps_total_bytes` 加 volatile；SD LDO re-acquire 返回值检查；`localtime()`→`localtime_r()`；`vTaskDelete` 自删除防护 |
+| 2026-07-08 | +S216 SRAM 优化: 禁用 EAP (WPA2-Enterprise, 省约1.1KB IRAM+21KB PSRAM) + DVP (此板仅用MIPI CSI); S175 TCP 窗口 64KB→32KB (65536超Kconfig range被钳制为5760, 32768无需WND_SCALE) |

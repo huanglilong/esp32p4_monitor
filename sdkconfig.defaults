@@ -103,6 +103,8 @@ CONFIG_ESP_AUDIO_SIMPLE_PLAYER_RESAMPLE_EN=y
 # WiFi (ESP32-C6 over SDIO via esp_wifi_remote + esp_hosted)
 CONFIG_ESP_WIFI_REMOTE_ENABLED=y
 CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
+# Disable EAP/WPA2-Enterprise — only WPA2-PSK is used, saves ~1KB BSS + 135KB code
+CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n
 # ESP-Hosted: SDIO transport to C6
 CONFIG_ESP_HOSTED_ENABLED=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
@@ -142,18 +144,22 @@ CONFIG_ESP_HOSTED_SLAVE_RESET_ON_EVERY_HOST_BOOTUP=y
 # CONFIG_ESP_HOSTED_ENABLE_ITWT is not set
 # Enable MIPI CSI backup buffer (reduces DMA pressure, matches reference)
 # CONFIG_ESP_VIDEO_DISABLE_MIPI_CSI_DRIVER_BACKUP_BUFFER is not set
-# LWIP TCP — increased from 32KB to 64KB to reduce SDIO packet burst frequency.
+# LWIP TCP — increased from default to 32KB to reduce SDIO packet burst frequency.
 # Larger send buffer allows TCP to batch more data per SDIO transaction,
 # reducing the number of small SDIO transfers that compete with C6 control msgs.
-# 64KB window provides good throughput for MJPEG stream + file download.
+# 32KB window provides good throughput for MJPEG stream + file download.
 # MAX_SOCKETS: 3 httpd instances use (3+3)+(2+3)+(3+3)=17 sockets internally
 # (max_open_sockets + listen + ctrl_send + ctrl_recv each).  Plus WiFi/SDIO
 # control sockets, mDNS, SNTP, etc.  22 was too tight — accept() could return
 # ENOTSOCK (128) when socket table is exhausted, making HTTP permanently
 # unreachable.  Bumped to 28 for headroom.
+# Disable IPv6 — not used, saves ~2.2KB BSS (ipv6_mcast + dest_cache + nd6)
+# IPv6 cannot be disabled — Kconfig default=y overrides sdkconfig.defaults, and forcing
+# it in sdkconfig causes build failures. Keep IPv6 enabled for now.
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65536
-CONFIG_LWIP_TCP_WND_DEFAULT=65536
+# TCP send/recv buffer: 32KB window for MJPEG stream + file download throughput.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
 CONFIG_LWIP_MAX_SOCKETS=28
 
@@ -161,6 +167,8 @@ CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE=y
 
 # Video (esp_video V4L2 framework for camera streaming)
 CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
+# Disable DVP — this board only uses MIPI CSI, saves driver code + BSS
+CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n
 CONFIG_EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR=y
 CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP=y
 CONFIG_EXAMPLE_SCCB_I2C_PORT_INIT_BY_APP=0

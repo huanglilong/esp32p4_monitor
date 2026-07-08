@@ -744,7 +744,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 > **2026-07-07 优化**: 关闭 LVGL IRAM (`CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，IRAM 从 156 KB 降至 92 KB，释放 ~64 KB。
 
 运行时内部堆（启动后空闲 **~297 KB**；CameraStream+Music 峰值仅 **~54 KB** 空闲 / 占用 ~87.7%）主要消耗者：
-- WiFi/LWIP 缓冲区: ~20-30 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096, TCP_SND/WND=65536, pbufs 走 PSRAM)
+- WiFi/LWIP 缓冲区: ~20-30 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096, TCP_SND/WND=32768, pbufs 走 PSRAM)
 - FreeRTOS 任务栈: ~30-40 KB (detect 16KB PSRAM, ASP 8KB PSRAM, audio 12KB×2 PSRAM)
 - 系统服务 (mDNS/NVS/esp_netif): ~10-20 KB
 - DMA 描述符/USB: ~5-10 KB
@@ -753,7 +753,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 **最近优化**:
 - **2026-07-07**: 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，释放 **~64 KB** IRAM
 - **2026-07-07**: ASP 音频任务栈 8KB 移至 PSRAM (`task_stack_in_ext=true` — GMF 内部用 WithCaps 处理), 共省 **~8 KB**
-- **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 省 pbuf 头部（注：TCP 窗口于 S175 因 SDIO 吞吐回退至 65536，与 `sdkconfig.defaults` 一致；`max_open_sockets` 缩减仍生效）
+- **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 省 pbuf 头部（TCP 窗口最终回退至 32KB 并稳定，见 S175）
 - **2026-07-08**: LWIP_MAX_SOCKETS 22→28 (3 httpd 实例内部占用 17 个 socket, 22 太紧导致 accept() ENOTSOCK), httpd 启用 TCP keep-alive + WiFi 断连重启
 - **2026-07-08**: SystemMonitor 内存告警阈值 80%→85% (减少 Internal SRAM 误报)
 - **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
@@ -761,6 +761,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 - **2026-07-06**: detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)
 - **2026-07-06**: CameraStream model_load task 8KB 栈移入 PSRAM (`xTaskCreateStatic`)
 - **2026-07-08**: 两个音频任务栈 12KB×2 从 Internal SRAM 移至 PSRAM（O2 优化）— `phone_app_audio.cpp` 的 `audio_echo` 与 `web_config_server.cpp` 的 `w_audio` 改用 `xTaskCreateStatic`/`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM|MALLOC_CAP_8BIT)` 分配栈（TCB 留 Internal），任务退出后释放静态缓冲区；运行时节省 **~24 KB** Internal SRAM。与 detect(16KB)/ASP(8KB) 同模式，仅栈在 PSRAM，TCB 仍在 Internal。
+- **2026-07-08**: SRAM 优化 (S216): 禁用 EAP (`CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n`, 省 ~1.1KB IRAM + 21KB PSRAM) + DVP (`CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n`, 此板仅用 MIPI CSI); TCP SND_BUF/WND 64KB→32KB (65536 超 Kconfig range 被钳制为 5760, 32768 无需 WND_SCALE)
 - **2026-07-06**: `SPIRAM_TRY_ALLOCATE_DMA_BUFFER` 在 IDF v6.x 中已不存在，`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` 已覆盖 DMA 分配
 
 > **✅ 已解决**: Camera Stream + Music 播放时 internal SRAM >80% 导致音频卡顿。主要通过 LVGL IRAM→PSRAM XIP (-64KB) 解决，辅以 ASP 栈→PSRAM (-8KB) 和 LWIP TCP 缓冲区缩小 (-30KB)。
@@ -891,13 +892,14 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - **SystemMonitor stop() eTaskGetState 竞态** (S172): 用 `_task_exited` atomic flag 替代 `eTaskGetState()`，轮询超时基于 `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` 确保覆盖完整任务周期
   - **bsp_i2c_get_handle 声明去重** (S173): 移除 audio_driver.cpp/camera_stream.cpp 中的重复 `extern "C"` 声明，统一定义在 `example_config.h`
   - **AudioDriver PA GPIO 宏化** (S174): `gpio_config_t` 中 `(1ULL << 53)` 替换为 `(1ULL << AUDIO_PA_GPIO)`
-  - **TCP 窗口/发送缓冲增大** (S175): TCP SND_BUF/WND 从 32KB 增至 64KB，减少 SDIO 小包竞争
+  - **TCP 窗口/发送缓冲调整** (S175): TCP SND_BUF/WND 从 32KB 增至 64KB (减少 SDIO 小包竞争) → 后回退至 32KB。**注意**: 64KB 超出未开启窗口缩放时 Kconfig 的上限 65535，若需 >65535 必须同时开启 `CONFIG_LWIP_WND_SCALE=y` + `CONFIG_LWIP_TCP_RCV_SCALE≥1`，否则 clean rebuild 时会被静默钳制为 lwIP 默认 5760。最终选择 32KB (32768)，在 Kconfig range 2440~65535 内无需 WND_SCALE
   - **Core 负载均衡** (S176): httpd 3 实例绑定 Core 0 (core_id=0)，LVGL timer 周期 5→20ms，降低 Core 1 负载
   - **CameraStream stream_handler 重构**: 提取 `_draw_detection_boxes_on_ppa()`, `_draw_detection_boxes_on_rgb565()`, `_send_mjpeg_part()`, `_save_jpeg_snapshot()`, `_update_fps_stats()` 辅助方法，减少代码重复
 - [x] **HTTP 服务器不可达修复** (S177): 客户端断连后 HTTP 服务器永久不可达。根因: `LWIP_MAX_SOCKETS=22` 太小 — 3 个 httpd 实例内部占用 17 个 socket (listen+ctrl×2+data each)，加上 WiFi/mDNS/SNTP 后 socket 表耗尽导致 `accept()` 返回 `ENOTSOCK (128)`。修复: ① `LWIP_MAX_SOCKETS` 22→28 ② 所有 httpd 启用 TCP keep-alive (idle=5s, interval=5s, count=3) ③ Web Config WiFi 断连自动停止 httpd + WiFi 恢复后自动重启并重新注册 URI ④ 提取 `_register_web_config_uris()` 复用
 - [x] **SystemMonitor 内存告警阈值提升** (S178): `CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT` 从 80% 提升至 85%，减少 Internal SRAM 误报 (LVGL + LWIP 常态占用 ~70%)
 - [x] **Flutter ULog 视频查看器** (S179): 新增 `ulog_parser.dart` (移植 Python ULog 解析器到 Dart) + `ulog_viewer_screen.dart` (下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图网格，幻灯片播放，键盘导航，InteractiveViewer 缩放，单帧/全帧保存)；Settings 页 .ulg 文件可点击查看 + "Open Local .ulg" 按钮扫描本地已下载文件
 - [x] **Flutter filesDownload 可靠性修复** (S180): 移除 `_isChunkedBody` 自动检测 (非 chunked 下载误判)，仅当 `Transfer-Encoding: chunked` 头存在时 dechunk (RFC 7230)；O(n²) `rawBuf.toBytes().length` 替换为 int 计数器；HTTP/1.0 超时 30s→10s
+- [x] **SRAM 优化: 禁用 EAP + DVP** (S216): ① `CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n` — 项目仅用 WPA2-PSK，EAP 未使用，禁用后节省 ~1.1 KB IRAM + ~21 KB PSRAM 代码 (tfpsacrypto) ② `CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n` — 此板仅用 MIPI CSI，DVP 驱动未使用。DIRAM 总节省 1,114 bytes (1.1 KB)，External RAM 节省 21,600 bytes (21.1 KB)
 - [x] **Non-detection JPEG QBUF 延迟** (S181): 非检测帧 JPEG sensor 路径 QBUF 在消费者完成前发出，V4L2 buffer 可能被驱动覆写。修复: 与检测帧路径统一，JPEG sensor 延迟 QBUF 至所有消费者完成；CPU fallback 编码后立即 QBUF (jpeg_data 已独立于 V4L2 buffer)
 - [x] **AudioDriver deinit mutex 竞态** (S182): `deinit()` 用 10ms 延时等待 in-flight codec 操作，但 `set_volume`/`set_mic_gain` 可持锁 100ms，mutex 可能在 in-flight 操作仍持有时被删除。修复: 新增 `_codec_ops_in_flight` 原子计数器，codec 操作入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
 - [x] **Logger deinit mutex 竞态** (S183): `logger_deinit()` 用 10ms 延时等待 in-flight `_logger_push`，但可持 `buf_mutex` 100ms。修复: 新增 `push_in_flight` 原子计数器，`_logger_push` 入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
