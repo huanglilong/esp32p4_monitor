@@ -31,7 +31,7 @@ TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
 uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
-TaskHandle_t PhoneAppSettings::_wifi_connect_task = nullptr;
+std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_connect_task{nullptr};
 
 /* Thread-safe WiFi state uORB publisher.
  * wifiEventHandler runs on the system event task and can fire concurrently
@@ -1019,7 +1019,7 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
         }
     }
     app->_wifi_connecting = false;
-    app->_wifi_connect_task = nullptr;
+    app->_wifi_connect_task.store(nullptr, std::memory_order_release);
     vTaskDelete(NULL);
 }
 
@@ -1203,12 +1203,14 @@ void PhoneAppSettings::onKeyboardEnterClicked(lv_event_t *e)
     PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
     if (!app || app->_wifi_connecting) return;  // Guard against multiple connect tasks
     app->_wifi_connecting = true;
+    TaskHandle_t h = nullptr;
     BaseType_t ret = xTaskCreate(wifiConnectTaskHandler, "wifi_conn", TASK_STACK_WIFI_CONNECT,
-                                 app, TASK_PRIO_WIFI_CONNECT, &app->_wifi_connect_task);
+                                 app, TASK_PRIO_WIFI_CONNECT, &h);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create WiFi connect task");
         app->_wifi_connecting = false;
-        app->_wifi_connect_task = nullptr;
+    } else {
+        app->_wifi_connect_task.store(h, std::memory_order_release);
     }
 }
 
