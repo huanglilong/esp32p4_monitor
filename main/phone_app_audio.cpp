@@ -29,7 +29,7 @@ PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Audio", &esp_brookesia_image_large_app_launcher_default_112_112,
                            true /* use_default_screen */,
                            use_status_bar, use_navigation_bar),
-    _task_handle(nullptr), _task_running{false},
+    _task_handle{nullptr}, _task_running{false},
     _audio_stack(nullptr), _audio_tcb(nullptr),
     _is_recording{false}, _encoder(nullptr), _record_file(nullptr),
     _pcm_buffer(nullptr), _pcm_buf_count(0),
@@ -57,16 +57,15 @@ PhoneAppAudio::~PhoneAppAudio()
          * race with the idle task reclaiming the TCB. */
         int timeout = 0;
         while (timeout < 20) {
-            if (!_task_handle) {
+            if (!_task_handle.load(std::memory_order_acquire)) {
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(100));
             timeout++;
         }
-        if (_task_handle) {
+        if (_task_handle.load(std::memory_order_acquire)) {
             ESP_LOGW(TAG, "Audio task did not exit within 2s, force-killing");
-            vTaskDelete(_task_handle);
-            _task_handle = nullptr;
+            vTaskDelete(_task_handle.exchange(nullptr, std::memory_order_acq_rel));
         }
     }
     /* Free static task buffers (xTaskCreateStatic does not free them).
@@ -177,8 +176,9 @@ bool PhoneAppAudio::run(void)
         _task_running = false;
         return false;
     }
-    _task_handle = xTaskCreateStatic(_audio_task, "audio_echo", 12288, this, 5, _audio_stack, _audio_tcb);
-    if (_task_handle == nullptr) {
+    TaskHandle_t h = xTaskCreateStatic(_audio_task, "audio_echo", 12288, this, 5, _audio_stack, _audio_tcb);
+    _task_handle.store(h, std::memory_order_release);
+    if (h == nullptr) {
         ESP_LOGE(TAG, "Failed to create audio task");
         heap_caps_free(_audio_stack); _audio_stack = nullptr;
         heap_caps_free(_audio_tcb);  _audio_tcb = nullptr;
@@ -221,16 +221,15 @@ bool PhoneAppAudio::close(void)
      * the idle task reclaiming the TCB after vTaskDelete(NULL). */
     int timeout = 0;
     while (timeout < 20) {
-        if (!_task_handle) {
+        if (!_task_handle.load(std::memory_order_acquire)) {
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
         timeout++;
     }
-    if (_task_handle) {
+    if (_task_handle.load(std::memory_order_acquire)) {
         ESP_LOGW(TAG, "Audio task did not exit within 2s, force-killing");
-        vTaskDelete(_task_handle);
-        _task_handle = nullptr;
+        vTaskDelete(_task_handle.exchange(nullptr, std::memory_order_acq_rel));
     }
 
     /* Free static task buffers (xTaskCreateStatic does not free them).
@@ -266,7 +265,7 @@ void PhoneAppAudio::_audio_task(void *arg)
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate audio buffer");
         app->_task_running = false;
-        app->_task_handle = nullptr;  /* Clear before self-delete to prevent double-free in close() */
+        app->_task_handle.store(nullptr, std::memory_order_release);  /* Clear before self-delete to prevent double-free in close() */
         vTaskDelete(nullptr);
         return;
     }
@@ -305,7 +304,7 @@ void PhoneAppAudio::_audio_task(void *arg)
     }
 
     heap_caps_free(buf);
-    app->_task_handle = nullptr;  /* Clear before self-delete to prevent double-free in close() */
+    app->_task_handle.store(nullptr, std::memory_order_release);  /* Clear before self-delete to prevent double-free in close() */
     vTaskDelete(nullptr);
 }
 
