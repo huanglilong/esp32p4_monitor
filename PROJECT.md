@@ -908,3 +908,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 - [x] **Non-detection JPEG QBUF 延迟** (S181): 非检测帧 JPEG sensor 路径 QBUF 在消费者完成前发出，V4L2 buffer 可能被驱动覆写。修复: 与检测帧路径统一，JPEG sensor 延迟 QBUF 至所有消费者完成；CPU fallback 编码后立即 QBUF (jpeg_data 已独立于 V4L2 buffer)
 - [x] **AudioDriver deinit mutex 竞态** (S182): `deinit()` 用 10ms 延时等待 in-flight codec 操作，但 `set_volume`/`set_mic_gain` 可持锁 100ms，mutex 可能在 in-flight 操作仍持有时被删除。修复: 新增 `_codec_ops_in_flight` 原子计数器，codec 操作入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
 - [x] **Logger deinit mutex 竞态** (S183): `logger_deinit()` 用 10ms 延时等待 in-flight `_logger_push`，但可持 `buf_mutex` 100ms。修复: 新增 `push_in_flight` 原子计数器，`_logger_push` 入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
+
+## TODO
+
+- [ ] **Camera Stream + Music 播放卡顿** (S235): Camera Stream 运行时 Music 播放卡顿。v0.0.3 正常，commit 7ca67cd 不正常。回归范围: v0.0.3..7ca67cd (主要是 TCB pre-allocation、task stack/优先级、SRAM 优化相关改动)。需 git bisect 定位引入回归的具体 commit，排查 CPU/I2S DMA 调度冲突或 PSRAM 带宽竞争。
