@@ -132,7 +132,7 @@
 | R19 | **Flutter File Manager** | Flutter App Settings 页新增文件管理：目录浏览/导航、下载、删除，含确认弹窗 | ✅ |
 | R20 | **CameraStream JPEG 快照** | `/api/capture_image` 端点返回最新 JPEG 帧 (stream handler 每帧缓存到 `_last_jpeg_buf`, mutex 保护) | ✅ |
 | R21 | **CameraStream 内联人体检测** | MJPEG stream_handler 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
-| R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, ~5-8KB/帧, 2fps)；Web API `/api/camera_record` 控制启停；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`orb_metadata.o_size_no_padding` (PX4 惯例) 使 ULog writer 不写尾部 padding 字节，修复 pyulog 兼容性；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
+| R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, 默认 quality 30 下典型 5-8KB/帧、偶尔达 ~9-12KB；`jpeg_data` 缓冲 12288B 覆盖绝大多数帧)，2fps；Web API `/api/camera_record` 控制启停；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`orb_metadata.o_size_no_padding` (PX4 惯例) 使 ULog writer 不写尾部 padding 字节，修复 pyulog 兼容性；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
 | S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
 | S87 | **AudioDriver deinit mutex 删除竞态** | `deinit()` 先置空 codec handles + yield 让 in-flight 操作退出，再安全删除 `_codec_mutex`；同时重置 `_vol_pub` 防止重启用 stale handle | ✅ |
 | S88 | **AudioDriver set_volume stale publish** | codec mutex 超时时跳过 uORB publish，避免发布未实际应用的音量值 | ✅ |
@@ -267,6 +267,7 @@
 | S211 | **SDCardDriver _has_lcd 数据竞争** | `_has_lcd` 为普通 `bool`，跨核读写无同步。修复: 改为 `std::atomic<bool>` | ✅ |
 | S212 | **main.cpp assert no-op** | `assert(*disp)` 在 release 构建中被移除，NULL disp 传入后续函数 → NPE。修复: 改为显式 null 检查 + log + return | ✅ |
 | S213 | **main.cpp esp_read_mac 未检查** | `esp_read_mac` 失败时 mac 未初始化，ULog sys_uuid 含垃圾数据。修复: 检查返回值，失败时 memset 清零 | ✅ |
+| S214 | **camera_frame JPEG 超出 ULog 缓冲** | 实测帧 JPEG 达 9210B，超过 `camera_frame_s.jpeg_data[8192]`，触发 `JPEG frame too large for ULog` 告警并丢帧。修复: `proto/camera_frame.msg` 的 `jpeg_data` 数组由 8192 扩至 12288（覆盖默认 quality 30 下的绝大多数帧，含 9210 余量）；`_publish_camera_frame` 的大小检查自动取 `sizeof(jpeg_data)`，无需改逻辑。注意: 每次发布 uORB 队列 (depth 2，默认单一 ULog 订阅) 在内部 SRAM 占用 2×12288B，较此前 +8KB；彻底消除上限且省 SRAM 的更优方案为 O1（改为 PSRAM 指针，见 review 建议） | ✅ |
 
 ### 2.3 系统性能监控
 
