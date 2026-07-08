@@ -638,7 +638,7 @@ static bool s_sntp_initialized = false;
  * ulog_writer_start() does heavy file I/O (statvfs, opendir, write, xTaskCreate)
  * that overflows the lwIP tcpip task's 3KB stack, so the actual start is
  * deferred to the web_config_task loop (8KB stack). */
-static volatile bool s_sntp_synced = false;
+static std::atomic<bool> s_sntp_synced{false};
 
 /* Start SNTP and register lightweight callback to signal time sync.
  * Called once when WiFi first gets an IP address. */
@@ -650,7 +650,7 @@ static void sntp_start_and_ulog_autostart(void)
      * removed it from PhoneAppSettings, but defensive), just mark synced
      * if time is already available and let the main loop handle ULog start. */
     if (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
-        s_sntp_synced = true;
+        s_sntp_synced.store(true, std::memory_order_release);
         s_sntp_initialized = true;
         ulog_writer_set_wall_clock(ulog_writer_get(), true);
         return;
@@ -665,7 +665,7 @@ static void sntp_start_and_ulog_autostart(void)
                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                      tm.tm_hour, tm.tm_min, tm.tm_sec);
             ulog_writer_set_wall_clock(ulog_writer_get(), true);
-            s_sntp_synced = true;
+            s_sntp_synced.store(true, std::memory_order_release);
         });
         return;
     }
@@ -684,7 +684,7 @@ static void sntp_start_and_ulog_autostart(void)
          * lwIP tcpip task's 3KB stack. The web_config_task loop
          * (8KB stack) will handle the actual start. */
         ulog_writer_set_wall_clock(ulog_writer_get(), true);
-        s_sntp_synced = true;
+        s_sntp_synced.store(true, std::memory_order_release);
     });
     esp_sntp_init();
     s_sntp_initialized = true;
@@ -2127,7 +2127,7 @@ static void web_config_task(void *arg)
          * heavy file I/O). Check the flag set by the callback and start here
          * in the web_config_task (8KB stack). Only auto-start once per boot;
          * if user manually stops ULog, it stays stopped. */
-        if (s_sntp_synced && !ulog_autostart_done) {
+        if (s_sntp_synced.load(std::memory_order_acquire) && !ulog_autostart_done) {
             ulog_autostart_done = true;
             ulog_writer_t *ulog = ulog_writer_get();
             if (ulog_writer_get_state(ulog) == ULOG_STATE_IDLE) {
