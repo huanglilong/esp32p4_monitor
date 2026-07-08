@@ -60,19 +60,27 @@ SystemMonitor::SystemMonitor()
  *============================================================================*/
 bool SystemMonitor::init(void)
 {
-    if (_initialized.load(std::memory_order_relaxed)) {
-        return true;
+    /* Use CAS to prevent double-init — two concurrent init() calls
+     * must not both create mutexes and leak the duplicate. */
+    bool expected = false;
+    if (!_initialized.compare_exchange_strong(expected, true,
+            std::memory_order_acq_rel)) {
+        return true;  /* Another thread already initialized */
     }
 
     _latest_mutex = xSemaphoreCreateMutex();
     if (!_latest_mutex) {
         ESP_LOGE(TAG, "Failed to create latest_mutex");
+        _initialized.store(false, std::memory_order_release);
         return false;
     }
 
     _alert_mutex = xSemaphoreCreateMutex();
     if (!_alert_mutex) {
         ESP_LOGE(TAG, "Failed to create alert_mutex");
+        vSemaphoreDelete(_latest_mutex);
+        _latest_mutex = nullptr;
+        _initialized.store(false, std::memory_order_release);
         return false;
     }
 

@@ -102,10 +102,11 @@ public:
     uint8_t                      *_detect_in_buf;   /* Copy buffer for inference */
     uint32_t                      _detect_in_size;
     std::list<dl::detect::result_t> _detect_results;
-    SemaphoreHandle_t            _detect_mutex;     /* Protects _detect_results + _detect_available */
-    mutable bool                 _detect_available;   /* Non-volatile: same task */
+    SemaphoreHandle_t            _detect_mutex;     /* Protects _detect_results + _detect_available (write side) */
+    std::atomic<bool>            _detect_available;  /* Cross-task: loader writes, stream_handler/HTTP reads */
     std::atomic<bool>            _model_ready;         /* Model loaded and ready for inference (cross-task: loader→handler) */
-    TaskHandle_t                 _model_load_task;     /* Background task that loads the model */
+    std::atomic<TaskHandle_t>    _model_load_task;     /* Background task that loads the model (cross-task atomic) */
+    std::atomic<bool>            _model_load_task_exited; /* Set by task before vTaskDelete, polled by deinit */
     StackType_t                 *_model_load_stack;   /* PSRAM-allocated stack (8KB) */
     StaticTask_t                *_model_load_tcb;     /* TCB buffer for static task */
     PPAPreprocessor             *_ppa;                 /* PPA hardware preprocessor (resize + RGB565→BGR888) */

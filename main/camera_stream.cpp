@@ -134,7 +134,9 @@ CameraStream::CameraStream() :
     _detect_mutex(nullptr),
     _detect_available(false),
     _model_ready(false),
-    _model_load_task(nullptr), _model_load_stack(nullptr), _model_load_tcb(nullptr),
+    _model_load_task(nullptr),
+    _model_load_task_exited(false),
+    _model_load_stack(nullptr), _model_load_tcb(nullptr),
     _ppa(nullptr),
     _stream_enc_width(0), _stream_enc_height(0), _stream_enc_format(0),
     _httpd_80(nullptr), _httpd_81(nullptr),
@@ -597,10 +599,11 @@ void CameraStream::_model_load_task_fn(void *arg)
         if (dummy_buf) heap_caps_free(dummy_buf);
     }
     cs->_model_ready = true;
-    cs->_detect_available = false;
+    cs->_detect_available.store(false, std::memory_order_release);
 
     ESP_LOGI(TAG, "Model loaded and ready for inference");
-    cs->_model_load_task = nullptr;  /* Clear handle before self-deleting */
+    cs->_model_load_task_exited.store(true, std::memory_order_release);
+    cs->_model_load_task.store(nullptr, std::memory_order_release);  /* Clear handle before self-deleting */
     vTaskDelete(NULL);
 }
 
@@ -652,9 +655,11 @@ bool CameraStream::_init_detection(void)
         if (_detect_in_buf) { heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr; }
         return false;
     }
-    _model_load_task = xTaskCreateStatic(
-        _model_load_task_fn, "model_load", load_stack_words, this, 1, _model_load_stack, _model_load_tcb);
-    if (_model_load_task == nullptr) {
+    _model_load_task_exited.store(false, std::memory_order_release);
+    _model_load_task.store(xTaskCreateStatic(
+        _model_load_task_fn, "model_load", load_stack_words, this, 1, _model_load_stack, _model_load_tcb),
+        std::memory_order_release);
+    if (_model_load_task.load(std::memory_order_relaxed) == nullptr) {
         ESP_LOGE(TAG, "Failed to create model load task");
         heap_caps_free(_model_load_stack); _model_load_stack = nullptr;
         heap_caps_free(_model_load_tcb); _model_load_tcb = nullptr;
@@ -673,17 +678,21 @@ void CameraStream::_deinit_detection(void)
 {
     /* Stop background model-loading task if still running.
      * The task self-deletes and clears _model_load_task on completion.
-     * Since the task clears the handle before vTaskDelete(NULL), there's a
-     * small window where the handle is null but the task hasn't finished
-     * executing on its stack. */
-    if (_model_load_task) {
-        TaskHandle_t t = _model_load_task;
-        _model_load_task = nullptr;
+     * Use atomic exchange to safely read-and-nullify the handle.
+     * Poll _model_load_task_exited to avoid eTaskGetState race with idle task TCB cleanup. */
+    TaskHandle_t t = _model_load_task.exchange(nullptr, std::memory_order_acq_rel);
+    if (t) {
         vTaskDelete(t);
+        /* Yield to let idle task reclaim TCB before we free the stack */
+        int poll = 0;
+        while (!_model_load_task_exited.load(std::memory_order_acquire) && poll < 50) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            poll++;
+        }
     } else {
         /* Handle already cleared by the task — yield to let any in-flight
          * vTaskDelete(NULL) complete before freeing the stack below. */
-        vTaskDelay(1);
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     /* Free statically-allocated task stack (PSRAM) and TCB */
@@ -712,7 +721,7 @@ void CameraStream::_deinit_detection(void)
         _detect_in_buf = nullptr;
     }
     _detect_in_size = 0;
-    _detect_available = false;
+    _detect_available.store(false, std::memory_order_release);
     _model_ready = false;
     _detect_results.clear();
     ESP_LOGI(TAG, "Detection deinitialized");
@@ -784,7 +793,7 @@ void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
                 }
             }
         }
-        _detect_available = true;
+        _detect_available.store(true, std::memory_order_release);
         xSemaphoreGive(_detect_mutex);
     }
 }
@@ -879,7 +888,7 @@ void CameraStream::_draw_box_on_bgr24(uint8_t *buffer, uint32_t width, uint32_t 
 /* Draw detection boxes on PPA BGR24 output buffer + cache msync */
 void CameraStream::_draw_detection_boxes_on_ppa(void)
 {
-    if (!_detect_available || !_detect_mutex ||
+    if (!_detect_available.load(std::memory_order_acquire) || !_detect_mutex ||
         xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
     if (!_detect_results.empty()) {
         for (auto &r : _detect_results) {
@@ -898,7 +907,7 @@ void CameraStream::_draw_detection_boxes_on_ppa(void)
 /* Draw detection boxes on RGB565 V4L2 buffer + cache msync */
 void CameraStream::_draw_detection_boxes_on_rgb565(uint8_t *buf, uint32_t len)
 {
-    if (!_detect_in_buf || !_detect_available || !_detect_mutex ||
+    if (!_detect_in_buf || !_detect_available.load(std::memory_order_acquire) || !_detect_mutex ||
         xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
     if (!_detect_results.empty()) {
         for (auto &r : _detect_results) {
@@ -958,10 +967,14 @@ void CameraStream::_update_fps_stats(uint32_t jpeg_size)
                      (now.tv_nsec - _fps_window_start.tv_nsec) / 1e9;
     if (elapsed >= FPS_LOG_INTERVAL_S) {
         float fps = (float)_fps_frame_count / (float)elapsed;
-        orb_advert_t expected = ORB_ADVERT_INVALID;
-        _fps_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(fps_stats)),
-                std::memory_order_acq_rel, std::memory_order_acquire);
-        if (_fps_pub >= 0) {
+        /* Lazy-init publisher with CAS — orb_advertise in local to avoid leak on CAS failure */
+        if (_fps_pub.load(std::memory_order_relaxed) < 0) {
+            orb_advert_t new_pub = orb_advertise(ORB_ID(fps_stats));
+            orb_advert_t expected = ORB_ADVERT_INVALID;
+            _fps_pub.compare_exchange_strong(expected, new_pub,
+                    std::memory_order_acq_rel, std::memory_order_acquire);
+        }
+        if (_fps_pub.load(std::memory_order_relaxed) >= 0) {
             struct fps_stats_s fps_msg = {};
             fps_msg.timestamp      = esp_timer_get_time();
             fps_msg.frame_count    = _frame_count;
@@ -995,10 +1008,13 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     }
 
     /* Lazy-init publisher (atomic CAS prevents double-advertise) */
-    orb_advert_t expected = ORB_ADVERT_INVALID;
-    _frame_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(camera_frame)),
-            std::memory_order_acq_rel, std::memory_order_acquire);
-    if (_frame_pub < 0) return;
+    if (_frame_pub.load(std::memory_order_relaxed) < 0) {
+        orb_advert_t new_pub = orb_advertise(ORB_ID(camera_frame));
+        orb_advert_t expected = ORB_ADVERT_INVALID;
+        _frame_pub.compare_exchange_strong(expected, new_pub,
+                std::memory_order_acq_rel, std::memory_order_acquire);
+    }
+    if (_frame_pub.load(std::memory_order_relaxed) < 0) return;
 
     /* camera_frame_s is ~8KB — too large for httpd task stack (4KB default).
      * Allocate from PSRAM heap to avoid stack overflow. */
@@ -1100,17 +1116,36 @@ static esp_err_t stream_handler(httpd_req_t *req)
                 memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
             }
 
-            /* Return V4L2 buffer immediately after PPA (or copy) */
-            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            /* Determine source data BEFORE returning V4L2 buffer.
+             * For JPEG sensors: use raw JPEG directly.
+             * For PPA path: use PPA BGR24 output.
+             * For CPU fallback: use V4L2 RGB565 buffer. */
+            uint8_t *jpeg_src = nullptr;
+            uint32_t jpeg_src_size = 0;
+
+            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+                /* JPEG sensor — no re-encoding needed, use raw V4L2 data.
+                 * Must read pointer BEFORE QBUF (buffer returned to driver). */
+                jpeg_src = cs->_v4l2_bufs[buf.index];
+                jpeg_src_size = buf.bytesused;
+            }
+
+            /* Return V4L2 buffer immediately after PPA (or copy).
+             * For JPEG sensor path: defer QBUF — the JPEG data IS the V4L2
+             * buffer, so we must keep it until after HTTP send/snapshot/publish.
+             * For non-JPEG: PPA/copy detached data from V4L2, QBUF early is safe. */
+            if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            }
 
             /* Encode JPEG from PPA output (300×300 BGR24) or V4L2 buffer (800×800 RGB565) */
             uint32_t jpeg_size;
             uint8_t *jpeg_data;
 
-            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-                /* JPEG sensor — no re-encoding needed, use raw data */
-                jpeg_data = cs->_v4l2_bufs[buf.index];
-                jpeg_size = buf.bytesused;
+            if (jpeg_src) {
+                /* JPEG sensor path: use pre-saved data */
+                jpeg_data = jpeg_src;
+                jpeg_size = jpeg_src_size;
             } else if (ppa_ok) {
                 /* PPA path: encode from PPA BGR24 output (300×300) */
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
@@ -1152,9 +1187,10 @@ static esp_err_t stream_handler(httpd_req_t *req)
             if (!cs->_send_mjpeg_part(req, jpeg_data, jpeg_size, part_buf, sizeof(part_buf))) {
                 if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
                     xSemaphoreGive(cs->_encoder_sem);
+                } else {
+                    /* JPEG sensor: buffer was not yet returned to V4L2 */
+                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
                 }
-                /* Note: V4L2 buffer already returned by PPA path above;
-                 * for JPEG sensor or CPU fallback, buffer was already returned too */
                 break;
             }
             if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
@@ -1166,6 +1202,11 @@ static esp_err_t stream_handler(httpd_req_t *req)
 
             /* Publish camera frame to uORB for ULog recording */
             cs->_publish_camera_frame(jpeg_data, jpeg_size);
+
+            /* JPEG sensor: all consumers done, now safe to return V4L2 buffer */
+            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            }
 
             /* Run inference — PPA output already available, _run_inference reuses it */
             cs->_run_inference(nullptr, 0);
@@ -1362,7 +1403,7 @@ static esp_err_t detection_info_handler(httpd_req_t *req)
             if (r.score > max_conf) max_conf = r.score;
         }
         person_count = cs->_detect_results.size();
-        detect_avail = cs->_detect_available;
+        detect_avail = cs->_detect_available.load(std::memory_order_relaxed);
         xSemaphoreGive(cs->_detect_mutex);
     }
     cJSON_AddNumberToObject(root, "person_count", person_count);

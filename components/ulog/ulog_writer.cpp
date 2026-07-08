@@ -36,6 +36,7 @@
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include <inttypes.h>
+#include <atomic>
 
 static const char *TAG = "ULog";
 
@@ -133,9 +134,15 @@ static size_t ringbuf_free_space(const ringbuf_t *rb)
 static bool ringbuf_write(ringbuf_t *rb, const uint8_t *data, size_t len)
 {
     if (len == 0) return true;
-    if (len > ringbuf_free_space(rb)) return false;
 
     xSemaphoreTake(rb->mutex, portMAX_DELAY);
+
+    /* Check free space inside the mutex to prevent TOCTOU race
+     * between concurrent producers. */
+    if (len > ringbuf_free_space(rb)) {
+        xSemaphoreGive(rb->mutex);
+        return false;
+    }
 
     size_t w = rb->write_pos;
     size_t end = w + len;
@@ -221,7 +228,8 @@ typedef struct ulog_writer {
 
     /* Writer task */
     TaskHandle_t  task_handle;
-    bool          task_should_run;
+    std::atomic<bool> task_should_run{false};
+    std::atomic<bool> task_exited{false};  /* Set before vTaskDelete by writer task */
 
     /* Timing */
     uint64_t      last_flush_us;
@@ -276,7 +284,21 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path,
 {
     if (!writer || !sd_mount_path || !config) return ESP_ERR_INVALID_ARG;
 
-    memset(writer, 0, sizeof(*writer));
+    /* Zero-initialize POD fields (struct contains std::atomic members
+     * which cannot be memset'd).  task_should_run/task_exited use
+     * default member initializers ({false}). */
+    memset(&writer->ringbuf, 0, sizeof(writer->ringbuf));
+    memset(writer->topics, 0, sizeof(writer->topics));
+    writer->num_topics = 0;
+    writer->next_msg_id = 0;
+    writer->bytes_written = 0;
+    writer->last_flush_us = 0;
+    writer->last_sync_us = 0;
+    writer->last_fsync_us = 0;
+    writer->start_time_us = 0;
+    writer->file_counter = 0;
+    writer->filepath[0] = '\0';
+    writer->log_dir[0] = '\0';
     writer->fd = -1;
     writer->state = ULOG_STATE_IDLE;
     strlcpy(writer->sd_mount_path, sd_mount_path, sizeof(writer->sd_mount_path));
@@ -432,7 +454,7 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
 #ifndef CONFIG_ULOG_TASK_STACK_SIZE
 #define CONFIG_ULOG_TASK_STACK_SIZE 8192
 #endif
-    writer->task_should_run = true;
+    writer->task_should_run.store(true, std::memory_order_release);
     BaseType_t ret = xTaskCreate(
         writer_task_func,
         "ulog_writer",
@@ -463,23 +485,39 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
         return ESP_OK;
     }
 
-    /* Stop the writer task: signal and force-delete */
-    writer->task_should_run = false;
+    /* Signal writer task to stop gracefully.
+     * The writer task polls task_should_run and self-deletes.
+     * We wait for it to set task_exited before proceeding.
+     * Force-killing a task while it holds the ring buffer mutex
+     * would permanently deadlock subsequent ringbuf_read calls. */
+    writer->task_should_run.store(false, std::memory_order_release);
     if (writer->task_handle) {
-        vTaskDelete(writer->task_handle);
+        /* Wait for graceful exit (up to 2s) */
+        for (int i = 0; i < 200 && !writer->task_exited.load(std::memory_order_acquire); i++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (!writer->task_exited.load(std::memory_order_acquire)) {
+            /* Last resort: force-kill. The ring buffer mutex may be permanently
+             * locked — we can no longer safely drain it. */
+            ESP_LOGW(TAG, "Writer task did not exit gracefully, force-killing");
+            vTaskDelete(writer->task_handle);
+        }
         writer->task_handle = NULL;
     }
 
-    /* Drain remaining ring buffer data to file */
-    uint8_t *drain_buf = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
-    if (!drain_buf) drain_buf = (uint8_t *)malloc(4096);
-    if (drain_buf) {
-        size_t n;
-        while ((n = ringbuf_read(&writer->ringbuf, drain_buf, 4096)) > 0) {
-            write(writer->fd, drain_buf, n);
-            writer->bytes_written += n;
+    /* Drain remaining ring buffer data to file.
+     * Skip if writer was force-killed (mutex may be locked). */
+    if (writer->task_exited.load(std::memory_order_acquire)) {
+        uint8_t *drain_buf = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+        if (!drain_buf) drain_buf = (uint8_t *)malloc(4096);
+        if (drain_buf) {
+            size_t n;
+            while ((n = ringbuf_read(&writer->ringbuf, drain_buf, 4096)) > 0) {
+                write(writer->fd, drain_buf, n);
+                writer->bytes_written += n;
+            }
+            free(drain_buf);
         }
-        free(drain_buf);
     }
 
     /* Close the file */
@@ -590,7 +628,7 @@ static void writer_task_func(void *arg)
     }
     if (!data_buf) {
         ESP_LOGE(TAG, "Failed to allocate data_buf (%u bytes)", (unsigned)data_buf_size);
-        writer->task_should_run = false;
+        writer->task_should_run.store(false, std::memory_order_release);
         vTaskDelete(NULL);
         return;
     }
@@ -599,7 +637,7 @@ static void writer_task_func(void *arg)
 
     uint8_t flush_buf[4096];
 
-    while (writer->task_should_run) {
+    while (writer->task_should_run.load(std::memory_order_acquire)) {
         uint64_t now_us = esp_timer_get_time();
 
         /* ── Poll each topic ── */
@@ -701,7 +739,8 @@ static void writer_task_func(void *arg)
     /* Free heap-allocated data buffer before task exit */
     free(data_buf);
 
-    /* Task self-delete */
+    /* Task self-delete — set exited flag first for clean teardown */
+    writer->task_exited.store(true, std::memory_order_release);
     vTaskDelete(NULL);
 }
 
@@ -1119,15 +1158,19 @@ static void cleanup_old_logs(const char *log_root, size_t size_limit)
     /* Sort oldest first */
     qsort(dirs, (size_t)dir_count, sizeof(dirs[0]), cmp_dir_mtime);
 
+    /* Count total ULog files once (not per-iteration O(n²)) */
+    int file_count = count_ulg_files(log_root);
+
     /* Delete oldest directories until under capacity, respecting file floor */
     for (int i = 0; i < dir_count && total_size > size_limit; i++) {
-        int file_count = count_ulg_files(log_root);
         if (file_count <= (int)ULOG_MIN_KEEP_FILES) break;
 
         ESP_LOGI(TAG, "Cleanup: removing %s (%u KB)",
                  dirs[i].path, (unsigned)(dirs[i].size / 1024));
         rmtree(dirs[i].path);
         total_size -= dirs[i].size;
+        /* Re-count after deletion (rmtree is O(N) anyway) */
+        file_count = count_ulg_files(log_root);
     }
 
     free(dirs);

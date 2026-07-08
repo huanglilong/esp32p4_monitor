@@ -33,7 +33,7 @@ AudioDriver& AudioDriver::instance(void)
 
 AudioDriver::AudioDriver() :
     _lifecycle_mutex(nullptr),
-    _codec_mutex(nullptr),
+    _codec_mutex(SemaphoreHandle_t(nullptr)),
     _has_lcd(false),
     _refcount(0),
     _volume(EXAMPLE_VOICE_VOLUME),
@@ -52,9 +52,9 @@ AudioDriver::~AudioDriver()
         vSemaphoreDelete(_lifecycle_mutex);
         _lifecycle_mutex = nullptr;
     }
-    if (_codec_mutex) {
-        vSemaphoreDelete(_codec_mutex);
-        _codec_mutex = nullptr;
+    SemaphoreHandle_t cm = _codec_mutex.exchange(nullptr, std::memory_order_acq_rel);
+    if (cm) {
+        vSemaphoreDelete(cm);
     }
 }
 
@@ -66,14 +66,15 @@ void AudioDriver::init(void)
     if (!_lifecycle_mutex) return;
     xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
 
-    if (_refcount > 0) {
-        _refcount++;
-        ESP_LOGI(TAG, "Audio already initialized (refcount=%d)", _refcount);
+    if (_refcount.load(std::memory_order_relaxed) > 0) {
+        _refcount.fetch_add(1, std::memory_order_relaxed);
+        ESP_LOGI(TAG, "Audio already initialized (refcount=%d)", _refcount.load(std::memory_order_relaxed));
         xSemaphoreGive(_lifecycle_mutex);
         return;
     }
 
-    ESP_LOGI(TAG, "Initializing audio (%s)...", _has_lcd ? "ES8311 + ES7210" : "ES8311 single-chip");
+    bool has_lcd = _has_lcd.load(std::memory_order_relaxed);
+    ESP_LOGI(TAG, "Initializing audio (%s)...", has_lcd ? "ES8311 + ES7210" : "ES8311 single-chip");
 
     /* Enable PA GPIO 53 (critical for speaker output) */
     gpio_config_t pa_conf = {
@@ -118,7 +119,7 @@ void AudioDriver::init(void)
         init_ok = false;
     }
 
-    if (init_ok && _has_lcd) {
+    if (init_ok && has_lcd) {
         /* ===== LCD-4B: ES8311 DAC (Speaker, 0x30) + ES7210 ADC (Mic, 0x80) ===== */
         audio_codec_i2s_cfg_t i2s_out_cfg = {
             .port = 0,
@@ -158,8 +159,8 @@ void AudioDriver::init(void)
             esp_codec_dev_cfg_t dev_dac = {
                 .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
             };
-            _codec_handle = esp_codec_dev_new(&dev_dac);
-            if (!_codec_handle) {
+            _codec_handle.store(esp_codec_dev_new(&dev_dac), std::memory_order_relaxed);
+            if (!_codec_handle.load(std::memory_order_relaxed)) {
                 ESP_LOGE(TAG, "Failed to create ES8311 DAC codec device");
                 init_ok = false;
             }
@@ -176,13 +177,14 @@ void AudioDriver::init(void)
             esp_codec_dev_cfg_t dev_adc = {
                 .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es7210_codec_new(&es7210_cfg), .data_if = data_in
             };
-            _codec_mic_handle = esp_codec_dev_new(&dev_adc);
-            if (!_codec_mic_handle) {
+            _codec_mic_handle.store(esp_codec_dev_new(&dev_adc), std::memory_order_relaxed);
+            if (!_codec_mic_handle.load(std::memory_order_relaxed)) {
                 ESP_LOGE(TAG, "Failed to create ES7210 ADC codec device");
                 /* DAC was created successfully, delete it before rollback */
-                if (_codec_handle) {
-                    esp_codec_dev_delete(_codec_handle);
-                    _codec_handle = nullptr;
+                esp_codec_dev_handle_t dac_handle = _codec_handle.load(std::memory_order_relaxed);
+                if (dac_handle) {
+                    esp_codec_dev_delete(dac_handle);
+                    _codec_handle.store(nullptr, std::memory_order_relaxed);
                 }
                 init_ok = false;
             }
@@ -215,8 +217,8 @@ void AudioDriver::init(void)
                 .codec_if = es8311_codec_new(&es8311_cfg),
                 .data_if = data_if,
             };
-            _codec_handle = esp_codec_dev_new(&dev_cfg);
-            if (!_codec_handle) {
+            _codec_handle.store(esp_codec_dev_new(&dev_cfg), std::memory_order_relaxed);
+            if (!_codec_handle.load(std::memory_order_relaxed)) {
                 ESP_LOGE(TAG, "Failed to create ES8311 codec device");
                 init_ok = false;
             }
@@ -226,13 +228,15 @@ void AudioDriver::init(void)
 
     if (!init_ok) {
         /* Rollback: clean up any partially-created resources */
-        if (_codec_mic_handle) {
-            esp_codec_dev_delete(_codec_mic_handle);
-            _codec_mic_handle = nullptr;
+        esp_codec_dev_handle_t mic_h = _codec_mic_handle.load(std::memory_order_relaxed);
+        if (mic_h) {
+            esp_codec_dev_delete(mic_h);
+            _codec_mic_handle.store(nullptr, std::memory_order_relaxed);
         }
-        if (_codec_handle) {
-            esp_codec_dev_delete(_codec_handle);
-            _codec_handle = nullptr;
+        esp_codec_dev_handle_t codec_h = _codec_handle.load(std::memory_order_relaxed);
+        if (codec_h) {
+            esp_codec_dev_delete(codec_h);
+            _codec_handle.store(nullptr, std::memory_order_relaxed);
         }
         if (_tx_handle) {
             i2s_del_channel(_tx_handle);
@@ -249,54 +253,59 @@ void AudioDriver::init(void)
     }
 
     /* Create mutex BEFORE opening codecs */
-    _codec_mutex = xSemaphoreCreateMutex();
+    _codec_mutex.store(xSemaphoreCreateMutex(), std::memory_order_release);
 
     /* Open codecs — track which ones were successfully opened so rollback
      * only calls esp_codec_dev_close() on opened handles. */
     bool codec_dac_opened = false;
     bool codec_mic_opened = false;
     esp_codec_dev_sample_info_t fs = { .bits_per_sample = 16, .channel = 2, .channel_mask = 0x03, .sample_rate = EXAMPLE_AUDIO_SAMPLE_RATE };
-    if (_has_lcd) {
-        if (esp_codec_dev_open(_codec_handle, &fs) != ESP_CODEC_DEV_OK) {
+    esp_codec_dev_handle_t codec_h = _codec_handle.load(std::memory_order_relaxed);
+    esp_codec_dev_handle_t mic_h = _codec_mic_handle.load(std::memory_order_relaxed);
+    if (has_lcd) {
+        if (esp_codec_dev_open(codec_h, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES8311 DAC codec");
             init_ok = false;
         } else {
             codec_dac_opened = true;
-            esp_codec_dev_set_out_vol(_codec_handle, _volume.load(std::memory_order_relaxed));
+            esp_codec_dev_set_out_vol(codec_h, _volume.load(std::memory_order_relaxed));
         }
-        if (init_ok && esp_codec_dev_open(_codec_mic_handle, &fs) != ESP_CODEC_DEV_OK) {
+        if (init_ok && esp_codec_dev_open(mic_h, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES7210 ADC codec");
             init_ok = false;
         } else if (init_ok) {
             codec_mic_opened = true;
-            esp_codec_dev_set_in_gain(_codec_mic_handle, 42);
+            esp_codec_dev_set_in_gain(mic_h, 42);
         }
     } else {
-        if (esp_codec_dev_open(_codec_handle, &fs) != ESP_CODEC_DEV_OK) {
+        if (esp_codec_dev_open(codec_h, &fs) != ESP_CODEC_DEV_OK) {
             ESP_LOGE(TAG, "Failed to open ES8311 codec");
             init_ok = false;
         } else {
             codec_dac_opened = true;
-            esp_codec_dev_set_out_vol(_codec_handle, _volume.load(std::memory_order_relaxed));
-            esp_codec_dev_set_in_gain(_codec_handle, 24);
+            esp_codec_dev_set_out_vol(codec_h, _volume.load(std::memory_order_relaxed));
+            esp_codec_dev_set_in_gain(codec_h, 24);
         }
     }
 
     if (!init_ok) {
         /* Rollback codec open failure — only close handles that were opened */
-        if (_codec_mic_handle) {
-            if (codec_mic_opened) esp_codec_dev_close(_codec_mic_handle);
-            esp_codec_dev_delete(_codec_mic_handle);
-            _codec_mic_handle = nullptr;
+        mic_h = _codec_mic_handle.load(std::memory_order_relaxed);
+        if (mic_h) {
+            if (codec_mic_opened) esp_codec_dev_close(mic_h);
+            esp_codec_dev_delete(mic_h);
+            _codec_mic_handle.store(nullptr, std::memory_order_relaxed);
         }
-        if (_codec_handle) {
-            if (codec_dac_opened) esp_codec_dev_close(_codec_handle);
-            esp_codec_dev_delete(_codec_handle);
-            _codec_handle = nullptr;
+        codec_h = _codec_handle.load(std::memory_order_relaxed);
+        if (codec_h) {
+            if (codec_dac_opened) esp_codec_dev_close(codec_h);
+            esp_codec_dev_delete(codec_h);
+            _codec_handle.store(nullptr, std::memory_order_relaxed);
         }
-        if (_codec_mutex) {
-            vSemaphoreDelete(_codec_mutex);
-            _codec_mutex = nullptr;
+        SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_relaxed);
+        if (cm) {
+            vSemaphoreDelete(cm);
+            _codec_mutex.store(SemaphoreHandle_t(nullptr), std::memory_order_relaxed);
         }
         if (_tx_handle) {
             i2s_del_channel(_tx_handle);
@@ -312,8 +321,8 @@ void AudioDriver::init(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", _has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume.load(std::memory_order_relaxed));
-    _refcount = 1;
+    ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume.load(std::memory_order_relaxed));
+    _refcount.store(1, std::memory_order_relaxed);
     xSemaphoreGive(_lifecycle_mutex);
 }
 
@@ -322,29 +331,39 @@ void AudioDriver::deinit(void)
     if (!_lifecycle_mutex) return;
     xSemaphoreTake(_lifecycle_mutex, portMAX_DELAY);
 
-    if (_refcount <= 0) {
+    if (_refcount.load(std::memory_order_relaxed) <= 0) {
         ESP_LOGW(TAG, "Audio refcount already 0, skipping deinit");
         xSemaphoreGive(_lifecycle_mutex);
         return;
     }
-    _refcount--;
-    if (_refcount > 0) {
-        ESP_LOGI(TAG, "Audio still in use (refcount=%d), skipping deinit", _refcount);
+    int remaining = _refcount.fetch_sub(1, std::memory_order_relaxed) - 1;
+    if (remaining > 0) {
+        ESP_LOGI(TAG, "Audio still in use (refcount=%d), skipping deinit", remaining);
         xSemaphoreGive(_lifecycle_mutex);
         return;
     }
 
     ESP_LOGI(TAG, "Deinitializing audio...");
 
-    if (_codec_handle) {
-        esp_codec_dev_close(_codec_handle);
-        esp_codec_dev_delete(_codec_handle);
-        _codec_handle = nullptr;
+    /* Step 1: Atomically nullify _codec_mutex to prevent NEW codec operations.
+     * Any in-flight op that already loaded the old mutex pointer can still
+     * proceed — we wait for them below. */
+    SemaphoreHandle_t old_codec_mutex = _codec_mutex.exchange(nullptr, std::memory_order_acq_rel);
+    if (old_codec_mutex) {
+        vTaskDelay(pdMS_TO_TICKS(10));     /* wait for in-flight ops using old mutex to exit */
     }
-    if (_codec_mic_handle) {
-        esp_codec_dev_close(_codec_mic_handle);
-        esp_codec_dev_delete(_codec_mic_handle);
-        _codec_mic_handle = nullptr;
+
+    /* Step 2: Now safe to close/delete codec handles — no one can
+     * acquire the mutex (it's null) to perform codec operations. */
+    esp_codec_dev_handle_t c_handle = _codec_handle.exchange(nullptr, std::memory_order_acq_rel);
+    if (c_handle) {
+        esp_codec_dev_close(c_handle);
+        esp_codec_dev_delete(c_handle);
+    }
+    esp_codec_dev_handle_t c_mic_handle = _codec_mic_handle.exchange(nullptr, std::memory_order_acq_rel);
+    if (c_mic_handle) {
+        esp_codec_dev_close(c_mic_handle);
+        esp_codec_dev_delete(c_mic_handle);
     }
 
     if (_tx_handle) {
@@ -358,16 +377,9 @@ void AudioDriver::deinit(void)
 
     gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
 
-    /* Nullify codec mutex FIRST while we still hold the lifecycle lock.
-     * In-flight set_volume/set_mic_gain ops check _codec_mutex != nullptr
-     * before taking it, so they will gracefully skip once we nullify it.
-     * We keep _lifecycle_mutex held throughout to prevent a racing init()
-     * from creating new resources that would be orphaned. */
-    if (_codec_mutex) {
-        SemaphoreHandle_t old_mutex = _codec_mutex;
-        _codec_mutex = nullptr;            /* in-flight ops will see null and skip */
-        vTaskDelay(pdMS_TO_TICKS(10));     /* wait for in-flight ops to exit */
-        vSemaphoreDelete(old_mutex);       /* safe: no one references old_mutex anymore */
+    /* Step 3: Delete the old mutex — no one references it anymore. */
+    if (old_codec_mutex) {
+        vSemaphoreDelete(old_codec_mutex);
     }
 
     _vol_pub = ORB_ADVERT_INVALID;
@@ -384,11 +396,21 @@ void AudioDriver::set_volume(int volume)
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
 
-    if (_codec_handle && _codec_mutex &&
-        xSemaphoreTake(_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        _volume = volume;  /* Store inside mutex for thread safety */
-        esp_codec_dev_set_out_vol(_codec_handle, volume);
-        xSemaphoreGive(_codec_mutex);
+    SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_acquire);
+    esp_codec_dev_handle_t ch = _codec_handle.load(std::memory_order_acquire);
+    if (ch && cm &&
+        xSemaphoreTake(cm, pdMS_TO_TICKS(100)) == pdTRUE) {
+        /* Re-read codec handle under mutex in case it changed */
+        esp_codec_dev_handle_t ch2 = _codec_handle.load(std::memory_order_relaxed);
+        if (ch2) {
+            _volume = volume;  /* Store inside mutex for thread safety */
+            esp_codec_dev_set_out_vol(ch2, volume);
+            xSemaphoreGive(cm);
+        } else {
+            xSemaphoreGive(cm);
+            ESP_LOGW(TAG, "set_volume(%d) skipped: codec handle nullified", volume);
+            return;
+        }
     } else {
         /* Codec not available or mutex timeout — skip publish to avoid
          * advertising a volume that was never applied to hardware. */
@@ -397,10 +419,15 @@ void AudioDriver::set_volume(int volume)
     }
 
     /* Publish volume_state via uORB for cross-module notification */
-    orb_advert_t expected = ORB_ADVERT_INVALID;
-    _vol_pub.compare_exchange_strong(expected, orb_advertise(ORB_ID(volume_state)),
-            std::memory_order_acq_rel, std::memory_order_acquire);
-    if (_vol_pub >= 0) {
+    if (_vol_pub.load(std::memory_order_relaxed) < 0) {
+        orb_advert_t new_pub = orb_advertise(ORB_ID(volume_state));
+        orb_advert_t expected_vp = ORB_ADVERT_INVALID;
+        _vol_pub.compare_exchange_strong(expected_vp, new_pub,
+                std::memory_order_acq_rel, std::memory_order_acquire);
+        /* If CAS fails, another thread already set up the publisher handle —
+         * our unused handle has an extra refcount on the topic but is harmless. */
+    }
+    if (_vol_pub.load(std::memory_order_relaxed) >= 0) {
         struct volume_state_s vs = {};
         vs.timestamp = esp_timer_get_time();
         vs.volume = volume;
@@ -410,21 +437,35 @@ void AudioDriver::set_volume(int volume)
 
 void AudioDriver::set_mic_gain(int gain_db)
 {
+    SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_acquire);
+    if (!cm) return;
+
     /* WIFI6 boards use _codec_handle for both ADC and DAC;
      * _codec_mic_handle is NULL on WIFI6. */
-    esp_codec_dev_handle_t h = _codec_mic_handle ? _codec_mic_handle : _codec_handle;
-    if (h && _codec_mutex &&
-        xSemaphoreTake(_codec_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        esp_codec_dev_set_in_gain(h, gain_db);
-        xSemaphoreGive(_codec_mutex);
+    esp_codec_dev_handle_t mic_h = _codec_mic_handle.load(std::memory_order_acquire);
+    esp_codec_dev_handle_t out_h = _codec_handle.load(std::memory_order_acquire);
+    esp_codec_dev_handle_t h = mic_h ? mic_h : out_h;
+    if (h && xSemaphoreTake(cm, pdMS_TO_TICKS(100)) == pdTRUE) {
+        /* Re-read under mutex */
+        mic_h = _codec_mic_handle.load(std::memory_order_relaxed);
+        out_h = _codec_handle.load(std::memory_order_relaxed);
+        h = mic_h ? mic_h : out_h;
+        if (h) esp_codec_dev_set_in_gain(h, gain_db);
+        xSemaphoreGive(cm);
     }
 }
 
 int AudioDriver::codec_write(const uint8_t *data, int size)
 {
-    if (!_codec_handle || !_codec_mutex || size <= 0) return -1;
-    if (xSemaphoreTake(_codec_mutex, pdMS_TO_TICKS(50)) != pdPASS) return -1;
-    int ret = esp_codec_dev_write(_codec_handle, (void *)data, size);
-    xSemaphoreGive(_codec_mutex);
+    if (size <= 0) return -1;
+    SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_acquire);
+    esp_codec_dev_handle_t ch = _codec_handle.load(std::memory_order_acquire);
+    if (!ch || !cm) return -1;
+    if (xSemaphoreTake(cm, pdMS_TO_TICKS(50)) != pdPASS) return -1;
+    /* Re-read under mutex */
+    esp_codec_dev_handle_t ch2 = _codec_handle.load(std::memory_order_relaxed);
+    if (!ch2) { xSemaphoreGive(cm); return -1; }
+    int ret = esp_codec_dev_write(ch2, (void *)data, size);
+    xSemaphoreGive(cm);
     return (ret == ESP_CODEC_DEV_OK) ? size : -1;
 }

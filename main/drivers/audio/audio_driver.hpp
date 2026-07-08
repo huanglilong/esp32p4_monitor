@@ -30,12 +30,12 @@ public:
     void deinit(void);
 
     /** @return true if audio is currently initialized */
-    bool available(void) const { return _refcount > 0; }
+    bool available(void) const { return _refcount.load(std::memory_order_relaxed) > 0; }
 
     /* ---- Audio handles (read-only access) ---- */
     i2s_chan_handle_t rx_handle(void) const { return _rx_handle; }
     i2s_chan_handle_t tx_handle(void) const { return _tx_handle; }
-    esp_codec_dev_handle_t codec_handle(void) const { return _codec_handle; }
+    esp_codec_dev_handle_t codec_handle(void) const { return _codec_handle.load(std::memory_order_relaxed); }
 
     /* ---- Thread-safe codec operations ---- */
     /** Set speaker output volume (0-100). Publishes volume_state via uORB. */
@@ -52,7 +52,7 @@ public:
     int codec_write(const uint8_t *data, int size);
 
     /** Set board type (LCD-4B vs WIFI6). Must be called before init(). */
-    void set_has_lcd(bool v) { _has_lcd = v; }
+    void set_has_lcd(bool v) { _has_lcd.store(v, std::memory_order_release); }
 
     /* Delete copy/move */
     AudioDriver(const AudioDriver&) = delete;
@@ -63,14 +63,14 @@ private:
     ~AudioDriver();
 
     SemaphoreHandle_t       _lifecycle_mutex;
-    SemaphoreHandle_t       _codec_mutex;
+    std::atomic<SemaphoreHandle_t> _codec_mutex;  /* atomic: TOCTOU-safe reads in codec ops */
 
-    bool                    _has_lcd;
-    int                     _refcount;
+    std::atomic<bool>       _has_lcd;        /* atomic: set before init, read from init path */
+    std::atomic<int>        _refcount;       /* atomic: available() reads without lock */
     std::atomic<int>        _volume;
 
-    esp_codec_dev_handle_t  _codec_handle;
-    esp_codec_dev_handle_t  _codec_mic_handle;
+    std::atomic<esp_codec_dev_handle_t> _codec_handle;      /* atomic: TOCTOU-safe reads */
+    std::atomic<esp_codec_dev_handle_t> _codec_mic_handle;  /* atomic: TOCTOU-safe reads */
     i2s_chan_handle_t        _rx_handle;
     i2s_chan_handle_t        _tx_handle;
 

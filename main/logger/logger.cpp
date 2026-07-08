@@ -54,7 +54,7 @@
 
 /* ── Static state ───────────────────────────────────────────────── */
 static struct {
-    bool             running;
+    std::atomic<bool> running{false};  /* Atomic: cross-core set by logger_deinit, read by _logger_vprintf */
     logger_level_t   sd_level;
 
     /* Ring buffer */
@@ -89,7 +89,7 @@ static int  _strip_ansi(char *str, int len);
 
 bool logger_init(const char *sd_base)
 {
-    if (s_log.running) return true;
+    if (s_log.running.load(std::memory_order_acquire)) return true;
 
     /* Sanity: SD path must be a valid mount */
     struct stat st;
@@ -137,7 +137,7 @@ bool logger_init(const char *sd_base)
         return false;
     }
 
-    s_log.running = true;
+    s_log.running.store(true, std::memory_order_release);
 
     /* Install vprintf hook — captures ALL ESP_LOGx output for SD card */
     s_log.orig_vprintf = esp_log_set_vprintf(_logger_vprintf);
@@ -147,15 +147,20 @@ bool logger_init(const char *sd_base)
 
 void logger_deinit(void)
 {
-    if (!s_log.running) return;
+    if (!s_log.running.load(std::memory_order_acquire)) return;
 
-    s_log.running = false;
+    /* Atomic store — synchronizes with _logger_vprintf's acquire load.
+     * Any _logger_vprintf that reads false will skip _logger_push. */
+    s_log.running.store(false, std::memory_order_release);
 
-    /* Restore original vprintf FIRST — no more SD log writes from this point */
+    /* Restore original vprintf FIRST — no more SD log writes from this point.
+     * However, _logger_vprintf calls already in flight (past the running check
+     * but not yet finished) may still be executing.  Give them time to finish. */
     if (s_log.orig_vprintf) {
         esp_log_set_vprintf(s_log.orig_vprintf);
         s_log.orig_vprintf = NULL;
     }
+    vTaskDelay(pdMS_TO_TICKS(10));  /* Drain in-flight _logger_vprintf calls */
 
     /* Signal writer to stop and wake it */
     s_log.writer_running = false;
@@ -193,7 +198,7 @@ logger_level_t logger_get_sd_level(void)
 
 bool logger_is_running(void)
 {
-    return s_log.running;
+    return s_log.running.load(std::memory_order_acquire);
 }
 
 const char *logger_get_filepath(void)
@@ -224,8 +229,8 @@ static int _logger_vprintf(const char *format, va_list args)
         va_end(uart_args);
     }
 
-    /* 2. SD card: skip if not running */
-    if (!s_log.running) return ret;
+    /* SD card: skip if not running (atomic load — synchronizes with deinit store) */
+    if (!s_log.running.load(std::memory_order_acquire)) return ret;
 
     /* Re-entrancy guard: if we are called from the writer task
      * context (e.g. FAT/SDMMC driver logs an ESP_LOGE during fputc
@@ -304,12 +309,24 @@ static int _logger_vprintf(const char *format, va_list args)
 
 static void _logger_push(const char *data, int len)
 {
-    if (!s_log.buf_mutex || len <= 0) return;
+    if (len <= 0) return;
+    SemaphoreHandle_t mtx = s_log.buf_mutex;
+    if (!mtx || !s_log.buf) return;
+
+    /* Take mutex — check return in case mutex was deleted while we were blocked.
+     * (logger_deinit restores vprintf first, so new _logger_vprintf calls are
+     *  prevented, but an in-flight call already past the running check could
+     *  still reach here.) */
+    if (xSemaphoreTake(mtx, pdMS_TO_TICKS(100)) != pdTRUE) return;
+
+    /* Re-validate: buf may have been freed by deinit while we waited */
+    if (!s_log.buf || !s_log.buf_mutex) {
+        xSemaphoreGive(mtx);
+        return;
+    }
 
     int written = 0;
     while (written < len) {
-        xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
-
         /* Available space = buf_size - 1 (keep one slot empty to distinguish full/empty) */
         size_t avail = (s_log.buf_size - 1) - 
                        ((s_log.head + s_log.buf_size - s_log.tail) % s_log.buf_size);
@@ -317,7 +334,6 @@ static void _logger_push(const char *data, int len)
         size_t to_write = (avail >= (size_t)(len - written)) ? (size_t)(len - written) : avail;
         if (to_write == 0) {
             /* Buffer completely full — drop entire remaining data */
-            xSemaphoreGive(s_log.buf_mutex);
             break;
         }
 
@@ -336,15 +352,15 @@ static void _logger_push(const char *data, int len)
             s_log.head = second_chunk;
         }
 
-        xSemaphoreGive(s_log.buf_mutex);
-        xSemaphoreGive(s_log.data_sem);
-
-        if (to_write < (size_t)(len - written + to_write)) {
+        if (to_write < (size_t)(len - written)) {
             /* Partial write: filled available space, drop remainder.
              * Better to lose a log line than freeze a time-critical task. */
             break;
         }
     }
+
+    xSemaphoreGive(mtx);
+    xSemaphoreGive(s_log.data_sem);
 }
 
 /* ── Writer task ────────────────────────────────────────────────── */
