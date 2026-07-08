@@ -534,7 +534,11 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
     }
 
     /* Free static task buffers (xTaskCreateStatic does not free them).
-     * Safe: task has exited (self-deleted or force-killed above). */
+     * Yield first to let the idle task reclaim the TCB from the
+     * termination list — vTaskDelete(NULL) adds the TCB to
+     * xTasksWaitingTermination, and freeing it while still linked
+     * corrupts the kernel's internal list. */
+    vTaskDelay(pdMS_TO_TICKS(10));
     if (writer->task_stack) { heap_caps_free(writer->task_stack); writer->task_stack = nullptr; }
     if (writer->task_tcb)  { heap_caps_free(writer->task_tcb);  writer->task_tcb = nullptr; }
 
