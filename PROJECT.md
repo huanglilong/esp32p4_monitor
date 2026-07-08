@@ -737,13 +737,15 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 | IRAM 代码 (flash操作/中断安全代码) | **92 KB** | **20.9%** | 静态 |
 | ROM 保留 (ROM BSS/Data/Stack) | 81 KB | 10.5% | 不可用 |
 | DRAM .data + .bss (全局变量) | 45 KB | 10.2% | 静态 |
-| Heap (动态分配) | **~234 KB** | **53.0%** | 动态 |
+| 内部堆 (启动后空闲) | **~297 KB** | **68.9%** | 动态 (运行时峰值占用 ~386KB，剩余 **~54 KB**，超 85% 告警阈值) |
 
+> 精确拆分（来自 `build/esp32p4_monitor.map` + `idf.py size`）：DIRAM 总量 431 KB = IRAM 90.1 KB + DRAM 静态 44.2 KB (.data 17.9 + .bss 26.3) + 内部堆空闲 ~297 KB。L2 Cache 256 KB 为保留、不计入 DIRAM。ROM 保留 81 KB 属独立区域，不纳入 DIRAM 口径。
+>
 > **2026-07-07 优化**: 关闭 LVGL IRAM (`CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，IRAM 从 156 KB 降至 92 KB，释放 ~64 KB。
 
-运行时 Heap ~234 KB 主要消耗者：
-- WiFi/LWIP 缓冲区: ~20-30 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096, TCP_SND/WND=32768, pbufs 走 PSRAM)
-- FreeRTOS 任务栈: ~30-40 KB (detect 16KB PSRAM, ASP 8KB PSRAM, audio 12KB internal)
+运行时内部堆（启动后空闲 **~297 KB**；CameraStream+Music 峰值仅 **~54 KB** 空闲 / 占用 ~87.7%）主要消耗者：
+- WiFi/LWIP 缓冲区: ~20-30 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096, TCP_SND/WND=65536, pbufs 走 PSRAM)
+- FreeRTOS 任务栈: ~30-40 KB (detect 16KB PSRAM, ASP 8KB PSRAM, audio 12KB×2 PSRAM)
 - 系统服务 (mDNS/NVS/esp_netif): ~10-20 KB
 - DMA 描述符/USB: ~5-10 KB
 - 剩余可用: **~180 KB** (优化后，原 ~90 KB)
@@ -751,13 +753,14 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 **最近优化**:
 - **2026-07-07**: 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，释放 **~64 KB** IRAM
 - **2026-07-07**: ASP 音频任务栈 8KB 移至 PSRAM (`task_stack_in_ext=true` — GMF 内部用 WithCaps 处理), 共省 **~8 KB**
-- **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 共省 **~30 KB** pbuf 头部
+- **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 省 pbuf 头部（注：TCP 窗口于 S175 因 SDIO 吞吐回退至 65536，与 `sdkconfig.defaults` 一致；`max_open_sockets` 缩减仍生效）
 - **2026-07-08**: LWIP_MAX_SOCKETS 22→28 (3 httpd 实例内部占用 17 个 socket, 22 太紧导致 accept() ENOTSOCK), httpd 启用 TCP keep-alive + WiFi 断连重启
 - **2026-07-08**: SystemMonitor 内存告警阈值 80%→85% (减少 Internal SRAM 误报)
 - **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
 - **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
 - **2026-07-06**: detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)
 - **2026-07-06**: CameraStream model_load task 8KB 栈移入 PSRAM (`xTaskCreateStatic`)
+- **2026-07-08**: 两个音频任务栈 12KB×2 从 Internal SRAM 移至 PSRAM（O2 优化）— `phone_app_audio.cpp` 的 `audio_echo` 与 `web_config_server.cpp` 的 `w_audio` 改用 `xTaskCreateStatic`/`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM|MALLOC_CAP_8BIT)` 分配栈（TCB 留 Internal），任务退出后释放静态缓冲区；运行时节省 **~24 KB** Internal SRAM。与 detect(16KB)/ASP(8KB) 同模式，仅栈在 PSRAM，TCB 仍在 Internal。
 - **2026-07-06**: `SPIRAM_TRY_ALLOCATE_DMA_BUFFER` 在 IDF v6.x 中已不存在，`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` 已覆盖 DMA 分配
 
 > **✅ 已解决**: Camera Stream + Music 播放时 internal SRAM >80% 导致音频卡顿。主要通过 LVGL IRAM→PSRAM XIP (-64KB) 解决，辅以 ASP 栈→PSRAM (-8KB) 和 LWIP TCP 缓冲区缩小 (-30KB)。
