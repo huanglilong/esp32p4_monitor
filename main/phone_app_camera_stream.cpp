@@ -46,6 +46,17 @@ PhoneAppCameraStream::PhoneAppCameraStream(bool use_status_bar, bool use_navigat
 
 PhoneAppCameraStream::~PhoneAppCameraStream()
 {
+    /* Defensive cleanup — close() may not have been called.
+     * Unregister WiFi event handlers to prevent use-after-free (handlers
+     * reference `this`), and unsubscribe uORB to prevent slot leak. */
+    esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+                                  _wifi_event_handler);
+    esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                  _wifi_event_handler);
+    if (s_fps_sub >= 0) {
+        orb_unsubscribe(s_fps_sub);
+        s_fps_sub = -1;
+    }
     CameraStream::instance().stop();
 }
 

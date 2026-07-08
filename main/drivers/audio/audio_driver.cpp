@@ -253,11 +253,10 @@ void AudioDriver::init(void)
         return;
     }
 
-    /* Create mutex BEFORE opening codecs */
-    _codec_mutex.store(xSemaphoreCreateMutex(), std::memory_order_release);
-
     /* Open codecs — track which ones were successfully opened so rollback
-     * only calls esp_codec_dev_close() on opened handles. */
+     * only calls esp_codec_dev_close() on opened handles.
+     * Note: _codec_mutex is created AFTER successful codec open to prevent
+     * concurrent codec ops from seeing a valid mutex during init rollback. */
     bool codec_dac_opened = false;
     bool codec_mic_opened = false;
     esp_codec_dev_sample_info_t fs = { .bits_per_sample = 16, .channel = 2, .channel_mask = 0x03, .sample_rate = EXAMPLE_AUDIO_SAMPLE_RATE };
@@ -303,11 +302,6 @@ void AudioDriver::init(void)
             esp_codec_dev_delete(codec_h);
             _codec_handle.store(nullptr, std::memory_order_relaxed);
         }
-        SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_relaxed);
-        if (cm) {
-            vSemaphoreDelete(cm);
-            _codec_mutex.store(SemaphoreHandle_t(nullptr), std::memory_order_relaxed);
-        }
         if (_tx_handle) {
             i2s_del_channel(_tx_handle);
             _tx_handle = nullptr;
@@ -323,6 +317,9 @@ void AudioDriver::init(void)
     }
 
     ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume.load(std::memory_order_relaxed));
+    /* Create codec mutex AFTER successful init — prevents concurrent codec ops
+     * from seeing a valid mutex during init/rollback. */
+    _codec_mutex.store(xSemaphoreCreateMutex(), std::memory_order_release);
     _refcount.store(1, std::memory_order_relaxed);
     xSemaphoreGive(_lifecycle_mutex);
 }

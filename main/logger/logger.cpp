@@ -55,7 +55,7 @@
 /* ── Static state ───────────────────────────────────────────────── */
 static struct {
     std::atomic<bool> running{false};  /* Atomic: cross-core set by logger_deinit, read by _logger_vprintf */
-    logger_level_t   sd_level;
+    std::atomic<int>   sd_level{0};
 
     /* Ring buffer */
     uint8_t         *buf;
@@ -120,7 +120,7 @@ bool logger_init(const char *sd_base)
     }
 
     /* SD log level (Kconfig → runtime default) */
-    s_log.sd_level = (logger_level_t)CONFIG_APP_LOG_SD_LEVEL;
+    s_log.sd_level.store((int)CONFIG_APP_LOG_SD_LEVEL, std::memory_order_relaxed);
 
     /* Open first log file */
     s_log.fd = nullptr;
@@ -134,8 +134,8 @@ bool logger_init(const char *sd_base)
                     WRITER_TASK_STACK, NULL,
                     WRITER_TASK_PRIO, &s_log.writer_task) != pdPASS) {
         if (s_log.fd) { fclose(s_log.fd); s_log.fd = nullptr; }
-        vSemaphoreDelete(s_log.buf_mutex);
-        vSemaphoreDelete(s_log.data_sem);
+        vSemaphoreDelete(s_log.buf_mutex); s_log.buf_mutex = nullptr;
+        vSemaphoreDelete(s_log.data_sem);  s_log.data_sem = nullptr;
         free(s_log.buf);
         s_log.buf = nullptr;
         return false;
@@ -203,12 +203,12 @@ void logger_deinit(void)
 
 void logger_set_sd_level(logger_level_t level)
 {
-    s_log.sd_level = level;
+    s_log.sd_level.store((int)level, std::memory_order_relaxed);
 }
 
 logger_level_t logger_get_sd_level(void)
 {
-    return s_log.sd_level;
+    return (logger_level_t)s_log.sd_level.load(std::memory_order_relaxed);
 }
 
 bool logger_is_running(void)
@@ -263,6 +263,7 @@ static int _logger_vprintf(const char *format, va_list args)
     int raw_len = vsnprintf(raw, sizeof(raw), format, sd_args);
     va_end(sd_args);
     if (raw_len <= 0) return ret;
+    if (raw_len >= (int)sizeof(raw)) raw_len = (int)sizeof(raw) - 1;
 
     int clean_len = _strip_ansi(raw, raw_len);
     while (clean_len > 0 && (raw[clean_len - 1] == '\n' ||
@@ -291,7 +292,7 @@ static int _logger_vprintf(const char *format, va_list args)
     }
 
     /* Level filter */
-    if (level > (int)s_log.sd_level) return ret;
+    if (level > s_log.sd_level.load(std::memory_order_relaxed)) return ret;
 
     /* Timestamp prefix */
     struct timeval tv;
@@ -315,7 +316,10 @@ static int _logger_vprintf(const char *format, va_list args)
     char line[MAX_LINE_LEN];
     int len = snprintf(line, sizeof(line), "[%s] %s\n",
                        time_str, clean_len > 0 ? raw : "");
-    if (len > 0) _logger_push(line, len);
+    if (len > 0) {
+        if (len >= (int)sizeof(line)) len = (int)sizeof(line) - 1;
+        _logger_push(line, len);
+    }
 
     return ret;
 }
@@ -389,8 +393,8 @@ static void _logger_push(const char *data, int len)
     }
 
     xSemaphoreGive(mtx);
-    s_log.push_in_flight.fetch_sub(1, std::memory_order_acq_rel);
     xSemaphoreGive(s_log.data_sem);
+    s_log.push_in_flight.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 /* ── Writer task ────────────────────────────────────────────────── */
@@ -442,19 +446,30 @@ static void _logger_writer_task(void *arg)
         if (s_log.fd) { fflush(s_log.fd); fsync(fileno(s_log.fd)); }
     }
 
-    /* Clean exit: drain remaining data */
-    xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
-    if (s_log.fd && s_log.tail != s_log.head) {
-        size_t avail = (s_log.head >= s_log.tail)
-            ? (s_log.head - s_log.tail)
-            : (s_log.buf_size - s_log.tail);
-        fwrite(&s_log.buf[s_log.tail], 1, avail, s_log.fd);
-        /* rest of buffer (wrapped part) */
-        if (s_log.head < s_log.tail) {
-            fwrite(s_log.buf, 1, s_log.head, s_log.fd);
+    /* Clean exit: drain remaining data.
+     * Copy under mutex, write outside mutex to avoid orphaning it
+     * if deinit force-kills the task during blocking I/O. */
+    uint8_t *drain = (uint8_t *)malloc(s_log.buf_size);
+    size_t drain_n = 0;
+    if (drain) {
+        xSemaphoreTake(s_log.buf_mutex, portMAX_DELAY);
+        if (s_log.tail != s_log.head) {
+            size_t avail = (s_log.head >= s_log.tail)
+                ? (s_log.head - s_log.tail)
+                : (s_log.buf_size - s_log.tail);
+            memcpy(drain, &s_log.buf[s_log.tail], avail);
+            drain_n = avail;
+            if (s_log.head < s_log.tail) {
+                memcpy(drain + drain_n, s_log.buf, s_log.head);
+                drain_n += s_log.head;
+            }
         }
+        xSemaphoreGive(s_log.buf_mutex);
+        if (s_log.fd && drain_n > 0) {
+            fwrite(drain, 1, drain_n, s_log.fd);
+        }
+        free(drain);
     }
-    xSemaphoreGive(s_log.buf_mutex);
 
     if (s_log.fd) {
         fflush(s_log.fd);
@@ -462,8 +477,8 @@ static void _logger_writer_task(void *arg)
         fclose(s_log.fd);
         s_log.fd = nullptr;
     }
-    s_log.writer_task = nullptr;
     s_log.writer_exited = true;
+    s_log.writer_task = nullptr;
     vTaskDelete(NULL);
 }
 

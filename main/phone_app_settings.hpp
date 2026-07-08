@@ -135,6 +135,7 @@ private:
     static esp_event_handler_instance_t _ip_handler_inst;    // IP_EVENT handler instance
     std::atomic<bool>       _wifi_scanning;
     std::atomic<bool>       _wifi_connecting;     // Guard against multiple connect tasks
+    static TaskHandle_t      _wifi_connect_task;   // Handle for connect task (for cleanup)
 
     static constexpr int   WIFI_SCAN_MAX = 20;
     static constexpr int   TASK_STACK_WIFI_SCAN = 6 * 1024;

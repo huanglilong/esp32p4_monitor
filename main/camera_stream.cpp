@@ -293,6 +293,10 @@ bool CameraStream::_init_video(void)
             break;
         }
         _v4l2_buf_count = req.count;
+        if (_v4l2_buf_count > 2) {
+            ESP_LOGE(TAG, "VIDIOC_REQBUFS returned %" PRIu32 " buffers, max 2 supported", _v4l2_buf_count);
+            _v4l2_buf_count = 2;
+        }
         ESP_LOGI(TAG, "V4L2 REQBUFS ok: got %" PRIu32 " buffers", _v4l2_buf_count);
 
         /* Step 5: mmap + QBUF each buffer */
@@ -433,6 +437,9 @@ bool CameraStream::_init_encoder(void)
 
     /* JPEG format from sensor needs no software encoder */
     if (_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+        _stream_enc_width = _cam_width;
+        _stream_enc_height = _cam_height;
+        _stream_enc_format = V4L2_PIX_FMT_JPEG;
         _encoder_initialized.store(true, std::memory_order_release);
         _encoder_init_in_progress.store(false, std::memory_order_release);
         return true;
@@ -588,6 +595,13 @@ void CameraStream::_model_load_task_fn(void *arg)
         {
             dummy_buf = (uint8_t *)heap_caps_calloc(1, cs->_cam_width * cs->_cam_height * 2,
                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!dummy_buf) {
+                ESP_LOGE(TAG, "Failed to allocate dummy_buf for warmup inference");
+                cs->_model_load_task_exited.store(true, std::memory_order_release);
+                cs->_model_load_task.store(nullptr, std::memory_order_release);
+                vTaskDelete(NULL);
+                return;
+            }
             img = {
                 .data = dummy_buf,
                 .width = (uint16_t)cs->_cam_width,
@@ -679,16 +693,22 @@ void CameraStream::_deinit_detection(void)
     /* Stop background model-loading task if still running.
      * The task self-deletes and clears _model_load_task on completion.
      * Use atomic exchange to safely read-and-nullify the handle.
-     * Poll _model_load_task_exited to avoid eTaskGetState race with idle task TCB cleanup. */
+     * Wait for the task to exit on its own (up to 15s — model load takes ~11s)
+     * before force-killing, to avoid heap corruption if the task is
+     * mid-allocation (new/malloc) or holding internal mutexes. */
     TaskHandle_t t = _model_load_task.exchange(nullptr, std::memory_order_acq_rel);
     if (t) {
-        vTaskDelete(t);
-        /* Yield to let idle task reclaim TCB before we free the stack */
         int poll = 0;
-        while (!_model_load_task_exited.load(std::memory_order_acquire) && poll < 50) {
-            vTaskDelay(pdMS_TO_TICKS(10));
+        while (!_model_load_task_exited.load(std::memory_order_acquire) && poll < 150) {
+            vTaskDelay(pdMS_TO_TICKS(100));
             poll++;
         }
+        if (!_model_load_task_exited.load(std::memory_order_acquire)) {
+            ESP_LOGW(TAG, "Model load task did not exit after 15s, force-killing (may corrupt heap)");
+            vTaskDelete(t);
+        }
+        /* Yield to let idle task reclaim TCB before we free the stack */
+        vTaskDelay(pdMS_TO_TICKS(10));
     } else {
         /* Handle already cleared by the task — yield to let any in-flight
          * vTaskDelete(NULL) complete before freeing the stack below. */
@@ -928,6 +948,7 @@ bool CameraStream::_send_mjpeg_part(httpd_req_t *req, uint8_t *jpeg_data, uint32
     clock_gettime(CLOCK_MONOTONIC, &ts);
     int hlen = snprintf(part_buf, part_buf_size, STREAM_PART, jpeg_size,
                         (int)ts.tv_sec, (int)(ts.tv_nsec / 1000));
+    if (hlen < 0 || (size_t)hlen >= part_buf_size) return false;
     if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK ||
         httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
         httpd_resp_send_chunk(req, (char *)jpeg_data, jpeg_size) != ESP_OK) {
@@ -1088,6 +1109,12 @@ static esp_err_t stream_handler(httpd_req_t *req)
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
+        }
+
+        /* Clamp bytesused to buffer length to prevent over-read */
+        if (buf.bytesused > cs->_v4l2_buf_len[buf.index]) {
+            ESP_LOGW(TAG, "V4L2 bytesused %u > buf len %u, clamping", buf.bytesused, cs->_v4l2_buf_len[buf.index]);
+            buf.bytesused = cs->_v4l2_buf_len[buf.index];
         }
 
         /* Invalidate CPU cache on V4L2 mmap buffer */
@@ -1333,8 +1360,8 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-    cJSON_AddNumberToObject(root, "width", cs->_stream_enc_width);
-    cJSON_AddNumberToObject(root, "height", cs->_stream_enc_height);
+    cJSON_AddNumberToObject(root, "width", cs->_stream_enc_width ? cs->_stream_enc_width : cs->_cam_width);
+    cJSON_AddNumberToObject(root, "height", cs->_stream_enc_height ? cs->_stream_enc_height : cs->_cam_height);
     cJSON_AddNumberToObject(root, "sensor_width", cs->_cam_width);
     cJSON_AddNumberToObject(root, "sensor_height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality.load());

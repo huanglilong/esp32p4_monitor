@@ -160,6 +160,7 @@ bool PhoneAppCamera::_init_camera(void)
         CameraDriver::instance().release("camera_app");
         return false;
     }
+    _video_initialized = true;  /* Mark immediately so _cleanup_camera_init() deinitializes it on failure */
 
     /* Reduce sensor frame rate from ~50fps → ~2fps (VTS: 984→24600).
      * ISP DMA: ~32 MB/s → ~2.6 MB/s. */
@@ -339,6 +340,13 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
         return;  // No frame available yet
     }
     if (!(buf.flags & V4L2_BUF_FLAG_DONE)) {
+        ioctl(app->_video_fd, VIDIOC_QBUF, &buf);
+        return;
+    }
+
+    /* Bounds-check buffer index against our fixed-size array */
+    if (buf.index >= app->_v4l2_buf_count || buf.index >= 2) {
+        ESP_LOGW(TAG, "V4L2 DQBUF index %u out of bounds (count=%u)", buf.index, app->_v4l2_buf_count);
         ioctl(app->_video_fd, VIDIOC_QBUF, &buf);
         return;
     }

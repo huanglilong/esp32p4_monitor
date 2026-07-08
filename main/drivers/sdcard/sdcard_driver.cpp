@@ -87,7 +87,7 @@ bool SDCardDriver::init(void)
      * does not support shared ownership.  We skip LDO4 here on
      * LCD-4B and let the display init handle it; the caller must
      * retry init_sdcard() after the display is up. */
-    if (!_has_lcd) {
+    if (!_has_lcd.load(std::memory_order_relaxed)) {
         sd_pwr_ctrl_ldo_config_t ldo_config = { .ldo_chan_id = 4 };
         ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &_pwr_ctrl);
         if (ret != ESP_OK) {

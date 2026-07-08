@@ -237,6 +237,36 @@
 | S181 | **Non-detection JPEG QBUF 延迟** | 非检测帧 JPEG sensor 路径 QBUF 在消费者完成前发出，V4L2 buffer 可能被驱动覆写。修复: 与检测帧路径统一，JPEG sensor 延迟 QBUF 至 `_send_mjpeg_part`/`_save_jpeg_snapshot`/`_publish_camera_frame` 完成后；CPU fallback 编码后立即 QBUF (jpeg_data 已独立) | ✅ |
 | S182 | **AudioDriver deinit mutex 竞态** | `deinit()` 用 10ms 延时等待 in-flight codec 操作，但 `set_volume`/`set_mic_gain` 可持锁 100ms。修复: 新增 `_codec_ops_in_flight` 原子计数器，codec 操作入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex | ✅ |
 | S183 | **Logger deinit mutex 竞态** | `logger_deinit()` 用 10ms 延时等待 in-flight `_logger_push`，但可持 `buf_mutex` 100ms。修复: 新增 `push_in_flight` 原子计数器，`_logger_push` 入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex | ✅ |
+| S184 | **Logger snprintf 栈溢出** | `vsnprintf`/`snprintf` 返回值未截断到缓冲区大小，长日志行导致 `_strip_ansi`/`_logger_push` 越界读取栈缓冲区。修复: `raw_len` 和 `len` 截断到 `sizeof(buffer) - 1` | ✅ |
+| S185 | **Logger data_sem UAF** | `_logger_push` 在 `fetch_sub(push_in_flight)` 后才 `xSemaphoreGive(data_sem)`，`deinit` 可在 fetch_sub 后、give 前 delete data_sem → UAF。修复: give data_sem 移到 fetch_sub 之前 | ✅ |
+| S186 | **Logger writer force-kill 持锁** | writer task clean-exit 路径在 `buf_mutex` 内调用 `fwrite`，`deinit` force-kill 时孤儿化 mutex。修复: 先在 mutex 内 memcpy 到堆缓冲，释放 mutex 后再 fwrite | ✅ |
+| S187 | **Logger 句柄悬挂** | `xTaskCreate` 失败时 `buf_mutex`/`data_sem` 被 delete 但未置 null，重试 init 时使用已释放句柄。修复: delete 后立即置 null | ✅ |
+| S188 | **Logger sd_level 数据竞争** | `sd_level` 为普通 `logger_level_t`，跨核读写无同步。修复: 改为 `std::atomic<int>` | ✅ |
+| S189 | **Web h_play 路径穿越** | `/api/audio/play?file=` 参数未经 `__path_sanitize`，可构造 `../../etc/passwd` 逃逸 `/sdcard`。修复: 经 `__path_sanitize` 校验后再构建 URI | ✅ |
+| S190 | **Web cJSON NULL 解引用** | `status_handler`/`ulog_status_handler`/`h_files_list` 中 `cJSON_CreateObject()` 和 `cJSON_PrintUnformatted()` 返回 NULL 未检查，OOM 时崩溃。修复: 全部加 null 检查 + 500 响应 | ✅ |
+| S191 | **Web s_running 停止竞态** | `s_running` 在 WiFi 连接 + httpd 启动后才置 true，stop() 在 WiFi 等待窗口调用时看到 false 直接返回，任务继续运行。修复: 任务入口立即置 true + WiFi 等待循环检查 s_running | ✅ |
+| S192 | **Web mutex 泄漏** | `s_nvs_cache_mutex` 和 `s_audio_mutex` 在 stop/restart 周期中从不 delete，每次 task 创建新 mutex 孤儿旧句柄。修复: task cleanup 和 stop() fallback 中 delete 两个 mutex | ✅ |
+| S193 | **Web httpd_start 失败泄漏** | `httpd_start` 失败时 `vTaskDelete(NULL)` 跳过 mutex/task 清理。修复: `goto cleanup` 统一清理路径 | ✅ |
+| S194 | **Web NVS cache 竞态** | `factory_reset_handler` 无锁遍历 `s_nvs_cache` 失效条目，并发 handler 可撕裂读取。修复: 加 `s_nvs_cache_mutex` 保护 + 重置 count | ✅ |
+| S195 | **Web free→cJSON_free** | `h_list` 用 `free()` 释放 cJSON 字符串，不一致。修复: 改用 `cJSON_free()` | ✅ |
+| S196 | **CameraStream V4L2 buf 越界** | `VIDIOC_REQBUFS` 返回 count 可能 > 固定数组大小 2，导致 OOB 写。修复: 截断 `_v4l2_buf_count` 到 2 | ✅ |
+| S197 | **CameraStream model-load force-kill** | `_deinit_detection()` 立即 `vTaskDelete` model-load task，可能在 `new`/`malloc` 中途被杀导致堆损坏。修复: 先等待 15s (覆盖 ~11s 模型加载) 再考虑 force-kill | ✅ |
+| S198 | **CameraStream dummy_buf NULL** | 无 PPA 路径 `heap_caps_calloc` 失败时 NULL 传给 `run(img)` → NPE。修复: 加 null 检查 + 提前退出 | ✅ |
+| S199 | **CameraStream snprintf 截断** | `_send_mjpeg_part` 中 `snprintf` 返回值未检查，负值或 >= buf_size 时越界。修复: 加 `hlen < 0 || >= part_buf_size` 检查 | ✅ |
+| S200 | **CameraStream bytesused 越界** | `buf.bytesused` 可能 > `_v4l2_buf_len`，导致编码器越界读取。修复: 截断到 buf_len | ✅ |
+| S201 | **CameraStream encoder dims 零值** | JPEG sensor 路径和 encoder 未初始化时 `_stream_enc_width/height` 为 0，`camera_info_handler` 返回 0×0。修复: JPEG 路径设值 + handler fallback 到 sensor dims | ✅ |
+| S202 | **PhoneAppCamera V4L2 pipeline 泄漏** | `example_video_init()` 成功但后续步骤失败时 `_video_initialized` 仍为 false，cleanup 不 deinit pipeline。修复: init 成功后立即置 true | ✅ |
+| S203 | **PhoneAppCamera buf.index 越界** | `buf.index` 未校验直接索引固定大小数组。修复: 加 `>= _v4l2_buf_count || >= 2` 检查 | ✅ |
+| S204 | **PhoneAppSettings 事件组泄漏** | `run()` 无条件创建 `_wifi_event_group`，已存在时泄漏旧句柄。修复: 加 null 检查 | ✅ |
+| S205 | **PhoneAppSettings WiFi OFF/ON abort** | OFF 路径重置 `_wifi_initialized = false`，下次 ON 时 `ESP_ERROR_CHECK(esp_netif_init())` 二次调用返回 `ESP_ERR_INVALID_STATE` → abort。修复: 不重置 `_wifi_initialized`，保留一次性 init + handler 注册 | ✅ |
+| S206 | **PhoneAppSettings connect task UAF** | `wifiConnectTaskHandler` 创建时传 NULL handle，close()/析构无法等待，删除 event group 时 task 可能仍在 `xEventGroupWaitBits` → UAF。修复: 存储 `_wifi_connect_task` handle + 析构等待 `_wifi_connecting` 归零 | ✅ |
+| S207 | **PhoneAppSettings _wifi_ip 未填充** | IP 事件 handler 日志输出 IP 但未写入 `_wifi_ip` 成员，UI 永远显示空 IP。修复: IP 事件中 `snprintf(_wifi_ip, ...)` | ✅ |
+| S208 | **PhoneAppCameraStream 析构 handler UAF** | 析构函数只 `stop()`，未注销 WiFi event handler (引用 `this`)，handler 触发时 UAF。修复: 析构中防御性注销 handler + unsubscribe uORB | ✅ |
+| S209 | **AudioDriver init rollback mutex UAF** | codec open 失败 rollback 时 `_codec_mutex` 用普通 load + delete，并发 codec op 可能持有已删 mutex。修复: mutex 创建移到 codec open 成功后，rollback 不再删 mutex | ✅ |
+| S210 | **SystemMonitor force-kill 持锁** | `stop()` 超时后 `vTaskDelete` 任务，任务可能持有 `_latest_mutex`/`_alert_mutex` → 永久死锁。修复: 不再 force-kill，任务自行检查 `_running` 退出 | ✅ |
+| S211 | **SDCardDriver _has_lcd 数据竞争** | `_has_lcd` 为普通 `bool`，跨核读写无同步。修复: 改为 `std::atomic<bool>` | ✅ |
+| S212 | **main.cpp assert no-op** | `assert(*disp)` 在 release 构建中被移除，NULL disp 传入后续函数 → NPE。修复: 改为显式 null 检查 + log + return | ✅ |
+| S213 | **main.cpp esp_read_mac 未检查** | `esp_read_mac` 失败时 mac 未初始化，ULog sys_uuid 含垃圾数据。修复: 检查返回值，失败时 memset 清零 | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -384,6 +414,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-08 | +S184~S213 代码审查 Round 1 修复 (30 个 CRITICAL/HIGH/MEDIUM): Logger snprintf 栈溢出(S184)/data_sem UAF(S185)/writer force-kill 持锁(S186)/句柄悬挂(S187)/sd_level 竞态(S188), Web 路径穿越(S189)/cJSON NULL(S190)/s_running 竞态(S191)/mutex 泄漏(S192)/httpd_start 泄漏(S193)/NVS cache 竞态(S194)/free→cJSON_free(S195), CameraStream V4L2 buf 越界(S196)/model-load force-kill(S197)/dummy_buf NULL(S198)/snprintf 截断(S199)/bytesused 越界(S200)/encoder dims 零值(S201), PhoneAppCamera pipeline 泄漏(S202)/buf.index 越界(S203), PhoneAppSettings 事件组泄漏(S204)/WiFi OFF/ON abort(S205)/connect task UAF(S206)/_wifi_ip 未填充(S207), PhoneAppCameraStream 析构 handler UAF(S208), AudioDriver init rollback mutex UAF(S209), SystemMonitor force-kill 持锁(S210), SDCardDriver _has_lcd 竞态(S211), main.cpp assert no-op(S212)/esp_read_mac 未检查(S213) |
 | 2026-07-08 | +S177~S180 HTTP 服务器不可达修复(S177: LWIP_MAX_SOCKETS 22→28 + TCP keep-alive + WiFi 断连 httpd 重启), SystemMonitor 内存告警 80%→85%(S178), Flutter ULog 视频查看器(S179: ulog_parser.dart + ulog_viewer_screen.dart), Flutter filesDownload 可靠性(S180: chunked 检测修正 + O(n²)消除) |
 | 2026-07-08 | R17 更新: Camera Stream 和 Audio 不再互斥 (硬件独立: MIPI CSI vs I2S)，所有 `__cam_running()` 检查已移除 |
 | 2026-07-04 | +S86~S95 Bug 与性能修复: web audio_unlock 泄漏(S86), AudioDriver deinit 竞态(S87), set_volume stale publish(S88), set_mic_gain WIFI6(S89), mDNS mutex TOCTOU(S90), 显示锁死锁(S91), g_has_lcd volatile(S92), app_main 任务回收(S93), ULog SD 检查(S94), web uORB 订阅泄漏(S95) |

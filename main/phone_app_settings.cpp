@@ -32,6 +32,7 @@ TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
 uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
+TaskHandle_t PhoneAppSettings::_wifi_connect_task = nullptr;
 
 /* Thread-safe WiFi state uORB publisher.
  * wifiEventHandler runs on the system event task and can fire concurrently
@@ -148,6 +149,15 @@ PhoneAppSettings::~PhoneAppSettings()
      * connection), but in the destructor we must clean up everything — the
      * event handlers are already unregistered above, so callbacks would crash
      * with a dangling app pointer. Disconnect first, then free resources. */
+
+    /* Wait for WiFi connect task to finish before deleting event group.
+     * The connect task blocks on xEventGroupWaitBits for up to 15s;
+     * deleting the event group under it would be use-after-free. */
+    if (_wifi_connecting.load()) {
+        for (int i = 0; i < 160 && _wifi_connecting.load(); i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
     if (_wifi_scan_task) {
         vTaskDelete(_wifi_scan_task);
         _wifi_scan_task = nullptr;
@@ -265,7 +275,9 @@ bool PhoneAppSettings::run(void)
      * If task already running (kept alive from previous session by close()),
      * reuse it — don't recreate. */
     if (_nvs.wifi_en && _wifi_scan_task == NULL) {
-        _wifi_event_group = xEventGroupCreate();
+        if (_wifi_event_group == nullptr) {
+            _wifi_event_group = xEventGroupCreate();
+        }
         if (_wifi_event_group) {
             BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
                                          this, TASK_PRIO_WIFI_SCAN, &_wifi_scan_task);
@@ -1007,6 +1019,7 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
         }
     }
     app->_wifi_connecting = false;
+    app->_wifi_connect_task = nullptr;
     vTaskDelete(NULL);
 }
 
@@ -1060,6 +1073,13 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
+        /* Store IP string for UI display */
+        if (arg) {
+            PhoneAppSettings *app = static_cast<PhoneAppSettings *>(arg);
+            if (!app->_is_ui_del.load()) {
+                snprintf(app->_wifi_ip, sizeof(app->_wifi_ip), IPSTR, IP2STR(&evt->ip_info.ip));
+            }
+        }
         /* Update mDNS delegated hostname IP now that WiFi has an address */
         shared_mdns_update_delegate_ip();
         /* Start SNTP to sync wall-clock time (needed for ULog date-based naming) */
@@ -1160,16 +1180,12 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
             vEventGroupDelete(app->_wifi_event_group);
             app->_wifi_event_group = nullptr;
         }
-        /* Unregister event handler instances to allow clean re-init */
-        if (_wifi_handler_inst) {
-            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, _wifi_handler_inst);
-            _wifi_handler_inst = nullptr;
-        }
-        if (_ip_handler_inst) {
-            esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, _ip_handler_inst);
-            _ip_handler_inst = nullptr;
-        }
-        _wifi_initialized = false;
+        /* Note: do NOT reset _wifi_initialized or unregister event handlers here.
+         * esp_netif_init() and esp_event_loop_create_default() are one-time init
+         * that abort if called again (ESP_ERROR_CHECK). esp_wifi_stop() is
+         * sufficient to power down WiFi. Handlers stay registered and check
+         * _wifi_event_group for null before use. On next ON, wifiInit() skips
+         * the one-time init and just calls esp_wifi_start(). */
     }
 }
 
@@ -1200,10 +1216,11 @@ void PhoneAppSettings::onKeyboardEnterClicked(lv_event_t *e)
     if (!app || app->_wifi_connecting) return;  // Guard against multiple connect tasks
     app->_wifi_connecting = true;
     BaseType_t ret = xTaskCreate(wifiConnectTaskHandler, "wifi_conn", TASK_STACK_WIFI_CONNECT,
-                                 app, TASK_PRIO_WIFI_CONNECT, NULL);
+                                 app, TASK_PRIO_WIFI_CONNECT, &app->_wifi_connect_task);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create WiFi connect task");
         app->_wifi_connecting = false;
+        app->_wifi_connect_task = nullptr;
     }
 }
 

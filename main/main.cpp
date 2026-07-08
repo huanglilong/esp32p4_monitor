@@ -244,7 +244,10 @@ static void monitor_init_display(lv_display_t **disp)
         }
     };
     *disp = bsp_display_start_with_config(&cfg);
-    assert(*disp);
+    if (!*disp) {
+        ESP_LOGE(TAG, "bsp_display_start_with_config failed — display unavailable");
+        return;
+    }
     bsp_display_backlight_on();
     ESP_LOGI(TAG, "MIPI DSI display initialized (%dx%d)", BSP_LCD_H_RES, BSP_LCD_V_RES);
 }
@@ -556,7 +559,9 @@ extern "C" void app_main(void)
 
         /* Hardware info */
         uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_BASE);
+        if (esp_read_mac(mac, ESP_MAC_BASE) != ESP_OK) {
+            memset(mac, 0, sizeof(mac));
+        }
         char sys_uuid[24];
         snprintf(sys_uuid, sizeof(sys_uuid), "%02X%02X%02X%02X%02X%02X",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);

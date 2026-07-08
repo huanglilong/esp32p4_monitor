@@ -698,6 +698,7 @@ static esp_err_t status_handler(httpd_req_t *req)
 
     /* Build JSON safely with cJSON — avoids injection from SSID special chars */
     cJSON *root = cJSON_CreateObject();
+    if (!root) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM"); return ESP_FAIL; }
     cJSON_AddNumberToObject(root, "wifi_en", wifi_en);
     cJSON_AddStringToObject(root, "ssid", ssid);
     cJSON_AddBoolToObject(root, "has_pass", strlen(pass) > 0);  /* Never expose plaintext password */
@@ -1010,9 +1011,12 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
     ESP_LOGW(TAG, "Factory reset requested! Erasing NVS settings...");
 
     /* Invalidate RAM cache — all cached values are stale */
+    if (s_nvs_cache_mutex) xSemaphoreTake(s_nvs_cache_mutex, portMAX_DELAY);
     for (int i = 0; i < s_nvs_cache_count; i++) {
         s_nvs_cache[i].valid = false;
     }
+    s_nvs_cache_count = 0;
+    if (s_nvs_cache_mutex) xSemaphoreGive(s_nvs_cache_mutex);
 
     /* Erase all keys in the "settings" namespace */
     nvs_handle_t h;
@@ -1289,7 +1293,7 @@ static esp_err_t h_list(httpd_req_t *req) {
     }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, j, strlen(j));
-    free(j);
+    cJSON_free(j);
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -1336,7 +1340,12 @@ static esp_err_t h_play(httpd_req_t *req) {
     httpd_query_key_value(q,"file",fn,sizeof(fn));
     if(!strlen(fn)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     _url_decode(fn);
-    char uri[160]; snprintf(uri,sizeof(uri),"file://" SDMMC_MOUNT_POINT "/%s",fn);
+    char safe[256];
+    if (!__path_sanitize(fn, safe, sizeof(safe))) {
+        httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Invalid path\"}");
+        return ESP_OK;
+    }
+    char uri[300]; snprintf(uri,sizeof(uri),"file://%s",safe);
     audio_lock();
     if (s_fm_busy) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     /* Refuse playback while web recording is active — recording and playback share I2S hardware */
@@ -1484,11 +1493,15 @@ static esp_err_t h_files_list(httpd_req_t *req) {
     closedir(d);
 
     char *json = cJSON_PrintUnformatted(root);
-    ESP_LOGI(TAG, "[FM] list response: %d files, %zu bytes", cJSON_GetArraySize(files_arr), strlen(json));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_send(req, json, strlen(json));
-    cJSON_free(json);
+    if (json) {
+        ESP_LOGI(TAG, "[FM] list response: %d files, %zu bytes", cJSON_GetArraySize(files_arr), strlen(json));
+        httpd_resp_send(req, json, strlen(json));
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -1694,13 +1707,19 @@ static esp_err_t ulog_status_handler(httpd_req_t *req)
 {
     ulog_writer_t *ulog = ulog_writer_get();
     cJSON *root = cJSON_CreateObject();
+    if (!root) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM"); return ESP_FAIL; }
     cJSON_AddBoolToObject(root, "running", ulog_writer_get_state(ulog) == ULOG_STATE_RUNNING);
-    cJSON_AddStringToObject(root, "filepath", ulog_writer_get_filepath(ulog));
+    const char *fp = ulog_writer_get_filepath(ulog);
+    cJSON_AddStringToObject(root, "filepath", fp ? fp : "");
     cJSON_AddNumberToObject(root, "bytes_written", (double)ulog_writer_get_bytes_written(ulog));
     const char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    cJSON_free((void *)json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free((void *)json);
+    } else {
+        httpd_resp_sendstr(req, "{}");
+    }
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -1945,15 +1964,21 @@ static void web_config_task(void *arg)
      * from concurrent access across HTTP, audio, and WiFi tasks. */
     s_nvs_cache_mutex = xSemaphoreCreateMutex();
 
+    /* Mark running early so web_config_server_stop() can signal us
+     * even during the WiFi-wait window below. */
+    s_running = true;
+
     /* Wait for WiFi connection before starting HTTP server.
      * LWIP TCPIP mbox is only valid after netif is up. */
     ESP_LOGI(TAG, "Web config waiting for WiFi connection...");
 
+    bool stop_requested = false;
     /* Check if already connected (event may have fired before this task) */
     if (!wifi_sta_is_connected()) {
         ESP_LOGI(TAG, "Waiting for wifi_state topic...");
         struct wifi_state_s ws = {};
         while (1) {
+            if (!s_running) { stop_requested = true; break; }
             if (s_wifi_state_sub >= 0) {
                 orb_copy(ORB_ID(wifi_state), s_wifi_state_sub, &ws);
                 if (ws.connected) break;
@@ -1964,9 +1989,12 @@ static void web_config_task(void *arg)
         }
     }
 
+    if (stop_requested) goto cleanup;
+
     ESP_LOGI(TAG, "WiFi connected, starting web config server on port %d...",
              WEB_CONFIG_PORT);
 
+    {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
@@ -1988,8 +2016,7 @@ static void web_config_task(void *arg)
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server on port %d", WEB_CONFIG_PORT);
-        vTaskDelete(NULL);
-        return;
+        goto cleanup;
     }
 
     _register_web_config_uris(s_httpd);
@@ -2011,7 +2038,6 @@ static void web_config_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Web config server started on port %d", WEB_CONFIG_PORT);
-    s_running = true;
 
     /* Auto-start camera stream if NVS says it was enabled */
     if (nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
@@ -2074,7 +2100,10 @@ static void web_config_task(void *arg)
         }
     }
 
+    } /* end if (!stop_requested) */
+
     /* Clean exit path: stop HTTP server and mDNS from within the task */
+cleanup:
     if (s_mdns_running) {
         mdns_service_remove("_http", "_tcp");
         shared_mdns_release();
@@ -2088,10 +2117,15 @@ static void web_config_task(void *arg)
         vSemaphoreDelete(s_audio_mutex);
         s_audio_mutex = NULL;
     }
+    if (s_nvs_cache_mutex) {
+        vSemaphoreDelete(s_nvs_cache_mutex);
+        s_nvs_cache_mutex = NULL;
+    }
     if (s_wifi_state_sub >= 0) {
         orb_unsubscribe(s_wifi_state_sub);
         s_wifi_state_sub = -1;
     }
+    s_running = false;
     s_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -2101,7 +2135,7 @@ static void web_config_task(void *arg)
  *============================================================================*/
 void web_config_server_start(void)
 {
-    if (s_running) {
+    if (s_running || s_task_handle) {
         ESP_LOGW(TAG, "Web config already running");
         return;
     }
@@ -2159,6 +2193,14 @@ void web_config_server_stop(void)
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
+    }
+    if (s_audio_mutex) {
+        vSemaphoreDelete(s_audio_mutex);
+        s_audio_mutex = NULL;
+    }
+    if (s_nvs_cache_mutex) {
+        vSemaphoreDelete(s_nvs_cache_mutex);
+        s_nvs_cache_mutex = NULL;
     }
     if (s_wifi_state_sub >= 0) {
         orb_unsubscribe(s_wifi_state_sub);
