@@ -42,6 +42,9 @@ PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :
     _update_timer(nullptr)
 {
     memset(_recording_names, 0, sizeof(_recording_names));
+    /* Pre-allocate TCB at construction — reused across run/close cycles.
+     * ~340B internal SRAM, avoids TCB use-after-free race with idle task. */
+    _audio_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 PhoneAppAudio::~PhoneAppAudio()
@@ -69,9 +72,11 @@ PhoneAppAudio::~PhoneAppAudio()
         }
     }
     /* Free static task buffers (xTaskCreateStatic does not free them).
-     * Defensive: close() normally frees them, but guard against any path
-     * that destroys the object before close() ran. */
+     * Defensive: close() normally frees the stack, but guard against any
+     * path that destroys the object before close() ran. */
     if (_audio_stack) { heap_caps_free(_audio_stack); _audio_stack = nullptr; }
+    /* TCB is pre-allocated at construction — free it here.
+     * Safe: task has fully exited (waited above). */
     if (_audio_tcb)  { heap_caps_free(_audio_tcb);  _audio_tcb = nullptr; }
     /* Delete update timer (defensive — close() normally does this) */
     if (_update_timer) {
@@ -164,15 +169,13 @@ bool PhoneAppAudio::run(void)
     _scan_recordings();
 
     /* Start audio echo task — allocate stack in PSRAM to save internal SRAM.
-     * TCB stays in internal SRAM (small); stack (12KB) moves to PSRAM,
-     * mirroring the CameraStream model_load task pattern. */
+     * TCB was pre-allocated at construction and reused across run/close cycles.
+     * Stack (12KB) is allocated from PSRAM per run and freed in close(). */
     _task_running = true;
     _audio_stack = (StackType_t *)heap_caps_malloc(12288, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    _audio_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!_audio_stack || !_audio_tcb) {
         ESP_LOGE(TAG, "Failed to allocate audio task buffers");
         if (_audio_stack) { heap_caps_free(_audio_stack); _audio_stack = nullptr; }
-        if (_audio_tcb) { heap_caps_free(_audio_tcb); _audio_tcb = nullptr; }
         _task_running = false;
         return false;
     }
@@ -181,7 +184,6 @@ bool PhoneAppAudio::run(void)
     if (h == nullptr) {
         ESP_LOGE(TAG, "Failed to create audio task");
         heap_caps_free(_audio_stack); _audio_stack = nullptr;
-        heap_caps_free(_audio_tcb);  _audio_tcb = nullptr;
         _task_running = false;
         return false;
     }
@@ -232,10 +234,11 @@ bool PhoneAppAudio::close(void)
         vTaskDelete(_task_handle.exchange(nullptr, std::memory_order_acq_rel));
     }
 
-    /* Free static task buffers (xTaskCreateStatic does not free them).
-     * Safe: task has exited (self-deleted or force-killed above). */
+    /* Free PSRAM-allocated stack (xTaskCreateStatic does not free it).
+     * TCB is pre-allocated and reused — not freed here.
+     * Stack is safe to free immediately: FreeRTOS doesn't reference it
+     * after the task exits (idle task only reclaims the TCB). */
     if (_audio_stack) { heap_caps_free(_audio_stack); _audio_stack = nullptr; }
-    if (_audio_tcb)  { heap_caps_free(_audio_tcb);  _audio_tcb = nullptr; }
 
     /* Free recording names */
     for (int i = 0; i < _recording_count; i++) {

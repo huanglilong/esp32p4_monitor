@@ -34,9 +34,12 @@ private:
     /* Audio state */
     std::atomic<TaskHandle_t> _task_handle;
     std::atomic<bool>  _task_running;
-    /* Static task buffers — stack in PSRAM to save internal SRAM (mirrors CameraStream model_load pattern) */
-    StackType_t       *_audio_stack;      /* 12KB, PSRAM */
-    StaticTask_t      *_audio_tcb;        /* small, internal SRAM */
+    /* Static task buffers — stack in PSRAM to save internal SRAM.
+     * TCB is pre-allocated at construction and reused across run/close
+     * cycles (~340B internal SRAM, avoids TCB use-after-free race).
+     * Stack (12KB) is allocated/freed per run/close from PSRAM. */
+    StackType_t       *_audio_stack;      /* 12KB, PSRAM, allocated in run() */
+    StaticTask_t      *_audio_tcb;        /* ~340B, internal SRAM, pre-allocated */
 
     /* Recording state */
     std::atomic<bool>  _is_recording;
