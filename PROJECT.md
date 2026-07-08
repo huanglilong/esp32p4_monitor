@@ -575,6 +575,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 - **客户端断连处理**: `httpd_resp_send_chunk` 失败时 `break` 优雅退出, 避免 `httpd_sock_err` 刷屏。
 - **TCP keep-alive**: 所有 httpd 实例启用 TCP keep-alive (idle=5s, interval=5s, count=3), 防止客户端断连后半开 TCP 连接阻塞 select() 导致 HTTP 服务器不可达。
 - **WiFi 断连 httpd 重启**: Web Config (8080) 检测 WiFi 断连后自动停止 httpd 刷除残留 session, WiFi 恢复后自动重启并重新注册 URI, 防止 EHOSTUNREACH/EAGAIN 导致的 session 泄漏耗尽 `max_open_sockets`。URI 注册提取为 `_register_web_config_uris()` 复用。
+- **lru_purge + 自检看门狗**: Web Config (8080) 原 `lru_purge_enable=false` + `max_open_sockets=3`, 客户端断开 (recv 113/ECONNABORTED) 后 session 被占满, httpd 静默停止 `accept()`, 因 WiFi 未断既有自愈不触发 → 无法重连只能重启。修复: `lru_purge_enable=true` (listen 始终监听) + `max_open_sockets` 3→12 + `web_config_self_probe()` 自检 (每 15s 本地 GET /api/status, 连续 2 次失败重启 httpd)。
 - **LWIP_MAX_SOCKETS 扩容**: 22→28, 3 个 httpd 实例内部占用 17 个 socket, 加 WiFi/mDNS/SNTP 后 22 不足导致 `accept()` 返回 `ENOTSOCK`。
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器在 start() 时直接初始化 (capture task 需要立即使用, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护, 防止并发初始化。
@@ -602,6 +603,8 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 > **已知风险**: 高带宽入站 TCP (>200KB/s) 在 v2.12.7 仍可能触发死锁 (#197)。Camera Stream 为出站 (MJPEG ~98KB/s @ 7fps), 验证稳定。
 
 > **已修复 (2026-07-08)**: 客户端断连后 HTTP 服务器不可达。根因: `LWIP_MAX_SOCKETS=22` 太小 — 3 个 httpd 实例内部占用 17 个 socket (listen+ctrl×2+data), 加上 WiFi/mDNS/SNTP 后, socket 表耗尽导致 `accept()` 返回 `ENOTSOCK` (128), 监听 socket 失效, HTTP 永久不可达。修复: ① `LWIP_MAX_SOCKETS` 22→28 ② 所有 httpd 启用 TCP keep-alive ③ Web Config WiFi 断连自动重启 httpd。
+>
+> **已修复 (2026-07-08)**: Web Config (8080) 客户端断开 (recv error 113 / ECONNABORTED) 后, **WiFi 仍 UP 但无法重新连接**, 只能重启系统。根因: IDF `httpd_server()` 仅在 `lru_purge_enable || httpd_is_sess_available()` 时监听 listen socket (`httpd_main.c:276`)。原配置 `lru_purge_enable=false` + `max_open_sockets=3`, 一旦 3 个 session 被 keep-alive/半开/已断开但残留的 socket 占满, httpd 停止调用 `accept()`, 静默拒绝所有新连接; 而既有自愈逻辑只在 WiFi down→up 触发, 此时 WiFi 未断故永不重启。修复: ① `lru_purge_enable=true` (listen socket 始终被监听, 新连接总是被接受, 自动淘汰 LRU 残留 session) ② `max_open_sockets` 3→12 (给 Web UI 多个 keep-alive 连接留余量) ③ 新增 **自检看门狗** `web_config_self_probe()`: 每 15s 从本任务向 STA IP:8080 发 `GET /api/status`, 连续 2 次失败 (~30s) 则 `httpd_stop()` 重启 httpd 刷除残留 session, 覆盖 httpd 主线程卡死在 handler 等 watchdog 无法检测的场景。
 
 ### 16. 多板支持 (GT911 I2C 自动检测)
 
@@ -755,6 +758,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 - **2026-07-07**: ASP 音频任务栈 8KB 移至 PSRAM (`task_stack_in_ext=true` — GMF 内部用 WithCaps 处理), 共省 **~8 KB**
 - **2026-07-07**: LWIP TCP 缓冲区 65535→32768, httpd `max_open_sockets` 7→3/2/3, 省 pbuf 头部（TCP 窗口最终回退至 32KB 并稳定，见 S175）
 - **2026-07-08**: LWIP_MAX_SOCKETS 22→28 (3 httpd 实例内部占用 17 个 socket, 22 太紧导致 accept() ENOTSOCK), httpd 启用 TCP keep-alive + WiFi 断连重启
+- **2026-07-08**: Web Config (8080) `lru_purge_enable` false→true + `max_open_sockets` 3→12 + 新增 `web_config_self_probe()` 自检看门狗, 修复客户端断开 (recv 113) 后 WiFi 仍 UP 但无法重连的问题
 - **2026-07-08**: SystemMonitor 内存告警阈值 80%→85% (减少 Internal SRAM 误报)
 - **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
 - **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM

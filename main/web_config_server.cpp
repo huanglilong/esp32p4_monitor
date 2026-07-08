@@ -53,6 +53,8 @@
 #include "esp_vfs_fat.h"
 #include "ff.h"
 #include <sys/time.h>
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
 #include "driver/i2s_std.h"
 #include "esp_audio_simple_player.h"
 
@@ -1967,6 +1969,53 @@ static void _register_web_config_uris(httpd_handle_t hd)
 }
 
 /*============================================================================
+ * Self-heal watchdog
+ *============================================================================*/
+/* Probe the HTTP server by connecting to its own STA IP and issuing a tiny
+ * GET. This catches the case where httpd silently stops *accepting* new
+ * connections (e.g. all session slots occupied by stale/aborted sockets with
+ * lru_purge off, or the httpd main thread wedged in a handler) even though the
+ * handle/wifi still report UP. Returns true if the server responds. */
+static bool web_config_self_probe(void)
+{
+    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!sta) return false;
+    esp_netif_ip_info_t ip;
+    if (esp_netif_get_ip_info(sta, &ip) != ESP_OK || ip.ip.addr == 0) return false;
+
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) return false;
+
+    struct timeval to = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port   = htons(WEB_CONFIG_PORT),
+        .sin_addr   = { .s_addr = ip.ip.addr },
+    };
+
+    bool ok = false;
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        const char *req = "GET /api/status HTTP/1.0\r\n\r\n";
+        if (send(fd, req, strlen(req), 0) > 0) {
+            char buf[64];
+            int n;
+            bool got_any = false;
+            /* Drain the entire response (until the server closes with FIN).
+             * Reading only part then close()ing leaves unread data in the
+             * socket, which makes LWIP emit an RST and the server logs
+             * ECONNRESET/ENOTSOCK. Draining avoids that self-inflicted noise. */
+            while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) got_any = true;
+            if (got_any) ok = true;
+        }
+    }
+    close(fd);
+    return ok;
+}
+
+/*============================================================================
  * Task
  *============================================================================*/
 static void web_config_task(void *arg)
@@ -2019,7 +2068,7 @@ static void web_config_task(void *arg)
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
     config.max_uri_handlers = 30;  /* 5 core + 6 audio + 3 file mgr + 5 CORS + 5 ULog + 3 camera_record + 2 system + 1 spare */
-    config.max_open_sockets = 3;   /* Limit concurrent connections (default 7 is excessive for 3 httpd instances) */
+    config.max_open_sockets = 12;  /* Headroom for Web UI keep-alive connections; lru_purge keeps accept() always active */
     config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
                                       stack vars + ESP_LOGI → uart_write → recursive mutex
                                       needs deep call chain; logger vprintf hook adds more */
@@ -2070,6 +2119,7 @@ static void web_config_task(void *arg)
      * Periodically log httpd health and detect WiFi disconnection to prevent
      * stale TCP sessions from blocking the httpd select() loop. */
     int health_log_counter = 0;
+    int probe_fail_count = 0;
     bool prev_wifi_up = true;
     while (s_running) {
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -2092,8 +2142,15 @@ static void web_config_task(void *arg)
             config.server_port = WEB_CONFIG_PORT;
             config.ctrl_port   = WEB_CONFIG_PORT + 1;
             config.max_uri_handlers = 30;
-            config.max_open_sockets = 3;
+            /* Large enough socket pool so the web UI's multiple keep-alive
+             * connections don't exhaust it. */
+            config.max_open_sockets = 12;
             config.stack_size = 8192;
+            /* CRITICAL: keep the listen socket always monitored so new
+             * connections are accepted even when all slots look busy.
+             * Without this, httpd stops calling accept() once max_open_sockets
+             * are occupied (e.g. by stale/aborted half-open sockets) and the
+             * server silently rejects all reconnect attempts until reboot. */
             config.lru_purge_enable = true;
             config.core_id = 0;
             config.keep_alive_enable = true;
@@ -2102,6 +2159,7 @@ static void web_config_task(void *arg)
             config.keep_alive_count = 3;
             if (httpd_start(&s_httpd, &config) == ESP_OK) {
                 _register_web_config_uris(s_httpd);
+                probe_fail_count = 0;
                 ESP_LOGI(TAG, "httpd started successfully");
             } else {
                 ESP_LOGE(TAG, "httpd start failed — will retry next cycle");
@@ -2109,13 +2167,23 @@ static void web_config_task(void *arg)
         }
         prev_wifi_up = wifi_up;
 
-        if (++health_log_counter >= 30) {  /* every 30s */
+        /* Self-heal watchdog: directly probe the HTTP server from this task.
+         * Detects the "handle=UP but can't reconnect" condition that WiFi
+         * transitions don't cover. On sustained probe failure, bounce httpd
+         * so stale sessions are flushed and accept() resumes. */
+        if (wifi_up && s_httpd && ++health_log_counter >= 15) {  /* every 15s */
             health_log_counter = 0;
-            if (s_httpd) {
-                ESP_LOGI(TAG, "httpd health: handle=%p, wifi=%s",
-                         s_httpd, wifi_up ? "UP" : "DOWN");
+            if (web_config_self_probe()) {
+                probe_fail_count = 0;
+                ESP_LOGI(TAG, "httpd health: handle=%p, wifi=UP, probe=OK", s_httpd);
+            } else if (++probe_fail_count >= 2) {  /* ~30s of failures */
+                ESP_LOGW(TAG, "httpd probe FAILED %d times — restarting httpd to recover",
+                         probe_fail_count);
+                httpd_stop(s_httpd);
+                s_httpd = NULL;
+                probe_fail_count = 0;
             } else {
-                ESP_LOGW(TAG, "httpd health: handle=NULL, wifi=%s", wifi_up ? "UP" : "DOWN");
+                ESP_LOGW(TAG, "httpd probe failed (will retry) — handle=%p, wifi=UP", s_httpd);
             }
         }
     }
