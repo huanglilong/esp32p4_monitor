@@ -1348,19 +1348,20 @@ static int _asp_evt(esp_asp_event_pkt_t *pkt, void *_) { (void)_;
 
 /* GET /api/audio/play?file=xxx.mp3 */
 static esp_err_t h_play(httpd_req_t *req) {
-    if(!__audio_init()){ httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
+    audio_lock();
+    if(!__audio_init()){ audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
     char q[256]={},fn[128]={};
-    if(httpd_req_get_url_query_str(req,q,sizeof(q))!=ESP_OK||!strlen(q)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
+    if(httpd_req_get_url_query_str(req,q,sizeof(q))!=ESP_OK||!strlen(q)){ audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     httpd_query_key_value(q,"file",fn,sizeof(fn));
-    if(!strlen(fn)){ httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
+    if(!strlen(fn)){ audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0}"); return ESP_OK; }
     _url_decode(fn);
     char safe[256];
     if (!__path_sanitize(fn, safe, sizeof(safe))) {
+        audio_unlock();
         httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Invalid path\"}");
         return ESP_OK;
     }
     char uri[300]; snprintf(uri,sizeof(uri),"file://%s",safe);
-    audio_lock();
     if (s_fm_busy) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     /* Refuse playback while web recording is active — recording and playback share I2S hardware */
     if (s_is_recording) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Recording in progress\"}"); return ESP_OK; }
