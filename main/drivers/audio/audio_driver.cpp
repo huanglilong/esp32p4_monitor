@@ -85,7 +85,10 @@ void AudioDriver::init(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&pa_conf);
+    esp_err_t ret = gpio_config(&pa_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to config PA GPIO %d: %s", AUDIO_PA_GPIO, esp_err_to_name(ret));
+    }
     gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 1);
     ESP_LOGI(TAG, "PA GPIO %d enabled", AUDIO_PA_GPIO);
 
