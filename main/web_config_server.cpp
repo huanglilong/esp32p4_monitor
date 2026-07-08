@@ -1253,12 +1253,12 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine, &wr); if(d&&wr>0&&f) fwrite(d,1,wr,f); shine_close(s_shine); s_shine=NULL; }
     if (f) fclose(f);
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
-    audio_unlock();
-    /* Copy s_rec_path before unlocking — after audio_unlock(), a concurrent
-     * h_rec_start could overwrite s_rec_path while we're formatting the response. */
+    /* Copy s_rec_path and rec_bytes while still holding the lock — after
+     * audio_unlock(), a concurrent h_rec_start could overwrite s_rec_path. */
     char saved_path[128];
     strlcpy(saved_path, s_rec_path, sizeof(saved_path));
     uint32_t saved_bytes = s_rec_bytes.load(std::memory_order_relaxed);
+    audio_unlock();
     char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", saved_path, (unsigned long)saved_bytes);
     ESP_LOGI(TAG,"Saved: %s (%lu)", saved_path, (unsigned long)saved_bytes);
     httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
