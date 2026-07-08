@@ -228,6 +228,8 @@ typedef struct ulog_writer {
 
     /* Writer task */
     TaskHandle_t  task_handle;
+    StackType_t  *task_stack;          /**< PSRAM-allocated stack (freed on stop) */
+    StaticTask_t *task_tcb;            /**< Internal SRAM TCB (freed on stop) */
     std::atomic<bool> task_should_run{false};
     std::atomic<bool> task_exited{false};  /* Set before vTaskDelete by writer task */
 
@@ -301,6 +303,9 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path,
     writer->log_dir[0] = '\0';
     writer->fd = -1;
     writer->state = ULOG_STATE_IDLE;
+    writer->task_handle = NULL;
+    writer->task_stack = nullptr;
+    writer->task_tcb = nullptr;
     strlcpy(writer->sd_mount_path, sd_mount_path, sizeof(writer->sd_mount_path));
 
     /* Copy config from application */
@@ -450,21 +455,44 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
 
     /* Everything from now on goes through the ring buffer (non-reliable) */
 
-    /* Create the writer task */
+    /* Create the writer task.
+     * Use xTaskCreateStatic with PSRAM-allocated stack to conserve
+     * internal SRAM — xTaskCreate would allocate the 8KB stack from
+     * scarce internal memory, which fails when LVGL + LWIP consume
+     * most of it. PSRAM on ESP32-P4 is DMA-capable and suitable for
+     * task stacks. */
 #ifndef CONFIG_ULOG_TASK_STACK_SIZE
 #define CONFIG_ULOG_TASK_STACK_SIZE 8192
 #endif
+    writer->task_exited.store(false, std::memory_order_release);
+    writer->task_stack = (StackType_t *)heap_caps_malloc(
+        CONFIG_ULOG_TASK_STACK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    writer->task_tcb = (StaticTask_t *)heap_caps_malloc(
+        sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!writer->task_stack || !writer->task_tcb) {
+        ESP_LOGE(TAG, "Failed to allocate writer task buffers (stack=%p, tcb=%p)",
+                 writer->task_stack, writer->task_tcb);
+        if (writer->task_stack) { heap_caps_free(writer->task_stack); writer->task_stack = nullptr; }
+        if (writer->task_tcb)  { heap_caps_free(writer->task_tcb);  writer->task_tcb = nullptr; }
+        close(writer->fd);
+        writer->fd = -1;
+        writer->state = ULOG_STATE_ERROR;
+        return ESP_FAIL;
+    }
     writer->task_should_run.store(true, std::memory_order_release);
-    BaseType_t ret = xTaskCreate(
+    writer->task_handle = xTaskCreateStatic(
         writer_task_func,
         "ulog_writer",
-        CONFIG_ULOG_TASK_STACK_SIZE,  /* from Kconfig, default 8KB */
+        CONFIG_ULOG_TASK_STACK_SIZE,
         writer,      /* arg */
         5,           /* priority */
-        &writer->task_handle
+        writer->task_stack,
+        writer->task_tcb
     );
-    if (ret != pdPASS) {
+    if (writer->task_handle == NULL) {
         ESP_LOGE(TAG, "Failed to create writer task");
+        heap_caps_free(writer->task_stack); writer->task_stack = nullptr;
+        heap_caps_free(writer->task_tcb);  writer->task_tcb = nullptr;
         close(writer->fd);
         writer->fd = -1;
         writer->state = ULOG_STATE_ERROR;
@@ -504,6 +532,11 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
         }
         writer->task_handle = NULL;
     }
+
+    /* Free static task buffers (xTaskCreateStatic does not free them).
+     * Safe: task has exited (self-deleted or force-killed above). */
+    if (writer->task_stack) { heap_caps_free(writer->task_stack); writer->task_stack = nullptr; }
+    if (writer->task_tcb)  { heap_caps_free(writer->task_tcb);  writer->task_tcb = nullptr; }
 
     /* Drain remaining ring buffer data to file.
      * Skip if writer was force-killed (mutex may be locked). */
