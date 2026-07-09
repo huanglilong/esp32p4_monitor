@@ -1,9 +1,9 @@
 # ESP32-P4 Monitor — 项目需求文档
 
-> 生成日期: 2026-07-02 | 基于 PROJECT.md、project_design.md 及历史会话分析
+> 生成日期: 2026-07-02 | 基于 PROJECT.md 及历史会话分析
 > 代码仓库: [gitee.com/huanglilong/esp32p4_monitor](https://gitee.com/huanglilong/esp32p4_monitor)
 >
-> 本文档记录项目需求、用户想法、已知限制和未来计划。随着项目迭代持续更新。
+> 本文档是**需求、已修复问题登记 (R/S/M) 与变更记录**的唯一参考。软件/架构/实现细节见 [PROJECT.md](PROJECT.md)，硬件规格见 [README.md](README.md)。随项目迭代持续更新。
 
 ---
 
@@ -327,6 +327,7 @@
 
 | # | 需求 | 说明 | 阻塞因素 |
 |---|------|------|----------|
+| P0 | **Camera Stream + Music 播放卡顿** (S235) | Camera Stream 运行时 Music 播放卡顿。v0.0.3 正常，commit 7ca67cd 不正常。回归范围 v0.0.3..7ca67cd (TCB 预分配、task stack/优先级、SRAM 优化相关改动)。需 git bisect 定位引入回归的 commit，排查 CPU/I2S DMA 调度冲突或 PSRAM 带宽竞争 | 待 git bisect 定位 |
 | P1 | **720×720 自定义样式表** | 当前使用默认回退方案，UI 一致性不佳 | 需设计 ESP-Brookesia 样式 |
 | P2 | **WIFI6 无屏配网** | 首次启动 NVS 为空时需要配网方案 | esp-hosted SDIO 不支持稳定 SoftAP (#197) |
 
@@ -375,13 +376,13 @@
 | L6 | **PPA client 注册未使用** | 307KB PSRAM 占用，可优化 |
 | L7 | **esp-dl mbedtls/sha256.h 兼容 shim** | ESP-IDF v6.x (mbedtls 4.x) 将 `sha256.h` 移至 `mbedtls/private/`，`managed_components/espressif__esp-dl` 未更新。当前方案: `main/compat/mbedtls/sha256.h` 转发头 + CMake include path。下次升级 esp-dl 后应移除 |
 
-### 4.3 已知未修复问题（来自 project_design.md 分析）
+### 4.3 已知未修复问题（架构审查遗留）
 
 | # | 严重度 | 问题 | 原因 |
 |---|--------|------|------|
 | K1 | ✅ 已修复 | **Camera 帧缓冲跨核并发** | 分配私有 `_detect_in_buf`, mutex 内 memcpy 后释放再推理 (S110) |
 | K2 | 🟢 低 | Audio 无用的 PSRAM 分配 (1920B) | 开销极小 |
-| K3 | 🟢 低 | Music 部分低优先级边界情况 | 见 project_design.md §4.10 |
+| K3 | 🟢 低 | Music 部分低优先级边界情况 | `_play()` 参数未验证、`run()` 中 UI 对象先于 player 创建等边界情况 |
 | K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已移除** | Camera (MIPI CSI) 和 Audio (I2S) 使用独立硬件，无需互斥。所有 `__cam_running()` 检查已移除 |
 | K5 | 🟢 低 | CameraStream/web_config_server 大文件模块化 | 单文件超 1800/87KB，可拆分为独立模块 (V4L2Pipeline, AudioRecorder, WiFiManager 等)。部分已提取辅助方法 (S159) |
 | K6 | 🟢 低 | Logger 重入风险 | esp_log_set_vprintf 回调中调用 ESP_LOG 可能递归 |
@@ -447,6 +448,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-09 | **文档整合**: 合并 `project_design.md` 至 PROJECT.md (FreeRTOS 任务调度表 + 模块管道图) 并删除；消除三份文档间的架构/修复记录冗余。分工明确: README=硬件, PROJECT=软件/架构/实现, PROJECT_REQUIREMENTS=需求/修复登记/变更记录。P0 新增 Camera Stream + Music 卡顿 (S235) |
 | 2026-07-08 | +S219~S232 代码审查 Round 2 修复 (14 个 CRITICAL/HIGH/MEDIUM): CameraStream model load 早期退出信号(S219), s_sntp_synced volatile→atomic(S220), s_audio_task TaskHandle→atomic(S221), _wifi_scan_task TaskHandle→atomic(S222), PhoneAppAudio _task_handle→atomic(S223), AudioDriver gpio_config 返回值检查(S224), Logger vTaskDelete 过期句柄(S225), g_has_lcd volatile→atomic(S226), _wifi_connect_task TaskHandle→atomic(S227), PeripheralManager _has_lcd→atomic(S228), s_rec_pub orb_advert_t→atomic(S229), h_play __audio_init 锁顺序(S230), h_rec_stop s_rec_path 竞态(S231), ULog writer task PSRAM 栈(S232) |
 | 2026-07-09 | +S235~S240 代码审查 Round 3 修复 (6 个 HIGH/MEDIUM): LLM API key 明文暴露(S235), IM/LLM handler Content-Length 无验证(S236), CameraStream _detector atomic UAF(S237), WeChat/LLM handler cJSON NULL + token 暴露(S238), PhoneAppCamera _v4l2_buf_count 未截断(S239), PhoneAppAudio _stop_recording UAF(S240) |
 | 2026-07-09 | +S236 **ULog header timestamp 修复**: `write_file_header()` 写入 UTC 绝对时间但 PX4 规范要求 µs since boot，导致 `ulog_info` 显示错误 start time (`495425:08:53`) 和 duration (`0:00:00`)。修复: header timestamp 改用 `esp_timer_get_time()`，移除 UTC 转换逻辑 |
@@ -482,7 +484,7 @@
 | 2026-07-06 | +S149~S152 SystemMonitor 代码审查修复: CPU% 双核修正 (wall-clock→sum_task_delta), TOP_N 编译错误 (fields[6]), _task_handle 竞态, _prev_tasks 泄漏 |
 | 2026-07-06 | +S153~S154 SystemMonitor IDLE 排除 + 单核兼容: total_cpu_pct 改为 busy CPU% (排除 IDLE 任务), top-N 排除 IDLE, ×2→configNUMBER_OF_CORES |
 | 2026-07-06 | +K5~K7 Code duplication in stream_handler (LOW), logger reentrancy (LOW), web s_audio_running race (LOW) — deferred |
-| 2026-07-02 | 初始创建，汇总 PROJECT.md + project_design.md 中所有需求和问题 |
+| 2026-07-02 | 初始创建，汇总 PROJECT.md 及历史架构分析中所有需求和问题 |
 | 2026-07-02 | +R15 R16 R17 Web 音频录制/播放 + Camera Stream 互斥需求 |
 | 2026-07-02 | +S28~S34 Web 音频稳定性修复 (懒加载、URL解码、JS修复、ASP生命周期等) |
 | 2026-07-02 | +S35 WIFI6 音频修复: I2C地址修正 0x18→0x30, 单handle (BOTH+IN_OUT) 匹配参考固件 |

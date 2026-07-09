@@ -1,6 +1,8 @@
 # ESP32-P4 Monitor Project Setup
 
-> 📋 架构分析 & 潜在问题: 参见 [project_design.md](project_design.md)
+> 📋 本文档是**软件/架构/实现**的唯一参考 (含硬件平台、驱动架构、FreeRTOS 任务调度、各模块实现细节)。
+> 📋 需求清单、已修复问题登记 (R/S/M 列表) 与变更记录见 [PROJECT_REQUIREMENTS.md](PROJECT_REQUIREMENTS.md)。
+> 📋 硬件接线与规格见 [README.md](README.md)。
 
 ## 项目概述
 基于 ESP32-P4 + Waveshare ESP32-P4-WiFi6-Touch-LCD-4B 开发板的综合监控项目,集成:
@@ -198,7 +200,51 @@ SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独
 - CameraDriver 的 `claim(caller_id)/release(caller_id)` 替代了 CameraStream/PhoneAppCamera 中直接发布 camera_state uORB 的代码
 - `claim()` 支持 owner tracking: 同一 caller_id 可重入, 不同 caller_id 互斥 (防止 CameraStream 运行时 Camera App 误操作 V4L2)
 
-## FreeRTOS 任务列表
+## FreeRTOS 任务调度
+
+### 任务总表
+
+| # | 任务名 | 优先级 | 栈 | 核心 | 创建者 | 生命周期 | 周期/触发 |
+|---|--------|--------|-----|------|--------|----------|-----------|
+| 1 | `main` | 1 (默认) | 10KB | 0 | ESP-IDF | **一次性** — setup 后 `vTaskDelete(NULL)` 回收 | — |
+| 2 | `taskLVGL` | 4 | 10KB | 1 | `esp_lvgl_port` | 永久 | 20ms timer |
+| 3 | `audio_echo` | 5 | 12KB (PSRAM) | 0† | `PhoneAppAudio::run()` | App 打开→关闭 | 10ms 循环 |
+| 4 | `detect` | 2 | 16KB (PSRAM) | 0 (固定) | `PhoneAppCamera` (已移除, 检测迁至 CameraStream) | — | — |
+| 5 | `GMF task` | 5 | 8KB (PSRAM) | 0 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
+| 6 | `wifi_scan` | 1 | 6KB | 0† | `Settings` (WiFi ON) / Boot | WiFi ON→OFF | 500ms 轮询 |
+| 7 | `wifi_conn` | 4 | 4KB | 0† | `Settings` (连接点击) | 一次性 | 15s 超时 |
+| 8 | `httpd:80` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 |
+| 9 | `httpd:81` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 (MJPEG) |
+| 10 | `capture_task` | — | PSRAM | 0 | `CameraStream::start()` | Stream 打开→关闭 | DQBUF→encode→publish |
+| 11 | `web_config` | 1 | 4KB | 0 (固定) | `web_config_server_start()` | 永久 | 1s 空闲 + HTTP 事件 |
+| 12 | `w_audio` | 1 | 12KB (PSRAM) | 0 (固定) | `web_config_server` (录音时) | 录音→停止 | 100ms 循环 (I2S read) |
+| 13 | `model_load` | 1 | 8KB (PSRAM) | 0† | `CameraStream::_init_detection()` | 一次性 | 模型加载后 `vTaskDelete(NULL)` |
+| 14 | `sys_monitor` | 1 | 可配置 | — | `SystemMonitor::start()` | 永久 | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` |
+| 15 | `ulog_writer` | 1 | 8KB (PSRAM, 静态 TCB) | — | `ulog_writer_start()` | Start→Stop | ring buffer 消费 |
+| 16 | `logger` | — | — | — | `logger_init()` | 永久 | ring buffer → SD 文本文件 |
+
+> † 使用 `xTaskCreate` (未指定核心), FreeRTOS 调度到 core 0 或 core 1
+
+### 优先级与核心亲和性
+
+```
+Priority 5: audio_echo, GMF task     (最高 — 实时音频, PCM 不丢失)
+Priority 4: taskLVGL, wifi_conn      (UI 渲染 / WiFi 连接)
+Priority 2: detect                   (NPU 检测, 不抢占 UI)
+Priority 1: main, wifi_scan, web_config, w_audio, model_load, sys_monitor, ulog (后台/辅助)
+```
+
+| 核心 | 任务 |
+|------|------|
+| **Core 0** | `main` (一次性), `audio_echo`, `GMF`, `wifi_scan/conn`, `httpd:80/81`, `capture_task`, `web_config`, `w_audio`, `model_load` |
+| **Core 1** | `taskLVGL` (固定) |
+
+- Core 1 专用于 LVGL 渲染, 避免 UI 抖动 (S176: httpd 3 实例绑定 core 0, LVGL timer 5→20ms)。
+- Core 0 承载所有计算密集型任务 (音频编码, 协议栈, HTTP, NPU 推理)。
+- 多数大栈任务 (audio/GMF/model_load/ulog/detect) 栈分配在 PSRAM, TCB 留 Internal SRAM (见 SRAM 优化)。
+- `main` setup 完成后 `vTaskDelete(NULL)` 释放 ~4KB 栈和 TCB。
+
+## 引脚分配
 
 ### MIPI DSI (2-lane) — 专用接口引脚
 
@@ -360,7 +406,21 @@ GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (
 
 ### 6. Camera App 实现
 
-`PhoneAppCamera` 继承 `ESP_Brookesia_PhoneApp`，主要技术细节:
+`PhoneAppCamera` 继承 `ESP_Brookesia_PhoneApp`，纯预览应用 (检测已迁移至 CameraStream)。
+
+**CSI+ISP 预览管道**:
+```
+OV5647 Sensor → MIPI CSI (RAW8, 800×800) → ISP (RAW8→RGB565, byte_swap=1) → PSRAM Buffer
+                                                                                   ↓
+                                                                    LVGL Canvas (800×800) → Display (720×720 裁剪)
+```
+
+**资源清理顺序** (关键 — 必须严格遵守, 否则 CSI 控制器泄漏导致二次打开失败):
+```
+Sensor: stop stream → del_dev  →  SCCB: del_i2c_io  →  CSI: stop → disable → del  →  ISP: disable → del_processor  →  Buffer: free
+```
+
+主要技术细节:
 
 | 项目 | 配置 |
 |------|------|
@@ -509,6 +569,11 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 ```
 
 ### 11. Music App LVGL 线程安全修复
+
+**播放管道**:
+```
+SD Card (.mp3/.wav) → GMF File IO → GMF Audio Pipeline (解码) → _asp_output_cb() → ES8311 Codec (I2S TX, 48kHz 16bit Stereo) → Speaker (PA GPIO53 HIGH)
+```
 
 **问题**: 播放完一首歌后 GMF 音频管道回调 `_asp_event_cb` (运行在 GMF task, priority 5) 直接调用 `_next()` → `_play()` 更新 LVGL UI (`lv_label_set_text` 等)。如果此时 `taskLVGL` (priority 4) 正在渲染 (`lv_timer_handler`), 高优先级的 GMF task 会抢占并调用 `lv_inv_area()`, 触发 LVGL 断言 `!disp->rendering_in_progress` → 系统崩溃。
 
@@ -794,134 +859,11 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-## 待完成事项
-- [x] Camera App 框架 (PhoneAppCamera 类 + CSI/ISP + OV5647 Sensor Init)
-- [x] Audio App 框架 (PhoneAppAudio 类 + 双 Mic 电平监控)
-- [x] ES7210 ADC 初始化 + Mic Gain 配置
-- [x] Camera App 打开/关闭/重新打开 生命周期
-- [x] CSI/ISP 正确释放 (stop→disable→del 顺序)
-- [x] Camera 在 LCD 显示有问题, 红色显示成绿色 — 修复: ISP `byte_swap_en=1`
-- [x] Camera App 关闭后重新挂载 SD 卡
-- [x] **Camera App 人体检测 (ESP-DL + YOLO11n 320x320 ≈ 1.8fps)** — 已迁移至 CameraStream, Camera App 改为纯预览
-- [x] **Camera App 迁移到 V4L2 (esp_video) 统一接口**
-- [x] **Camera Stream WiFi 推流 (HTTP MJPEG + mDNS)**
-- [x] **Camera Stream App 独立分离 + Web UI 优化 + HW JPEG 编码**
-- [x] **Settings App Camera Stream toggle 移除 (迁移到独立 App)**
-- [x] **esp_hosted 降级至 v2.12.7 + SDIO 稳定性配置**
-- [x] **Settings App WiFi 静态成员修复 (跨实例持久化)**
-- [x] **CPU/PSRAM 实时监控日志 (1s 间隔, FreeRTOS 运行时统计)**
-- [x] **SD/音频延迟初始化 + 引用计数**
-- [x] **esp_cam_sensor 升级 1.7.0 → 2.2.0**
-- [x] **多板支持: GT911 I2C 自动检测 LCD-4B / WIFI6，单一固件**
-- [x] **Web 配置服务器 (端口 8080, WiFi/音量网页设置, connect-before-save)**
-- [x] **WiFi 门控启动: web_config_task 等待 STA_GOT_IP 才启 HTTP**
-- [ ] 自定义 720x720 ESP-Brookesia 样式表
-- [x] **Camera App 回放/录制功能**
-- [x] Camera Frame ULog 录制 (JPEG 帧通过 camera_frame uORB topic 写入 .ulg 文件, Web API 控制)
-- [x] **pyulog 兼容性**: 采用 PX4 `o_size_no_padding` 方案修复。pyulog 1.2.3 在 `_MessageAddLogged.__init__` 中先移除 trailing `_padding` 字段再计算 `max_data_size`，导致 `max_data_size < sizeof(struct)`，所有含 padding 的 topic 被 pyulog 标记为 data corruption。修复：1) `orb_metadata` 新增 `o_size_no_padding` 字段 (PX4 惯例)；2) ULog writer DATA 消息使用 `o_size_no_padding` 代替 `o_size`，不写尾部 padding 字节 (ULog 规范明确允许)；3) `msg_gen.py` format string 使用 `.msg` 声明顺序（与 C struct 一致）+ 显式 `_padding` 字段，确保 pyulog 计算的字段偏移与二进制数据匹配。`tools/ulog_extract_frames.py` 仍可用作备用工具。
-- [ ] **WIFI6 无屏配网**: 首次启动 NVS 为空时需要 WiFi AP 模式配网。当前 esp-hosted SDIO 不支持稳定 SoftAP (客户端连接时 SDIO 缓冲区溢出 → C6 崩溃)。需修复 C6 SDIO 驱动或通过其他方式配网（UART CLI / BLE provisioning）。**当前假定 NVS 已有 WiFi SSID/密码**。
-- [x] Audio App Speaker 输出功能 (需解决回声消除)
-- [x] Audio App MP3 录音 (Shine encoder, SD 卡)
-- [x] Music App LVGL 线程安全 (GMF 回调加 lvgl_port_lock)
-- [x] Settings App LVGL 线程安全 (wifiConnectTaskHandler 加 bsp_display_lock)
-- [x] **字体裁剪**: 仅保留实际使用的 8 种字体 (10/12/14/18/20/22/24/28), 回收 ~560KB Flash
-- [x] **SD LDO 句柄泄漏**: monitor_init_sdcard() 中 LDO handle 改为静态变量, deinit 时释放
-- [x] **SD 常驻挂载**: boot 时挂载后永不下电, SDCardDriver init-once + idempotent, deinit no-op
-- [x] **SD 两板统一 SDSPI**: LCD-4B 改用 SDSPI (BSP SDMMC 与 C6 SDIO host ctrl 冲突), LDO4 由 BSP 管理
-- [x] **VFS_MAX_COUNT=16**: SD 常驻占用 1 VFS 槽位, camera ISP+CSI 需要 2 槽位, 原 8 不够
-- [x] **Camera ISP init retry**: 同时清理 /dev/video0 + /dev/video20, 增加诊断日志
-- [x] **Camera Stream stop 修复**: _running=false 移到 httpd_stop 之前, stream handler 先退出循环
-- [x] **CORS 预检**: Web Config Server 添加 OPTIONS 处理器, 修复浏览器跨域 POST 请求
-- [x] **WiFi 扫描优化**: 扫描任务空闲轮询从 200ms 降到 500ms
-- [x] **Web 音频录制/播放**: web_config_server 增加录音 (Start/End, Shine MP3 → SD) 和播放 (esp_audio_simple_player) 功能, Camera Stream 未运行时可用
-- [x] **Web File Manager**: SD 卡文件浏览器 (list/download/delete)，与 Audio Recorder 模式互斥
-- [x] **音频录制↔播放互斥** (v2):
-  - **分析结论**: Camera Stream 和音频使用独立硬件(MIPI CSI vs I2S), 不需要互斥
-  - **实现**: PhoneAppAudio 录制开始/停止时通过 uORB `recording_state` 发布状态
-  - **PhoneAppMusic**: 订阅 `recording_state`, 录制中自动停止播放并阻止播放启动
-- [x] **Web Camera Stream 解除 LCD-4B 限制** (v2):
-  - 之前: LCD-4B 板 Web UI 上 Camera Stream 开关被禁用, 提示 "Use Camera Stream App on the display"
-  - 现在: LCD-4B 与 WIFI6 一致, Web UI 和显示屏 App 均可控制 Camera Stream
-  - 修改: `web_config_server.cpp` 中移除所有 `g_has_lcd` 对 camera stream 的限制条件
-- [x] **Camera Stream 和 Web Audio 不再互斥** (v2):
-  - 硬件分析: Camera 使用 MIPI CSI (专用引脚), Audio 使用 I2S (GPIO 9-13), 完全独立硬件
-  - 移除所有 `__cam_running()` 对 audio handler 的阻断 (6 处)
-  - 移除 `__audio_stop_all()` 函数和 `camera_state` uORB 订阅
-  - Web UI: 移除 `audio_card` 根据 `cam_running` 隐藏的 JS 逻辑, Camera Stream 和 Audio 页面可同时存在
-  - 显示屏 Camera Stream App 开关状态与 `CameraStream::isRunning()` 同步
-- [x] **CameraStream 内联人体检测** (v2.2):
-  - CameraStream 在 MJPEG stream_handler 中每 3 帧运行 COCODetect 推理
-  - 检测框直接绘制在 JPEG 帧上 (RGB565 buffer → draw box → JPEG encode)
-  - 模型在后台 task 加载，不阻塞 stream 启动
-  - 与 PhoneAppCamera 共享相同的 COCODetect 模型和阈值 (Camera App 已移除检测, 现仅 CameraStream 运行)
-- [x] **Web Audio 录制↔播放互斥补全** (v2.1):
-  - **问题**: 之前的录制↔播放互斥仅在 PhoneAppAudio → PhoneAppMusic 方向生效, Web 服务器的录制和播放相互不知情
-  - **修复**:
-    - `web_config_server.cpp`: 新增 `s_rec_pub` uORB publisher, `h_rec_start` 发布 `recording_state.active=true`, `h_rec_stop` 发布 `active=false`
-    - `h_rec_start`: 开始录制前先停止 web 播放 (`s_asp`/`s_playing`)
-    - `h_play`: 检查 `s_is_recording`, 录制中拒绝播放
-    - `phone_app_audio.cpp`: `~PhoneAppAudio()` 和 `close()` 中重置 `_rec_pub`
-    - `phone_app_music.cpp`: `~PhoneAppMusic()` 中清理 `_rec_sub` 和 `_rec_check_timer` (防御性)
-- [x] **ULog Writer NUL 终止符修复** (v2.1):
-  - **问题**: ULog Writer 在 Format、Subscription (ADD_LOGGED_MSG)、Info、Logging 消息中错误地包含了 C 字符串的 NUL 终止符 (`\0`)。ULog 规范明确规定 "Strings (`char[length]`) do not contain the termination NULL character `'\0'` at the end"。pyulog 解析时 `parse_string()` 保留 NUL 字节,导致 Subscription 消息的 `message_name` 变为 `'fps_stats\x00'`,而 Format 消息的 `name` 为 `'fps_stats'`(NUL 在冒号后的字段末尾被 split 隔离),造成 `KeyError: 'fps_stats\x00'`。
-  - **修复**: 移除所有 ULog 字符串字段中的 NUL 终止符,与 PX4 参考实现 (PX4-Autopilot logger module) 保持一致:
-    - `write_format_messages()`: `msg_total = fmt_len` (原 `fmt_len + 1`)
-    - `write_subscription_messages()`: `payload_size = 1 + 2 + name_len` (原 `+1` for NUL), `memcpy` 不含 NUL
-    - `write_info_str()`: `payload = 1 + key_len + val_len` (原 `+1`), `char[N]` 中 N 改为 val_len(不含 NUL), `memcpy` 不含 NUL
-    - `ulog_writer_write_message()`: `total_size = ULOG_MSG_HEADER_LEN + 9 + msg_len` (原 `+1`)
-  - **参考**: PX4 ULog File Format Spec — https://docs.px4.io/main/en/dev_log/ulog_file_format.html
-- [x] **ULog Info Git 版本信息** (v2.1):
-  - 新增 `ulog_git_info_t` 结构体和 `ulog_writer_set_git_info()` API, 将 git branch/commit/author/date/message 从应用层传入 ULog 组件
-  - ULog Info 消息新增 5 个键: `ver_sw_branch` (PX4 标准键), `ver_sw_commit`, `ver_sw_author`, `ver_sw_date`, `ver_sw_msg`
-  - `main.cpp` 在 `ulog_writer_init()` 后调用 `ulog_writer_set_git_info()` 传入 `git_info.h` 中的宏
-- [x] **并发安全修复** (v2.2):
-  - **AudioDriver::deinit() 竞态条件** (High): deinit() 释放 _lifecycle_mutex 10ms 等待 in-flight 操作退出期间, 并发 init() 可创建新 I2S/codec 资源变为孤儿泄漏。修复: 移除 _lifecycle_mutex 释放窗口, 始终持有锁; _codec_mutex 置 null 后 in-flight op 会跳过
-  - **NVS cache 数据竞争** (Medium): s_nvs_cache_count++ 在 HTTP/audio/WiFi 多 task 间无同步访问, Xtensa 双核上非原子 read-modify-write 是 UB。修复: 新增 s_nvs_cache_mutex (FreeRTOS mutex) 保护 nvs_cache_find_locked() 和 cache 读写
-  - **Logger ring buffer 活锁** (Medium): 缓冲区满时 producer retry loop 检测到空间但不发 data_sem, writer task 等 500ms 超时才唤醒。修复: retry loop 退出后 xSemaphoreGive(data_sem) 唤醒 writer
-- [x] **线程安全审查修复** (v2.3):
-  - **JPEG encoder init race** (S123): `_encoder_init_in_progress` atomic flag 防止双客户端并发初始化
-  - **uORB orb_init() 幂等竞态** (S124): 移除幂等检查改为 assert, 必须在 app_main 任务创建前调用一次
-  - **uORB subscriber ABA 保护** (S125): generation counter 防止 slot 复用后消息投递到错误订阅者
-  - **Settings bool atomic** (S126): `_wifi_scanning`/`_wifi_connecting`/`_is_ui_del` → `std::atomic` 跨 task 安全
-  - **AudioDriver _vol_pub atomic** (S127): `std::atomic<orb_advert_t>` + `compare_exchange_strong()` 单次广播
-  - **CameraStream _frame_count/_fps_total_bytes** (S128): `volatile` → `std::atomic` 正确跨核内存序
-  - **SDCardDriver _initialized atomic** (S129): `available()` 无锁读取线程安全
-  - **AudioDriver _volume atomic** (S130): `volume()` 无锁读取线程安全
-  - **CameraDriver mutable _sub** (S131): 移除 `const_cast`, 保持 const 正确性
-  - **CameraDriver owner-tracked claim/release** (S127): `claim(caller_id)/release(caller_id)` 支持 owner tracking, 同 caller_id 可重入, 不同 caller_id 互斥
-  - **Music 播放失败清理** (S128): `_play()` 失败时销毁半初始化 ASP handle + UI 复位
-  - **Brookesia 初始化失败清理** (S129): 失败时删除临时 `ESP_Brookesia_Phone` 对象
-- [x] **代码质量与模块化改进** (v2.4):
-  - **volatile → std::atomic 迁移**: PhoneAppAudio/Music/Camera 和 web_config_server 中所有 `volatile bool/int/uint32_t` 替换为 `std::atomic<bool/int/uint32_t>`，双核 ESP32-P4 上 `volatile` 不保证原子性和内存序
-  - **CameraStream stop() CAS 保护**: `stop()` 使用 `compare_exchange_strong()` 防止并发双重清理，匹配 `start()` 的模式
-  - **CameraStream _jpeg_quality atomic**: HTTP API handler 和 stream handler 跨核访问的 JPEG 质量改为 `std::atomic<uint8_t>`
-  - **PhoneAppCamera _cleanup_camera_init 防护**: 添加 `_video_initialized` 检查，避免未初始化时调用 `example_video_deinit()`
-  - **NVS 共享键定义**: NVS 命名空间和键 (`NVS_NAMESPACE_SETTINGS`, `NVS_KEY_*`) 统一定义在 `example_config.h`，消除跨文件重复
-  - **MAX_TRACKS 去重**: 移除 `phone_app_music.cpp` 中重复的 `#define MAX_TRACKS 50`
-  - **I2S/SD SPI 引脚宏化**: AudioDriver 中 I2S GPIO 和 SDCardDriver 中 SPI GPIO 改用 `example_config.h` 宏 (`AUDIO_I2S_*`, `AUDIO_PA_GPIO`, `SD_SPI_*`)
-  - **Logger 丢弃策略优化**: 缓冲区满时立即丢弃日志行，替代 100ms 轮询等待，避免阻塞 LVGL/WiFi 任务
-  - **Logger volatile→atomic 迁移** (S170): `writer_running`/`writer_exited` 从 `volatile bool` 迁移为 `std::atomic<bool>`
-  - **web s_rec_bytes atomic** (S171): 录音字节数从 `uint32_t` 改为 `std::atomic<uint32_t>`，消除 audio_task 与 HTTP handler 间数据竞态
-  - **SystemMonitor stop() eTaskGetState 竞态** (S172): 用 `_task_exited` atomic flag 替代 `eTaskGetState()`，轮询超时基于 `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` 确保覆盖完整任务周期
-  - **bsp_i2c_get_handle 声明去重** (S173): 移除 audio_driver.cpp/camera_stream.cpp 中的重复 `extern "C"` 声明，统一定义在 `example_config.h`
-  - **AudioDriver PA GPIO 宏化** (S174): `gpio_config_t` 中 `(1ULL << 53)` 替换为 `(1ULL << AUDIO_PA_GPIO)`
-  - **TCP 窗口/发送缓冲调整** (S175): TCP SND_BUF/WND 从 32KB 增至 64KB (减少 SDIO 小包竞争) → 后回退至 32KB。**注意**: 64KB 超出未开启窗口缩放时 Kconfig 的上限 65535，若需 >65535 必须同时开启 `CONFIG_LWIP_WND_SCALE=y` + `CONFIG_LWIP_TCP_RCV_SCALE≥1`，否则 clean rebuild 时会被静默钳制为 lwIP 默认 5760。最终选择 32KB (32768)，在 Kconfig range 2440~65535 内无需 WND_SCALE
-  - **Core 负载均衡** (S176): httpd 3 实例绑定 Core 0 (core_id=0)，LVGL timer 周期 5→20ms，降低 Core 1 负载
-  - **CameraStream stream_handler 重构**: 提取 `_draw_detection_boxes_on_ppa()`, `_draw_detection_boxes_on_rgb565()`, `_send_mjpeg_part()`, `_save_jpeg_snapshot()`, `_update_fps_stats()` 辅助方法，减少代码重复
-- [x] **HTTP 服务器不可达修复** (S177): 客户端断连后 HTTP 服务器永久不可达。根因: `LWIP_MAX_SOCKETS=22` 太小 — 3 个 httpd 实例内部占用 17 个 socket (listen+ctrl×2+data each)，加上 WiFi/mDNS/SNTP 后 socket 表耗尽导致 `accept()` 返回 `ENOTSOCK (128)`。修复: ① `LWIP_MAX_SOCKETS` 22→28 ② 所有 httpd 启用 TCP keep-alive (idle=5s, interval=5s, count=3) ③ Web Config WiFi 断连自动停止 httpd + WiFi 恢复后自动重启并重新注册 URI ④ 提取 `_register_web_config_uris()` 复用
-- [x] **SystemMonitor 内存告警阈值提升** (S178): `CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT` 从 80% 提升至 85%，减少 Internal SRAM 误报 (LVGL + LWIP 常态占用 ~70%)
-- [x] **Flutter ULog 视频查看器** (S179): 新增 `ulog_parser.dart` (移植 Python ULog 解析器到 Dart) + `ulog_viewer_screen.dart` (下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图网格，幻灯片播放，键盘导航，InteractiveViewer 缩放，单帧/全帧保存)；Settings 页 .ulg 文件可点击查看 + "Open Local .ulg" 按钮扫描本地已下载文件
-- [x] **Flutter filesDownload 可靠性修复** (S180): 移除 `_isChunkedBody` 自动检测 (非 chunked 下载误判)，仅当 `Transfer-Encoding: chunked` 头存在时 dechunk (RFC 7230)；O(n²) `rawBuf.toBytes().length` 替换为 int 计数器；HTTP/1.0 超时 30s→10s
-- [x] **SRAM 优化: 禁用 EAP + DVP** (S216): ① `CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n` — 项目仅用 WPA2-PSK，EAP 未使用，禁用后节省 ~1.1 KB IRAM + ~21 KB PSRAM 代码 (tfpsacrypto) ② `CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n` — 此板仅用 MIPI CSI，DVP 驱动未使用。DIRAM 总节省 1,114 bytes (1.1 KB)，External RAM 节省 21,600 bytes (21.1 KB)
-- [x] **Non-detection JPEG QBUF 延迟** (S181): 非检测帧 JPEG sensor 路径 QBUF 在消费者完成前发出，V4L2 buffer 可能被驱动覆写。修复: 与检测帧路径统一，JPEG sensor 延迟 QBUF 至所有消费者完成；CPU fallback 编码后立即 QBUF (jpeg_data 已独立于 V4L2 buffer)
-- [x] **AudioDriver deinit mutex 竞态** (S182): `deinit()` 用 10ms 延时等待 in-flight codec 操作，但 `set_volume`/`set_mic_gain` 可持锁 100ms，mutex 可能在 in-flight 操作仍持有时被删除。修复: 新增 `_codec_ops_in_flight` 原子计数器，codec 操作入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
-- [x] **Logger deinit mutex 竞态** (S183): `logger_deinit()` 用 10ms 延时等待 in-flight `_logger_push`，但可持 `buf_mutex` 100ms。修复: 新增 `push_in_flight` 原子计数器，`_logger_push` 入口递增/出口递减，`deinit()` 轮询等待计数归零 (最长 1s) 后再删除 mutex
-- [x] **ULog 文件 header timestamp 错误** (v2.5):
-  - **问题**: `ulog_info` 显示 start time `495425:08:53`、duration `0:00:00`。根因: `write_file_header()` 写入 UTC 绝对时间 (或 `boot_time + epoch_offset`) 作为 header timestamp，但 PX4 ULog 规范要求 header timestamp 为 **microseconds since boot**（与 data message 时间域一致）。pyulog 用 `boot_time_utc_us + header_timestamp` 计算 start time、用 `last_data_timestamp - header_timestamp` 计算 duration，时间域不匹配导致巨大误差和负数 duration。
-  - **修复**: `write_file_header()` 始终使用 `esp_timer_get_time()` (microseconds since boot)，移除 UTC 转换逻辑。同时修正 `ulog_file_header_s.timestamp` 注释 (原 `µs since Unix epoch` → `µs since boot`)。
+## 需求与问题登记
 
-- [x] **ESP-Claw IM platform 初始化修复** (S236): `cap_im_platform_register_groups()` 调用 `claw_cap_register_group()` 失败，返回 `ESP_ERR_INVALID_STATE`。根因: `claw_cap_init()` 从未被调用，`s_runtime.initialized` 为 false。修复: 在 `cap_im_platform_register_groups()` 之前调用 `claw_cap_init()`，并添加错误检查日志。
+已完成需求、已修复问题 (R/S/M 编号) 与变更记录统一维护在 **[PROJECT_REQUIREMENTS.md](PROJECT_REQUIREMENTS.md)**，本文档不再重复登记。
 
-## TODO
+- **已完成需求 / 已修复问题**: 见 PROJECT_REQUIREMENTS.md §2 (R1–R22 核心功能, S1–S246 稳定性与性能, M1–M13 系统监控)
+- **待完成需求 / 已知限制 / 风险**: 见 PROJECT_REQUIREMENTS.md §3–§4
+- **变更记录**: 见 PROJECT_REQUIREMENTS.md §7
 
-- [ ] **Camera Stream + Music 播放卡顿** (S235): Camera Stream 运行时 Music 播放卡顿。v0.0.3 正常，commit 7ca67cd 不正常。回归范围: v0.0.3..7ca67cd (主要是 TCB pre-allocation、task stack/优先级、SRAM 优化相关改动)。需 git bisect 定位引入回归的具体 commit，排查 CPU/I2S DMA 调度冲突或 PSRAM 带宽竞争。
