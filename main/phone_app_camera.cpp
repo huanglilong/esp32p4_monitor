@@ -214,6 +214,10 @@ bool PhoneAppCamera::_init_camera(void)
         return false;
     }
     _v4l2_buf_count = req.count;
+    if (_v4l2_buf_count > 2) {
+        ESP_LOGE(TAG, "VIDIOC_REQBUFS returned %" PRIu32 " buffers, max 2 supported", _v4l2_buf_count);
+        _v4l2_buf_count = 2;
+    }
     ESP_LOGI(TAG, "V4L2 buffers allocated: %" PRIu32, _v4l2_buf_count);
 
     /* Map and enqueue each buffer */
