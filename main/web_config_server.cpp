@@ -2131,8 +2131,12 @@ static esp_err_t h_wx_login_start(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 
@@ -2155,12 +2159,16 @@ static esp_err_t h_wx_login_status(httpd_req_t *req)
     if (st.account_id[0]) cJSON_AddStringToObject(resp, "account_id", st.account_id);
     if (st.user_id[0]) cJSON_AddStringToObject(resp, "user_id", st.user_id);
     if (st.base_url[0]) cJSON_AddStringToObject(resp, "base_url", st.base_url);
-    if (st.completed && st.token[0]) cJSON_AddStringToObject(resp, "token", st.token);
+    if (st.completed && st.token[0]) cJSON_AddBoolToObject(resp, "has_token", true);
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 
@@ -2173,8 +2181,12 @@ static esp_err_t h_wx_login_cancel(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 
@@ -2203,8 +2215,12 @@ static esp_err_t h_wx_login_persist(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 #endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
@@ -2237,8 +2253,12 @@ static esp_err_t h_llm_config_get(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 
@@ -2280,8 +2300,12 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 
@@ -2320,8 +2344,12 @@ static esp_err_t h_feishu_config(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 #endif
@@ -2358,8 +2386,12 @@ static esp_err_t h_qq_config(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 #endif
@@ -2394,8 +2426,12 @@ static esp_err_t h_tg_config(httpd_req_t *req)
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
     return ESP_OK;
 }
 #endif
