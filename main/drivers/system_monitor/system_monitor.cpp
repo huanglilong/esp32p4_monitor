@@ -129,7 +129,7 @@ bool SystemMonitor::start(void)
         this,
         1,  /* Low priority — must not interfere with real-time tasks */
         &_task_handle,
-        0   /* Pin to core 0 (core 1 runs LVGL) */
+        1   /* Pin to core 1 (core 0 reserved for camera/HTTP/NPU/SDIO) */
     );
 
     if (ret != pdPASS) {

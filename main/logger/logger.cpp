@@ -130,9 +130,9 @@ bool logger_init(const char *sd_base)
     /* Start writer task */
     s_log.writer_running = true;
     s_log.writer_exited = false;
-    if (xTaskCreate(_logger_writer_task, WRITER_TASK_NAME,
+    if (xTaskCreatePinnedToCore(_logger_writer_task, WRITER_TASK_NAME,
                     WRITER_TASK_STACK, NULL,
-                    WRITER_TASK_PRIO, &s_log.writer_task) != pdPASS) {
+                    WRITER_TASK_PRIO, &s_log.writer_task, 0) != pdPASS) {  /* Core 0 */
         if (s_log.fd) { fclose(s_log.fd); s_log.fd = nullptr; }
         vSemaphoreDelete(s_log.buf_mutex); s_log.buf_mutex = nullptr;
         vSemaphoreDelete(s_log.data_sem);  s_log.data_sem = nullptr;

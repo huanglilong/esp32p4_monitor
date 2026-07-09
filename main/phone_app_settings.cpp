@@ -278,8 +278,8 @@ bool PhoneAppSettings::run(void)
         }
         if (_wifi_event_group) {
             TaskHandle_t h = nullptr;
-            BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
-                                         this, TASK_PRIO_WIFI_SCAN, &h);
+            BaseType_t ret = xTaskCreatePinnedToCore(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
+                                         this, TASK_PRIO_WIFI_SCAN, &h, 1);  /* Core 1 */
             if (ret != pdPASS) {
                 ESP_LOGE(TAG, "Failed to create WiFi scan task on app run");
                 vEventGroupDelete(_wifi_event_group);
@@ -1133,8 +1133,8 @@ void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
                 return;
             }
             TaskHandle_t h = nullptr;
-            BaseType_t ret = xTaskCreate(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
-                                         app, TASK_PRIO_WIFI_SCAN, &h);
+            BaseType_t ret = xTaskCreatePinnedToCore(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
+                                         app, TASK_PRIO_WIFI_SCAN, &h, 1);  /* Core 1 */
             if (ret != pdPASS) {
                 ESP_LOGE(TAG, "Failed to create WiFi scan task");
                 lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
@@ -1204,8 +1204,8 @@ void PhoneAppSettings::onKeyboardEnterClicked(lv_event_t *e)
     if (!app || app->_wifi_connecting) return;  // Guard against multiple connect tasks
     app->_wifi_connecting = true;
     TaskHandle_t h = nullptr;
-    BaseType_t ret = xTaskCreate(wifiConnectTaskHandler, "wifi_conn", TASK_STACK_WIFI_CONNECT,
-                                 app, TASK_PRIO_WIFI_CONNECT, &h);
+    BaseType_t ret = xTaskCreatePinnedToCore(wifiConnectTaskHandler, "wifi_conn", TASK_STACK_WIFI_CONNECT,
+                                 app, TASK_PRIO_WIFI_CONNECT, &h, 1);  /* Core 1 */
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create WiFi connect task");
         app->_wifi_connecting = false;

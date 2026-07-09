@@ -490,14 +490,15 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
         return ESP_FAIL;
     }
     writer->task_should_run.store(true, std::memory_order_release);
-    writer->task_handle = xTaskCreateStatic(
+    writer->task_handle = xTaskCreateStaticPinnedToCore(
         writer_task_func,
         "ulog_writer",
         CONFIG_ULOG_TASK_STACK_SIZE,
         writer,      /* arg */
         5,           /* priority */
         writer->task_stack,
-        writer->task_tcb
+        writer->task_tcb,
+        0            /* Core 0 (never preempt Music ASP on Core 1) */
     );
     if (writer->task_handle == NULL) {
         ESP_LOGE(TAG, "Failed to create writer task");

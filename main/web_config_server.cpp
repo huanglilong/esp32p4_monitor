@@ -1262,7 +1262,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
             ESP_LOGE(TAG, "Failed to allocate audio task stack");
             s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
         }
-        TaskHandle_t h = xTaskCreateStaticPinnedToCore(audio_task, "w_audio", 12 * 1024, NULL, 1, s_audio_stack, s_audio_tcb, 0);
+        TaskHandle_t h = xTaskCreateStaticPinnedToCore(audio_task, "w_audio", 12 * 1024, NULL, 1, s_audio_stack, s_audio_tcb, 1);  /* Core 1 (mutually exclusive with Music) */
         s_audio_task.store(h, std::memory_order_release);
         if (h == NULL) {
             ESP_LOGE(TAG, "Failed to create audio task");
@@ -2845,9 +2845,9 @@ void web_config_server_start(void)
         ESP_LOGW(TAG, "Web config already running");
         return;
     }
-    BaseType_t ret = xTaskCreate(
+    BaseType_t ret = xTaskCreatePinnedToCore(
         web_config_task, "web_config", TASK_STACK_SIZE,
-        NULL, TASK_PRIORITY, &s_task_handle);
+        NULL, TASK_PRIORITY, &s_task_handle, 1);  /* Core 1 */
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create web_config task");
     }
