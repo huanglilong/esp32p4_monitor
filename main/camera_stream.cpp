@@ -242,9 +242,14 @@ bool CameraStream::start(void)
         CameraDriver::instance().release("stream");
         return false;
     }
+    /* Pin to Core 0: in v0.0.3 the capture/encode loop ran inside the httpd
+     * stream_handler, which is bound to Core 0 (S176). The Music GMF/ASP task
+     * runs on Core 1 at priority 3; pinning this task to Core 1 would let it
+     * (priority 5) preempt the music decoder and starve the I2S TX DMA,
+     * causing audible music stutter whenever Camera Stream is enabled. */
     TaskHandle_t task_handle = xTaskCreateStaticPinnedToCore(
         _capture_task_fn, "cam_capture", 8192, this, 5,
-        _capture_stack, _capture_tcb, 1);  /* Core 1, priority 5 */
+        _capture_stack, _capture_tcb, 0);  /* Core 0, priority 5 */
     if (!task_handle) {
         ESP_LOGE(TAG, "Capture task create failed");
         heap_caps_free(_capture_stack); _capture_stack = nullptr;

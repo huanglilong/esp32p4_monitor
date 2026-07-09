@@ -300,6 +300,8 @@
 | S244 | **AudioDriver codec I2C 控制句柄 NULL** | `audio_codec_new_i2c_ctrl()` 分配失败可返回 NULL，但三个调用点 (DAC ctrl/ADC ctrl/WIFI6 ES8311 ctrl) 均未检查，传入 codec 构造函数导致崩溃。修复: 三处均添加 NULL 检查，失败时设 `init_ok=false` 跳过 codec 创建 | ✅ |
 | S245 | **CameraStream PSRAM 缓冲区 free/alloc 不匹配** | 析构函数用 `free()` 释放 `_shared_jpeg_buf` (由 `heap_caps_realloc(..., MALLOC_CAP_SPIRAM)` 分配)，API 不匹配。修复: 改用 `heap_caps_free()` 匹配分配 API，避免分配器实现变更风险 | ✅ |
 | S246 | **max_uri_handlers 不足 (ESP-Claw IM)** | 添加 WeChat (8 handlers) + LLM (3) + TG (2) 后实际需 40 个 handler slot，但 `max_uri_handlers` 仅设 29/30，导致 10+ 个 handler 注册失败 (`no slots left`)。修复: 29→42 / 30→42，覆盖 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 8 WeChat + 3 LLM + 2 TG + 2 spare | ✅ |
+| S247 | **Camera Stream + Music 播放卡顿 (P0 回归)** | 提交 65c36ad 将帧采集/编码循环从 httpd stream_handler (绑定 Core 0, S176) 抽离为独立 `cam_capture` 任务，但错误地将其绑定到 **Core 1, priority 5**。Music 的 GMF/ASP 任务固定运行在 **Core 1, priority 3** (`phone_app_music.cpp`)，capture 任务 (DQBUF→PPA DMA→HW JPEG 编码→NPU 推理) 持续运行并以更高优先级抢占音乐解码器，导致 I2S TX DMA 欠载 → 音乐卡顿。v0.0.3 正常是因为采集循环在 Core 0 的 httpd 上下文中运行，Core 1 仅 LVGL(prio4)+Music ASP(prio3)，音乐从不被摄像头工作抢占。修复: 将 `cam_capture` 改绑 **Core 0** (恢复 v0.0.3 核亲和性)，不再与 Core 1 的 Music ASP 竞争 | ✅ (硬件验证: 固定频率卡顿已消失；但仍有偶发杂音/轻微卡顿，见 S248) |
+| S248 | **Camera Stream + Music 偶发杂音/轻微卡顿 (S247 残留)** | 固定频率卡顿修复后 (S247)，硬件验证发现**偶发**杂音并轻微卡一下 (非周期、低频)。根因疑似 Core 0 上 `cam_capture` (prio5) 与 WiFi SDIO 协议栈 / httpd MJPEG 出站的瞬时并发，或与 Music 的 I2S TX DMA 偶发争用 PSRAM 带宽导致短时欠载。待进一步定位 (PSRAM 带宽竞争 / SDIO 入站死锁 #197 边界 / 优先级微调)。**当前为已知残留问题，未阻塞** | ⏳ (待定位) |
 
 ### 2.3 系统性能监控
 
@@ -327,7 +329,7 @@
 
 | # | 需求 | 说明 | 阻塞因素 |
 |---|------|------|----------|
-| P0 | **Camera Stream + Music 播放卡顿** (S235) | Camera Stream 运行时 Music 播放卡顿。v0.0.3 正常，commit 7ca67cd 不正常。回归范围 v0.0.3..7ca67cd (TCB 预分配、task stack/优先级、SRAM 优化相关改动)。需 git bisect 定位引入回归的 commit，排查 CPU/I2S DMA 调度冲突或 PSRAM 带宽竞争 | 待 git bisect 定位 |
+| P0 | **Camera Stream + Music 播放卡顿** (S247) | Camera Stream 运行时 Music 播放卡顿。git bisect 定位根因为 commit 65c36ad: 独立 `cam_capture` 任务错误绑定 Core 1 (priority 5)，抢占 Core 1 上 priority 3 的 Music GMF/ASP 任务导致 I2S DMA 欠载。修复: `cam_capture` 改绑 Core 0 (恢复 v0.0.3 httpd 上下文核亲和性)。构建通过，待硬件验证 | ✅ (待硬件验证) |
 | P1 | **720×720 自定义样式表** | 当前使用默认回退方案，UI 一致性不佳 | 需设计 ESP-Brookesia 样式 |
 | P2 | **WIFI6 无屏配网** | 首次启动 NVS 为空时需要配网方案 | esp-hosted SDIO 不支持稳定 SoftAP (#197) |
 
@@ -452,6 +454,7 @@
 | 2026-07-08 | +S219~S232 代码审查 Round 2 修复 (14 个 CRITICAL/HIGH/MEDIUM): CameraStream model load 早期退出信号(S219), s_sntp_synced volatile→atomic(S220), s_audio_task TaskHandle→atomic(S221), _wifi_scan_task TaskHandle→atomic(S222), PhoneAppAudio _task_handle→atomic(S223), AudioDriver gpio_config 返回值检查(S224), Logger vTaskDelete 过期句柄(S225), g_has_lcd volatile→atomic(S226), _wifi_connect_task TaskHandle→atomic(S227), PeripheralManager _has_lcd→atomic(S228), s_rec_pub orb_advert_t→atomic(S229), h_play __audio_init 锁顺序(S230), h_rec_stop s_rec_path 竞态(S231), ULog writer task PSRAM 栈(S232) |
 | 2026-07-09 | +S235~S240 代码审查 Round 3 修复 (6 个 HIGH/MEDIUM): LLM API key 明文暴露(S235), IM/LLM handler Content-Length 无验证(S236), CameraStream _detector atomic UAF(S237), WeChat/LLM handler cJSON NULL + token 暴露(S238), PhoneAppCamera _v4l2_buf_count 未截断(S239), PhoneAppAudio _stop_recording UAF(S240) |
 | 2026-07-09 | +S236 **ULog header timestamp 修复**: `write_file_header()` 写入 UTC 绝对时间但 PX4 规范要求 µs since boot，导致 `ulog_info` 显示错误 start time (`495425:08:53`) 和 duration (`0:00:00`)。修复: header timestamp 改用 `esp_timer_get_time()`，移除 UTC 转换逻辑 |
+| 2026-07-09 | +S247 **Camera Stream + Music 卡顿修复 (P0 回归根因)**: git bisect 确认 commit 65c36ad 引入回归。`cam_capture` 任务错误绑定 Core 1 (priority 5)，抢占同核 priority 3 的 Music GMF/ASP 任务 (I2S TX DMA 欠载→卡顿)。v0.0.3 正常因采集循环在 Core 0 的 httpd 上下文运行。修复: `cam_capture` 改绑 Core 0 (恢复 v0.0.3 核亲和性)。构建通过，待硬件验证 |
 | 2026-07-08 | +S184~S213 代码审查 Round 1 修复 (30 个 CRITICAL/HIGH/MEDIUM): Logger snprintf 栈溢出(S184)/data_sem UAF(S185)/writer force-kill 持锁(S186)/句柄悬挂(S187)/sd_level 竞态(S188), Web 路径穿越(S189)/cJSON NULL(S190)/s_running 竞态(S191)/mutex 泄漏(S192)/httpd_start 泄漏(S193)/NVS cache 竞态(S194)/free→cJSON_free(S195), CameraStream V4L2 buf 越界(S196)/model-load force-kill(S197)/dummy_buf NULL(S198)/snprintf 截断(S199)/bytesused 越界(S200)/encoder dims 零值(S201), PhoneAppCamera pipeline 泄漏(S202)/buf.index 越界(S203), PhoneAppSettings 事件组泄漏(S204)/WiFi OFF/ON abort(S205)/connect task UAF(S206)/_wifi_ip 未填充(S207), PhoneAppCameraStream 析构 handler UAF(S208), AudioDriver init rollback mutex UAF(S209), SystemMonitor force-kill 持锁(S210), SDCardDriver _has_lcd 竞态(S211), main.cpp assert no-op(S212)/esp_read_mac 未检查(S213) |
 | 2026-07-08 | +S177~S180 HTTP 服务器不可达修复(S177: LWIP_MAX_SOCKETS 22→28 + TCP keep-alive + WiFi 断连 httpd 重启), SystemMonitor 内存告警 80%→85%(S178), Flutter ULog 视频查看器(S179: ulog_parser.dart + ulog_viewer_screen.dart), Flutter filesDownload 可靠性(S180: chunked 检测修正 + O(n²)消除) |
 | 2026-07-08 | R17 更新: Camera Stream 和 Audio 不再互斥 (硬件独立: MIPI CSI vs I2S)，所有 `__cam_running()` 检查已移除 |
