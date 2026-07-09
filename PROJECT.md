@@ -841,6 +841,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 - **2026-07-06**: CameraStream model_load task 8KB 栈移入 PSRAM (`xTaskCreateStatic`)
 - **2026-07-08**: 两个音频任务栈 12KB×2 从 Internal SRAM 移至 PSRAM（O2 优化）— `phone_app_audio.cpp` 的 `audio_echo` 与 `web_config_server.cpp` 的 `w_audio` 改用 `xTaskCreateStatic`/`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM|MALLOC_CAP_8BIT)` 分配栈（TCB 留 Internal），任务退出后释放静态缓冲区；运行时节省 **~24 KB** Internal SRAM。与 detect(16KB)/ASP(8KB) 同模式，仅栈在 PSRAM，TCB 仍在 Internal。
 - **2026-07-08**: SRAM 优化 (S216): 禁用 EAP (`CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n`, 省 ~1.1KB IRAM + 21KB PSRAM) + DVP (`CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n`, 此板仅用 MIPI CSI); TCP SND_BUF/WND 64KB→32KB (65536 超 Kconfig range 被钳制为 5760, 32768 无需 WND_SCALE)
+- **2026-07-10**: MbedTLS TLS 修复 (S251): 启用 `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y` + `DYNAMIC_FREE_CONFIG_DATA/CA_CERT` — 握手时按需分配大缓冲区，握后释放私钥/CA 证书内存；`SSL_IN_CONTENT_LEN` 4096→8192 — 修复 WeChat `ilinkai.weixin.qq.com` 证书链 (~5.7KB) 超过 4KB 限制导致 `MBEDTLS_ERR_SSL_INVALID_RECORD` (-0x7200)
 - **2026-07-06**: `SPIRAM_TRY_ALLOCATE_DMA_BUFFER` 在 IDF v6.x 中已不存在，`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` 已覆盖 DMA 分配
 
 > **✅ 已解决**: Camera Stream + Music 播放时 internal SRAM >80% 导致音频卡顿。主要通过 LVGL IRAM→PSRAM XIP (-64KB) 解决，辅以 ASP 栈→PSRAM (-8KB) 和 LWIP TCP 缓冲区缩小 (-30KB)。
