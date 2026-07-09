@@ -727,7 +727,7 @@ static const char *WEB_UI_HTML =
 "async function loadLlmConfig(){"
 "try{let r=await fetch('/api/llm/config');let j=await r.json();"
 "if(j.provider)document.getElementById('llm_provider').value=j.provider;"
-"if(j.api_key)document.getElementById('llm_key').placeholder='(saved)';"
+"if(j.has_api_key)document.getElementById('llm_key').placeholder='(saved)';"
 "if(j.model)document.getElementById('llm_model').value=j.model;"
 "if(j.base_url)document.getElementById('llm_url').value=j.base_url}"
 "catch(e){}}"

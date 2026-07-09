@@ -288,6 +288,10 @@
 | S232 | **ULog writer task 内部 SRAM 不足** | `xTaskCreate` 从内部 SRAM 分配 8KB 栈，LVGL+LWIP 占用后不足导致创建失败。修复: 改用 `xTaskCreateStatic` + PSRAM 栈 + 内部 SRAM TCB，匹配 audio_task/model_load_task 模式 | ✅ |
 | S233 | **h_rec_stop s_rec_path 拷贝位置错误** | S231 修复将 `strlcpy(saved_path)` 放在 `audio_unlock()` 之后，仍存在竞态。修复: 移到 `audio_unlock()` 之前 | ✅ |
 | S234 | **ULog writer TCB 释放竞态** | writer task 自删后 `vTaskDelete(NULL)` 将 TCB 加入终止链表，立即 `heap_caps_free(task_tcb)` 可能破坏内核链表。修复: TCB 在 `init()` 预分配，stop 时只释放栈，`deinit()` 时释放 TCB。统一所有 `xTaskCreateStatic` 模块为相同模式 (PhoneAppAudio, web_config_server, CameraStream) | ✅ |
+| S235 | **LLM API key 明文暴露** | `GET /api/llm/config` 返回完整 `api_key` 值，LAN 客户端可通过未加密 HTTP 获取 LLM API 密钥。修复: 改为 `has_api_key` 布尔标志，匹配 WiFi 密码保护模式 (S15) | ✅ |
+| S236 | **IM/LLM handler Content-Length 无验证** | `h_llm_config_set`/`h_feishu_config`/`h_qq_config`/`h_tg_config` 直接 `calloc(req->content_len + 1)` 无大小验证，恶意客户端可发送 Content-Length: 4294967295 耗尽 PSRAM 导致 OOM 崩溃。修复: 添加 4096 字节上限检查，匹配 `h_files_delete_batch` 模式 | ✅ |
+| S237 | **CameraStream _detector atomic UAF** | `_deinit_detection()` 先 `delete _detector` 再 `_detector = nullptr` 两步操作，并发读者可看到悬空指针。修复: 使用 `exchange(nullptr)` 原子置空后再释放，防止任何读者观察到悬空指针 | ✅ |
+| S238 | **WeChat/LLM handler cJSON NULL + token 暴露** | 9 个 HTTP handler 将 `cJSON_PrintUnformatted()` 结果直接传给 `httpd_resp_sendstr()` 无 NULL 检查，OOM 时 NPE 崩溃。同时 `h_wx_login_status` 返回明文 WeChat auth token。修复: 全部添加 NULL 检查 + HTTP 500 fallback + `free()`→`cJSON_free()`；token 改为 `has_token` 布尔标志 | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -436,6 +440,7 @@
 | 日期 | 变更 |
 |------|------|
 | 2026-07-08 | +S219~S232 代码审查 Round 2 修复 (14 个 CRITICAL/HIGH/MEDIUM): CameraStream model load 早期退出信号(S219), s_sntp_synced volatile→atomic(S220), s_audio_task TaskHandle→atomic(S221), _wifi_scan_task TaskHandle→atomic(S222), PhoneAppAudio _task_handle→atomic(S223), AudioDriver gpio_config 返回值检查(S224), Logger vTaskDelete 过期句柄(S225), g_has_lcd volatile→atomic(S226), _wifi_connect_task TaskHandle→atomic(S227), PeripheralManager _has_lcd→atomic(S228), s_rec_pub orb_advert_t→atomic(S229), h_play __audio_init 锁顺序(S230), h_rec_stop s_rec_path 竞态(S231), ULog writer task PSRAM 栈(S232) |
+| 2026-07-09 | +S235~S238 代码审查 Round 3 修复 (4 个 HIGH/MEDIUM): LLM API key 明文暴露(S235), IM/LLM handler Content-Length 无验证(S236), CameraStream _detector atomic UAF(S237), WeChat/LLM handler cJSON NULL + token 暴露(S238) |
 | 2026-07-09 | +S236 **ULog header timestamp 修复**: `write_file_header()` 写入 UTC 绝对时间但 PX4 规范要求 µs since boot，导致 `ulog_info` 显示错误 start time (`495425:08:53`) 和 duration (`0:00:00`)。修复: header timestamp 改用 `esp_timer_get_time()`，移除 UTC 转换逻辑 |
 | 2026-07-08 | +S184~S213 代码审查 Round 1 修复 (30 个 CRITICAL/HIGH/MEDIUM): Logger snprintf 栈溢出(S184)/data_sem UAF(S185)/writer force-kill 持锁(S186)/句柄悬挂(S187)/sd_level 竞态(S188), Web 路径穿越(S189)/cJSON NULL(S190)/s_running 竞态(S191)/mutex 泄漏(S192)/httpd_start 泄漏(S193)/NVS cache 竞态(S194)/free→cJSON_free(S195), CameraStream V4L2 buf 越界(S196)/model-load force-kill(S197)/dummy_buf NULL(S198)/snprintf 截断(S199)/bytesused 越界(S200)/encoder dims 零值(S201), PhoneAppCamera pipeline 泄漏(S202)/buf.index 越界(S203), PhoneAppSettings 事件组泄漏(S204)/WiFi OFF/ON abort(S205)/connect task UAF(S206)/_wifi_ip 未填充(S207), PhoneAppCameraStream 析构 handler UAF(S208), AudioDriver init rollback mutex UAF(S209), SystemMonitor force-kill 持锁(S210), SDCardDriver _has_lcd 竞态(S211), main.cpp assert no-op(S212)/esp_read_mac 未检查(S213) |
 | 2026-07-08 | +S177~S180 HTTP 服务器不可达修复(S177: LWIP_MAX_SOCKETS 22→28 + TCP keep-alive + WiFi 断连 httpd 重启), SystemMonitor 内存告警 80%→85%(S178), Flutter ULog 视频查看器(S179: ulog_parser.dart + ulog_viewer_screen.dart), Flutter filesDownload 可靠性(S180: chunked 检测修正 + O(n²)消除) |
