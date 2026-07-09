@@ -46,8 +46,21 @@
 2. allow read only access to files and directories outside the workspace, unless explicitly granted write access
 
 ## Project Code Review and fix issues
-1. regularly review the code for potential issues and improvements, keep code clean and maintainable, and follow best practices. Use /review command to request a review of the code, and /fix command to fix any issues found.
-2. **one issue, one commit** — fix each issue in its own separate commit. Do not combine fixes for multiple issues into one commit. Fix them promptly, document the changes made, and build to verify each fix individually.
+1. review the project for potential issues and improvements, keep code clean and maintainable, and follow best practices. Use /review command to request a review of the code, and /fix command to fix any issues found.
+2. **one issue, one commit** — fix each issue in its own separate commit(allow automatically). Do not combine fixes for multiple issues into one commit. Fix them promptly, document the changes made, and build to verify each fix individually.
 3. after fixed all issues, run /review for overall review and check if any issues remain, if so, repeat step 1-3 until reach a max of 3 rounds of review, if still have issues, report to user for further instructions
 4. update all relevant documentation files (*.md)
-5. flash the code to the device, read ~/.zshrc and use alias:  espidf_clean && espidf_bfm
+5. flash the code to the device and monitor logs
+    - MacOS:
+      ```
+      $ source ~/.espressif/v6.x/esp-idf/export.sh
+      $ idf.py fullclean # clean the project only if necessary or changed configuration
+      $ idf.py build && idf.py flash -b 1500000 -p $(ls /dev/cu.usbmodem*) monitor  # build, flash and monitor
+      ```
+    - Linux:
+      ```
+      $ source ~/.espressif/v6.x/esp-idf/export.sh
+      $ idf.py fullclean # clean the project only if necessary or changed configuration
+      $ idf.py build && idf.py flash -b 1500000 -p /dev/ttyACM0 monitor  # build, flash and monitor
+      ```
+
