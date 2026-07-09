@@ -953,9 +953,10 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
     const char *pass = pass_buf;
     if (strncmp(ssid, "SSID: ", 6) == 0) ssid += 6;
 
-    /* Guard: skip if SSID is empty */
-    if (strlen(ssid) == 0) {
-        ESP_LOGW(TAG, "WiFi SSID is empty — skipping connect");
+    /* Guard: skip if SSID or password is empty (rule #1: all WiFi sub-setting
+     * fields must be non-empty). Do not connect, and do not write NVS. */
+    if (strlen(ssid) == 0 || strlen(pass) == 0) {
+        ESP_LOGW(TAG, "WiFi SSID or password empty — skipping connect and NVS save");
         app->_wifi_connecting = false;
         vTaskDelete(NULL);
         return;

@@ -924,25 +924,34 @@ static esp_err_t settings_handler(httpd_req_t *req)
         PeripheralManager::instance().set_volume((int)vol);
     }
 
-    /* WiFi: skip if ssid or password is explicitly provided but empty */
+    /* WiFi sub-setting field validation (rule #1): SSID AND password must
+     * BOTH be present and non-empty. If the request carries any WiFi field
+     * (ssid/pass) but either is empty/missing, skip the ENTIRE WiFi NVS
+     * update. Open networks are intentionally NOT supported — both fields
+     * are required. A volume-only request (no WiFi fields) leaves WiFi
+     * untouched. */
     bool skip_wifi = false;
-    if (j_ssid && cJSON_IsString(j_ssid) && j_ssid->valuestring &&
-        strlen(j_ssid->valuestring) == 0) {
-        ESP_LOGW(TAG, "WiFi SSID is empty — skipping WiFi settings");
-        skip_wifi = true;
-    }
-    if (j_pass && cJSON_IsString(j_pass) && j_pass->valuestring &&
-        strlen(j_pass->valuestring) == 0) {
-        ESP_LOGW(TAG, "WiFi password is empty — skipping WiFi settings");
-        skip_wifi = true;
+    bool wifi_intended = (j_ssid != nullptr) || (j_pass != nullptr);
+    if (wifi_intended) {
+        bool ssid_ok = j_ssid && cJSON_IsString(j_ssid) && j_ssid->valuestring &&
+                       strlen(j_ssid->valuestring) > 0;
+        bool pass_ok = j_pass && cJSON_IsString(j_pass) && j_pass->valuestring &&
+                       strlen(j_pass->valuestring) > 0;
+        if (!ssid_ok || !pass_ok) {
+            ESP_LOGW(TAG, "WiFi SSID or password empty/missing — skipping whole WiFi settings NVS update");
+            skip_wifi = true;
+        }
     }
 
-    /* WiFi: try connecting first, save to NVS only on success.
-     * WiFi is always enabled — no wifi_en check needed. */
+    /* WiFi: try connecting first, save to NVS only on successful connection
+     * (rule #2). WiFi is always enabled — no wifi_en check needed. */
     bool wifi_ok = true;  /* default true if no WiFi change */
+    if (skip_wifi && wifi_intended) wifi_ok = false;
     bool need_reconnect = !skip_wifi
-                          && j_ssid && cJSON_IsString(j_ssid)
-                          && j_ssid->valuestring && strlen(j_ssid->valuestring) > 0;
+                          && j_ssid && cJSON_IsString(j_ssid) && j_ssid->valuestring
+                          && strlen(j_ssid->valuestring) > 0
+                          && j_pass && cJSON_IsString(j_pass) && j_pass->valuestring
+                          && strlen(j_pass->valuestring) > 0;
     if (need_reconnect) {
         const char *target_ssid = j_ssid->valuestring;
         const char *target_pass = (j_pass && cJSON_IsString(j_pass) && j_pass->valuestring)
@@ -2226,7 +2235,14 @@ static esp_err_t h_llm_config_get(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* POST /api/llm/config — save LLM config to NVS */
+/* POST /api/llm/config — save LLM config to NVS
+ *
+ * Sub-setting completeness check (requirement rule #1): the LLM sub-setting
+ * consists of {provider, api_key, model, base_url}. If ANY field is missing
+ * or empty, the ENTIRE LLM sub-setting NVS update is skipped (nothing is
+ * written) and an error is returned. Other sub-settings (WiFi/volume/IM)
+ * update independently. Only when all fields are present and non-empty are
+ * they all written together. */
 static esp_err_t h_llm_config_set(httpd_req_t *req)
 {
     const size_t kMaxBody = 4096;
@@ -2242,24 +2258,46 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
     free(body);
     if (!root) return ESP_FAIL;
 
+    auto field_ok = [](cJSON *f) -> bool {
+        return f && cJSON_IsString(f) && f->valuestring && strlen(f->valuestring) > 0;
+    };
+
+    cJSON *j_provider = cJSON_GetObjectItemCaseSensitive(root, "provider");
+    cJSON *j_api_key  = cJSON_GetObjectItemCaseSensitive(root, "api_key");
+    cJSON *j_model    = cJSON_GetObjectItemCaseSensitive(root, "model");
+    cJSON *j_base_url = cJSON_GetObjectItemCaseSensitive(root, "base_url");
+
+    bool all_ok = field_ok(j_provider) && field_ok(j_api_key) &&
+                  field_ok(j_model) && field_ok(j_base_url);
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) { cJSON_Delete(root); return ESP_ERR_NO_MEM; }
+
+    if (!all_ok) {
+        ESP_LOGW(TAG, "LLM config incomplete (empty field) — skipping whole LLM NVS update");
+        cJSON_AddBoolToObject(resp, "ok", false);
+        cJSON_AddStringToObject(resp, "error",
+            "All LLM fields (provider, api_key, model, base_url) must be non-empty");
+        cJSON_Delete(root);
+        char *json = cJSON_PrintUnformatted(resp);
+        cJSON_Delete(resp);
+        httpd_resp_set_type(req, "application/json");
+        if (json) { httpd_resp_sendstr(req, json); cJSON_free(json); }
+        else { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed"); }
+        return ESP_OK;
+    }
+
     nvs_handle_t nvs_h;
     esp_err_t err = nvs_open("claw_llm", NVS_READWRITE, &nvs_h);
-    if (err != ESP_OK) { cJSON_Delete(root); return ESP_FAIL; }
-
-    cJSON *item;
-    if ((item = cJSON_GetObjectItemCaseSensitive(root, "provider")) && cJSON_IsString(item))
-        nvs_set_str(nvs_h, "provider", item->valuestring);
-    if ((item = cJSON_GetObjectItemCaseSensitive(root, "api_key")) && cJSON_IsString(item))
-        nvs_set_str(nvs_h, "api_key", item->valuestring);
-    if ((item = cJSON_GetObjectItemCaseSensitive(root, "model")) && cJSON_IsString(item))
-        nvs_set_str(nvs_h, "model", item->valuestring);
-    if ((item = cJSON_GetObjectItemCaseSensitive(root, "base_url")) && cJSON_IsString(item))
-        nvs_set_str(nvs_h, "base_url", item->valuestring);
+    if (err != ESP_OK) { cJSON_Delete(root); cJSON_Delete(resp); return ESP_FAIL; }
+    nvs_set_str(nvs_h, "provider", j_provider->valuestring);
+    nvs_set_str(nvs_h, "api_key", j_api_key->valuestring);
+    nvs_set_str(nvs_h, "model", j_model->valuestring);
+    nvs_set_str(nvs_h, "base_url", j_base_url->valuestring);
     nvs_commit(nvs_h);
     nvs_close(nvs_h);
     cJSON_Delete(root);
 
-    cJSON *resp = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp, "ok", true);
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
@@ -2293,7 +2331,11 @@ static esp_err_t h_feishu_config(httpd_req_t *req)
     if (!root) return ESP_FAIL;
     cJSON *app_id_j = cJSON_GetObjectItemCaseSensitive(root, "app_id");
     cJSON *app_secret_j = cJSON_GetObjectItemCaseSensitive(root, "app_secret");
-    if (app_id_j && app_secret_j && cJSON_IsString(app_id_j) && cJSON_IsString(app_secret_j)) {
+    bool fs_ok = app_id_j && cJSON_IsString(app_id_j) && app_id_j->valuestring &&
+                 strlen(app_id_j->valuestring) > 0 &&
+                 app_secret_j && cJSON_IsString(app_secret_j) && app_secret_j->valuestring &&
+                 strlen(app_secret_j->valuestring) > 0;
+    if (fs_ok) {
         nvs_handle_t nvs_h;
         if (nvs_open("claw_im", NVS_READWRITE, &nvs_h) == ESP_OK) {
             nvs_set_str(nvs_h, "fs_app_id", app_id_j->valuestring);
@@ -2301,10 +2343,13 @@ static esp_err_t h_feishu_config(httpd_req_t *req)
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
+    } else {
+        ESP_LOGW(TAG, "Feishu config incomplete (empty field) — skipping whole Feishu NVS update");
     }
     cJSON_Delete(root);
     cJSON *resp = cJSON_CreateObject();
-    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddBoolToObject(resp, "ok", fs_ok);
+    if (!fs_ok) cJSON_AddStringToObject(resp, "error", "app_id and app_secret must be non-empty");
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
@@ -2335,7 +2380,11 @@ static esp_err_t h_qq_config(httpd_req_t *req)
     if (!root) return ESP_FAIL;
     cJSON *app_id_j = cJSON_GetObjectItemCaseSensitive(root, "app_id");
     cJSON *app_secret_j = cJSON_GetObjectItemCaseSensitive(root, "app_secret");
-    if (app_id_j && app_secret_j && cJSON_IsString(app_id_j) && cJSON_IsString(app_secret_j)) {
+    bool qq_ok = app_id_j && cJSON_IsString(app_id_j) && app_id_j->valuestring &&
+                 strlen(app_id_j->valuestring) > 0 &&
+                 app_secret_j && cJSON_IsString(app_secret_j) && app_secret_j->valuestring &&
+                 strlen(app_secret_j->valuestring) > 0;
+    if (qq_ok) {
         nvs_handle_t nvs_h;
         if (nvs_open("claw_im", NVS_READWRITE, &nvs_h) == ESP_OK) {
             nvs_set_str(nvs_h, "qq_app_id", app_id_j->valuestring);
@@ -2343,10 +2392,13 @@ static esp_err_t h_qq_config(httpd_req_t *req)
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
+    } else {
+        ESP_LOGW(TAG, "QQ config incomplete (empty field) — skipping whole QQ NVS update");
     }
     cJSON_Delete(root);
     cJSON *resp = cJSON_CreateObject();
-    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddBoolToObject(resp, "ok", qq_ok);
+    if (!qq_ok) cJSON_AddStringToObject(resp, "error", "app_id and app_secret must be non-empty");
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");
@@ -2376,17 +2428,22 @@ static esp_err_t h_tg_config(httpd_req_t *req)
     free(body);
     if (!root) return ESP_FAIL;
     cJSON *token_j = cJSON_GetObjectItemCaseSensitive(root, "token");
-    if (token_j && cJSON_IsString(token_j)) {
+    bool tg_ok = token_j && cJSON_IsString(token_j) && token_j->valuestring &&
+                 strlen(token_j->valuestring) > 0;
+    if (tg_ok) {
         nvs_handle_t nvs_h;
         if (nvs_open("claw_im", NVS_READWRITE, &nvs_h) == ESP_OK) {
             nvs_set_str(nvs_h, "tg_token", token_j->valuestring);
             nvs_commit(nvs_h);
             nvs_close(nvs_h);
         }
+    } else {
+        ESP_LOGW(TAG, "Telegram config incomplete (empty token) — skipping whole Telegram NVS update");
     }
     cJSON_Delete(root);
     cJSON *resp = cJSON_CreateObject();
-    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddBoolToObject(resp, "ok", tg_ok);
+    if (!tg_ok) cJSON_AddStringToObject(resp, "error", "token must be non-empty");
     char *json = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);
     httpd_resp_set_type(req, "application/json");

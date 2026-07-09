@@ -694,6 +694,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - **音频录制**: Start/End 按钮, I2S RX → Shine MP3 编码 → SD 卡 (`/sdcard/rec_*.mp3`), 实时显示录制时长和文件大小
 - **音频播放**: 列出 SD 卡上 `.mp3` 文件, Play 按钮通过 `esp_audio_simple_player` 播放
 - **互斥保护**: 音频功能仅在 Camera Stream **未**运行时可操作, UI 自动隐藏/显示
+- **子设置字段完整性校验**: 每个子设置 (WiFi / LLM / Feishu / QQ / Telegram) 的所有字段必须非空，任一为空则 **skip 整个子设置**的 NVS 更新 (返回 `ok:false`)，其余满足条件的子设置正常更新。WiFi 要求 **SSID + password 同时非空** (不考虑开放网络) 且 **连接成功才写 NVS**
 
 > **已知限制**: 首次启动 NVS 为空时无法配网 (AP 模式因 esp-hosted SDIO 限制不稳定)。需预先通过 UART 烧录或 Settings App (LCD-4B) 写入 WiFi 凭据。
 
