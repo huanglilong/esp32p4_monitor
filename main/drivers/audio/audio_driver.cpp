@@ -153,26 +153,37 @@ void AudioDriver::init(void)
         if (init_ok) {
             audio_codec_i2c_cfg_t i2c_dac = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
             const audio_codec_ctrl_if_t *ctrl_dac = audio_codec_new_i2c_ctrl(&i2c_dac);
-            es8311_codec_cfg_t es8311_cfg = {
-                .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
-                .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-                .pa_pin = AUDIO_PA_GPIO, .master_mode = false, .use_mclk = true,
-                .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
-                .mclk_div = I2S_MCLK_MULTIPLE_256,
-            };
-            esp_codec_dev_cfg_t dev_dac = {
-                .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
-            };
-            _codec_handle.store(esp_codec_dev_new(&dev_dac), std::memory_order_relaxed);
-            if (!_codec_handle.load(std::memory_order_relaxed)) {
-                ESP_LOGE(TAG, "Failed to create ES8311 DAC codec device");
+            if (!ctrl_dac) {
+                ESP_LOGE(TAG, "Failed to create I2C control interface for DAC");
                 init_ok = false;
+            }
+            if (init_ok) {
+                es8311_codec_cfg_t es8311_cfg = {
+                    .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
+                    .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
+                    .pa_pin = AUDIO_PA_GPIO, .master_mode = false, .use_mclk = true,
+                    .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
+                    .mclk_div = I2S_MCLK_MULTIPLE_256,
+                };
+                esp_codec_dev_cfg_t dev_dac = {
+                    .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = es8311_codec_new(&es8311_cfg), .data_if = data_out
+                };
+                _codec_handle.store(esp_codec_dev_new(&dev_dac), std::memory_order_relaxed);
+                if (!_codec_handle.load(std::memory_order_relaxed)) {
+                    ESP_LOGE(TAG, "Failed to create ES8311 DAC codec device");
+                    init_ok = false;
+                }
             }
         }
 
         if (init_ok) {
             audio_codec_i2c_cfg_t i2c_adc = { .port = 0, .addr = ES7210_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
             const audio_codec_ctrl_if_t *ctrl_adc = audio_codec_new_i2c_ctrl(&i2c_adc);
+            if (!ctrl_adc) {
+                ESP_LOGE(TAG, "Failed to create I2C control interface for ADC");
+                init_ok = false;
+            }
+            if (init_ok) {
             es7210_codec_cfg_t es7210_cfg = {
                 .ctrl_if = ctrl_adc, .master_mode = false,
                 .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2,
@@ -193,6 +204,7 @@ void AudioDriver::init(void)
                 init_ok = false;
             }
         }
+        }
     } else if (init_ok) {
         /* ===== WIFI6: ES8311 single-chip (0x30, ADC + DAC) + NS4150B amp ===== */
         audio_codec_i2s_cfg_t i2s_data_cfg = {
@@ -209,6 +221,11 @@ void AudioDriver::init(void)
         if (init_ok) {
             audio_codec_i2c_cfg_t i2c_es8311 = { .port = 0, .addr = ES8311_CODEC_DEFAULT_ADDR, .bus_handle = i2c_handle };
             const audio_codec_ctrl_if_t *ctrl_es8311 = audio_codec_new_i2c_ctrl(&i2c_es8311);
+            if (!ctrl_es8311) {
+                ESP_LOGE(TAG, "Failed to create I2C control interface for ES8311");
+                init_ok = false;
+            }
+            if (init_ok) {
             es8311_codec_cfg_t es8311_cfg = {
                 .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
                 .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
@@ -226,6 +243,7 @@ void AudioDriver::init(void)
                 ESP_LOGE(TAG, "Failed to create ES8311 codec device");
                 init_ok = false;
             }
+        }
         }
         /* _codec_mic_handle stays NULL */
     }
