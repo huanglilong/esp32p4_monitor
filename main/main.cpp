@@ -549,7 +549,14 @@ extern "C" void app_main(void)
     defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
     {
         ESP_LOGI(TAG, "Initializing ESP-Claw IM platform...");
-        cap_im_platform_register_groups();
+        esp_err_t cap_err = claw_cap_init();
+        if (cap_err != ESP_OK) {
+            ESP_LOGE(TAG, "claw_cap_init failed: %s", esp_err_to_name(cap_err));
+        }
+        cap_err = cap_im_platform_register_groups();
+        if (cap_err != ESP_OK) {
+            ESP_LOGE(TAG, "cap_im_platform_register_groups failed: %s", esp_err_to_name(cap_err));
+        }
 
 #ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
         {

@@ -912,6 +912,8 @@ idf.py -p /dev/ttyUSB0 flash monitor
   - **问题**: `ulog_info` 显示 start time `495425:08:53`、duration `0:00:00`。根因: `write_file_header()` 写入 UTC 绝对时间 (或 `boot_time + epoch_offset`) 作为 header timestamp，但 PX4 ULog 规范要求 header timestamp 为 **microseconds since boot**（与 data message 时间域一致）。pyulog 用 `boot_time_utc_us + header_timestamp` 计算 start time、用 `last_data_timestamp - header_timestamp` 计算 duration，时间域不匹配导致巨大误差和负数 duration。
   - **修复**: `write_file_header()` 始终使用 `esp_timer_get_time()` (microseconds since boot)，移除 UTC 转换逻辑。同时修正 `ulog_file_header_s.timestamp` 注释 (原 `µs since Unix epoch` → `µs since boot`)。
 
+- [x] **ESP-Claw IM platform 初始化修复** (S236): `cap_im_platform_register_groups()` 调用 `claw_cap_register_group()` 失败，返回 `ESP_ERR_INVALID_STATE`。根因: `claw_cap_init()` 从未被调用，`s_runtime.initialized` 为 false。修复: 在 `cap_im_platform_register_groups()` 之前调用 `claw_cap_init()`，并添加错误检查日志。
+
 ## TODO
 
 - [ ] **Camera Stream + Music 播放卡顿** (S235): Camera Stream 运行时 Music 播放卡顿。v0.0.3 正常，commit 7ca67cd 不正常。回归范围: v0.0.3..7ca67cd (主要是 TCB pre-allocation、task stack/优先级、SRAM 优化相关改动)。需 git bisect 定位引入回归的具体 commit，排查 CPU/I2S DMA 调度冲突或 PSRAM 带宽竞争。
