@@ -166,7 +166,7 @@ CameraStream::~CameraStream()
         vSemaphoreDelete(_shared_jpeg_mutex);
         _shared_jpeg_mutex = nullptr;
     }
-    free(_shared_jpeg_buf);
+    heap_caps_free(_shared_jpeg_buf);
     _shared_jpeg_buf = nullptr;
     if (_frame_ready_sem) {
         vSemaphoreDelete(_frame_ready_sem);
