@@ -2245,6 +2245,11 @@ static esp_err_t h_llm_config_get(httpd_req_t *req)
 /* POST /api/llm/config — save LLM config to NVS */
 static esp_err_t h_llm_config_set(httpd_req_t *req)
 {
+    const size_t kMaxBody = 4096;
+    if (req->content_len > kMaxBody) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request too large");
+        return ESP_FAIL;
+    }
     char *body = (char *)calloc(1, req->content_len + 1);
     if (!body) return ESP_ERR_NO_MEM;
     int ret = httpd_req_recv(req, body, req->content_len);
@@ -2286,6 +2291,11 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
 #ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
 static esp_err_t h_feishu_config(httpd_req_t *req)
 {
+    const size_t kMaxBody = 4096;
+    if (req->content_len > kMaxBody) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request too large");
+        return ESP_FAIL;
+    }
     char *body = (char *)calloc(1, req->content_len + 1);
     if (!body) return ESP_ERR_NO_MEM;
     int ret = httpd_req_recv(req, body, req->content_len);
@@ -2319,6 +2329,11 @@ static esp_err_t h_feishu_config(httpd_req_t *req)
 #ifdef CONFIG_APP_CLAW_CAP_IM_QQ
 static esp_err_t h_qq_config(httpd_req_t *req)
 {
+    const size_t kMaxBody = 4096;
+    if (req->content_len > kMaxBody) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request too large");
+        return ESP_FAIL;
+    }
     char *body = (char *)calloc(1, req->content_len + 1);
     if (!body) return ESP_ERR_NO_MEM;
     int ret = httpd_req_recv(req, body, req->content_len);
@@ -2352,6 +2367,11 @@ static esp_err_t h_qq_config(httpd_req_t *req)
 #ifdef CONFIG_APP_CLAW_CAP_IM_TG
 static esp_err_t h_tg_config(httpd_req_t *req)
 {
+    const size_t kMaxBody = 4096;
+    if (req->content_len > kMaxBody) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request too large");
+        return ESP_FAIL;
+    }
     char *body = (char *)calloc(1, req->content_len + 1);
     if (!body) return ESP_ERR_NO_MEM;
     int ret = httpd_req_recv(req, body, req->content_len);
