@@ -844,8 +844,10 @@ void CameraStream::_deinit_detection(void)
 #endif
 
     if (_detector) {
-        delete _detector;
-        _detector = nullptr;
+        /* Atomically nullify before delete — prevents concurrent reader from
+         * seeing a dangling pointer between delete and nullptr assignment. */
+        COCODetect *det = _detector.exchange(nullptr, std::memory_order_acq_rel);
+        delete det;
     }
     if (_detect_in_buf) {
         heap_caps_free(_detect_in_buf);
