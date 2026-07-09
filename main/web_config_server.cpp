@@ -2223,7 +2223,11 @@ static esp_err_t h_llm_config_get(httpd_req_t *req)
         len = sizeof(buf);
         if (nvs_get_str(nvs_h, "provider", buf, &len) == ESP_OK) cJSON_AddStringToObject(resp, "provider", buf);
         len = sizeof(buf);
-        if (nvs_get_str(nvs_h, "api_key", buf, &len) == ESP_OK) cJSON_AddStringToObject(resp, "api_key", buf);
+        if (nvs_get_str(nvs_h, "api_key", buf, &len) == ESP_OK) {
+            /* Never expose plaintext API key over unencrypted HTTP —
+             * return has_api_key flag like WiFi password pattern (S15) */
+            cJSON_AddBoolToObject(resp, "has_api_key", true);
+        }
         len = sizeof(buf);
         if (nvs_get_str(nvs_h, "model", buf, &len) == ESP_OK) cJSON_AddStringToObject(resp, "model", buf);
         len = sizeof(buf);
