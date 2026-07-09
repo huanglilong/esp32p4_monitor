@@ -2258,16 +2258,17 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
 {
     const size_t kMaxBody = 4096;
     if (req->content_len > kMaxBody) {
+        ESP_LOGW(TAG, "LLM config save failed: request too large (%ld bytes)", (long)req->content_len);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request too large");
         return ESP_FAIL;
     }
     char *body = (char *)calloc(1, req->content_len + 1);
     if (!body) return ESP_ERR_NO_MEM;
     int ret = httpd_req_recv(req, body, req->content_len);
-    if (ret <= 0) { free(body); return ESP_FAIL; }
+    if (ret <= 0) { free(body); ESP_LOGW(TAG, "LLM config save failed: recv error"); return ESP_FAIL; }
     cJSON *root = cJSON_Parse(body);
     free(body);
-    if (!root) return ESP_FAIL;
+    if (!root) { ESP_LOGW(TAG, "LLM config save failed: invalid JSON body"); return ESP_FAIL; }
 
     auto field_ok = [](cJSON *f) -> bool {
         return f && cJSON_IsString(f) && f->valuestring && strlen(f->valuestring) > 0;
@@ -2300,13 +2301,18 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
 
     nvs_handle_t nvs_h;
     esp_err_t err = nvs_open("claw_llm", NVS_READWRITE, &nvs_h);
-    if (err != ESP_OK) { cJSON_Delete(root); cJSON_Delete(resp); return ESP_FAIL; }
+    if (err != ESP_OK) { ESP_LOGW(TAG, "LLM config save failed: nvs_open error (%s)", esp_err_to_name(err)); cJSON_Delete(root); cJSON_Delete(resp); return ESP_FAIL; }
     nvs_set_str(nvs_h, "provider", j_provider->valuestring);
     nvs_set_str(nvs_h, "api_key", j_api_key->valuestring);
     nvs_set_str(nvs_h, "model", j_model->valuestring);
     nvs_set_str(nvs_h, "base_url", j_base_url->valuestring);
     nvs_commit(nvs_h);
     nvs_close(nvs_h);
+
+    ESP_LOGI(TAG, "LLM config saved successfully (provider=%s, model=%s)",
+             j_provider && j_provider->valuestring ? j_provider->valuestring : "",
+             j_model && j_model->valuestring ? j_model->valuestring : "");
+
     cJSON_Delete(root);
 
     cJSON_AddBoolToObject(resp, "ok", true);
