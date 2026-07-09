@@ -271,11 +271,11 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
         return -1;
     }
 
-    /* Lock only to find the topic and snapshot subscriber (index, generation) pairs.
-     * Queue operations (xQueueOverwrite/xQueueSend) are FreeRTOS
-     * thread-safe, so we don't need to hold the lock during delivery.
-     * This dramatically reduces contention for high-frequency topics
-     * (e.g., fps_stats published every frame). */
+    /* Hold the lock for the entire publish: find topic + deliver to
+     * all subscribers. This prevents a race with orb_unsubscribe()
+     * that could delete a queue (vQueueDelete) while we are mid-delivery
+     * (use-after-free). The lock is held briefly — just long enough to
+     * copy a few bytes into each subscriber's FreeRTOS queue. */
     lock();
     int t_idx = topic_find(meta);
     if (t_idx < 0) {
@@ -285,45 +285,23 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
 
     orb_topic_reg_t *topic = &s_topics[t_idx];
     int n_subs = topic->num_subscribers;
-    int sub_indices[ORB_MAX_SUBSCRIBERS];
-    int sub_generations[ORB_MAX_SUBSCRIBERS];
-    for (int i = 0; i < n_subs && i < ORB_MAX_SUBSCRIBERS; i++) {
-        int idx = topic->sub_indices[i];
-        sub_indices[i] = idx;
-        sub_generations[i] = s_subs[idx].generation;
-    }
-    unlock();
 
     const bool overwrite = (meta->o_depth == 1);
 
-    /* Deliver to subscribers lock-free (queue ops are thread-safe).
-     * ABA protection: we verify the generation counter still matches.
-     * If a subscriber handle was freed and reused between our snapshot
-     * and delivery, the generation will differ — we skip delivery to
-     * avoid sending data to the wrong subscriber.
-     * If the slot was simply unsubscribed (queue=NULL), we also skip. */
-    for (int i = 0; i < n_subs; i++) {
-        int s_idx = sub_indices[i];
+    for (int i = 0; i < n_subs && i < ORB_MAX_SUBSCRIBERS; i++) {
+        int s_idx = topic->sub_indices[i];
         if (s_idx < 0 || s_idx >= s_num_subs) continue;
 
-        /* ABA check: if generation changed, slot was freed and reused */
-        if (s_subs[s_idx].generation != sub_generations[i]) {
-            continue;
-        }
-
         QueueHandle_t q = s_subs[s_idx].queue;
-        if (q == NULL) {
-            continue;
-        }
+        if (q == NULL) continue;
 
         if (overwrite) {
-            /* Latest-only: always keep the newest message */
             xQueueOverwrite(q, data);
         } else {
-            /* Multi-depth: enqueue, drop if full */
             xQueueSend(q, data, 0);
         }
     }
+    unlock();
 
     return 0;
 }
