@@ -518,7 +518,9 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
 esp_err_t ulog_writer_stop(ulog_writer_t *writer)
 {
     if (!writer) return ESP_ERR_INVALID_ARG;
-    if (writer->state != ULOG_STATE_RUNNING) {
+    /* Allow stop() to clean up subscriptions even after a failed start().
+     * Only skip if already idle (fully stopped). */
+    if (writer->state == ULOG_STATE_IDLE) {
         return ESP_OK;
     }
 
