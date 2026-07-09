@@ -204,3 +204,16 @@ CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT=85
 # ESP-Claw IM Channels
 CONFIG_APP_CLAW_CAP_IM_WECHAT=y
 CONFIG_APP_CLAW_CAP_IM_TG=y
+
+# MbedTLS — allocate from PSRAM to avoid SRAM exhaustion on HTTPS connections
+# (WeChat iLink Bot, LLM API, etc. need TLS; default internal alloc fails
+#  with MBEDTLS_ERR_SSL_ALLOC_FAILED -0x008D)
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Reduce TLS I/O buffers to save memory (default 16KB in / 4KB out)
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# Disable hardware AES — cap_im_wechat uses software AES (esp_aes.h)
+# and enabling hardware AES conflicts with external mem alloc on P4
+CONFIG_MBEDTLS_HARDWARE_AES=n
+# Cross-signed cert verification needed for IDF 6.x
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
