@@ -24,7 +24,7 @@
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
 | 🌐 **Camera Stream** | `PhoneAppCameraStream` | WiFi 启动后通过浏览器实时查看 MJPEG 摄像头流, mDNS 发现, **PPA 硬件加速检测**, CPU/PSRAM 监控 |
-| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi** (WiFi 后台运行, 退出 App 保持连接) |
+| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi** (WiFi 始终启用, 后台运行, 退出 App 保持连接) |
 
 ## 开发环境
 - **芯片**: ESP32-P4NRW32
@@ -73,7 +73,7 @@ esp32p4_monitor/
 │   ├── phone_app_music.hpp     # Music App 头文件
 │   ├── phone_app_music.cpp     # Music App (MP3/WAV 播放器)
 │   ├── phone_app_settings.hpp     # Settings App 头文件
-│   ├── phone_app_settings.cpp     # Settings App (音量/亮度 + WiFi)
+│   ├── phone_app_settings.cpp     # Settings App (音量/亮度 + WiFi, WiFi 始终启用)
 │   ├── phone_app_camera_stream.hpp # Camera Stream App 头文件 (NEW)
 │   ├── phone_app_camera_stream.cpp # Camera Stream App (WiFi状态 + MJPEG切换 + 系统监控)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件

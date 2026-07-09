@@ -381,10 +381,7 @@ static const char *WEB_UI_HTML =
 "<div class=\"card\">"
 "<h2>WiFi Settings</h2>"
 "<div class=\"toggle-row\">"
-"<span>WiFi Enable</span>"
-"<label class=\"toggle\">"
-"<input type=\"checkbox\" id=\"wifi_en\" onchange=\"updateUI()\">"
-"<span class=\"slider\"></span></label></div>"
+"<span>WiFi (Always On)</span></div>"
 "<label>SSID</label>"
 "<input type=\"text\" id=\"ssid\" maxlength=\"32\" placeholder=\"WiFi name\">"
 "<label>Password</label>"
@@ -479,11 +476,10 @@ static const char *WEB_UI_HTML =
 "function updateVol(){"
 "document.getElementById('vol_val').textContent=document.getElementById('volume').value}"
 "function updateUI(){"
-"document.getElementById('ssid').disabled=!document.getElementById('wifi_en').checked;"
-"document.getElementById('pass').disabled=!document.getElementById('wifi_en').checked}"
+"document.getElementById('ssid').disabled=false;"
+"document.getElementById('pass').disabled=false}"
 "async function loadStatus(){"
 "try{let r=await fetch('/api/status');let j=await r.json();"
-"document.getElementById('wifi_en').checked=j.wifi_en!=0;"
 "document.getElementById('ssid').value=j.ssid||'';"
 "document.getElementById('pass').placeholder=j.has_pass?'(saved)':'WiFi password';"
 "document.getElementById('pass').value='';"
@@ -636,8 +632,7 @@ static const char *WEB_UI_HTML =
 "else showStatus('Error: '+j.error,'error')}"
 "catch(e){showStatus('Error','error')}}"
 "async function saveSettings(){"
-"let data={wifi_en:document.getElementById('wifi_en').checked?1:0,"
-"ssid:document.getElementById('ssid').value,"
+"let data={ssid:document.getElementById('ssid').value,"
 "pass:document.getElementById('pass').value,"
 "volume:parseInt(document.getElementById('volume').value)};"
 "showStatus('Saving...','info');"
@@ -850,7 +845,6 @@ static esp_err_t status_handler(httpd_req_t *req)
     char pass[65] = {};
     nvs_get_str(NVS_KEY_WIFI_SSID, ssid, sizeof(ssid));
     nvs_get_str(NVS_KEY_WIFI_PASS, pass, sizeof(pass));
-    int32_t wifi_en = nvs_get_i32_def(NVS_KEY_WIFI_EN, 0);
     int32_t volume  = nvs_get_i32_def(NVS_KEY_VOLUME, VOLUME_DEFAULT);
     int32_t cam_en = nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0);
     bool cam_running = CameraStream::instance().isRunning();
@@ -858,7 +852,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     /* Build JSON safely with cJSON — avoids injection from SSID special chars */
     cJSON *root = cJSON_CreateObject();
     if (!root) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM"); return ESP_FAIL; }
-    cJSON_AddNumberToObject(root, "wifi_en", wifi_en);
+    /* WiFi is always enabled — no wifi_en field needed */
     cJSON_AddStringToObject(root, "ssid", ssid);
     cJSON_AddBoolToObject(root, "has_pass", strlen(pass) > 0);  /* Never expose plaintext password */
     cJSON_AddNumberToObject(root, "volume", volume);
@@ -895,19 +889,16 @@ static esp_err_t settings_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    cJSON *j_wifi_en = cJSON_GetObjectItem(root, "wifi_en");
     cJSON *j_ssid    = cJSON_GetObjectItem(root, "ssid");
     cJSON *j_pass    = cJSON_GetObjectItem(root, "pass");
     cJSON *j_volume  = cJSON_GetObjectItem(root, "volume");
 
     /* Log old vs new values for debugging */
     {
-        int32_t old_wifi_en = nvs_get_i32_def(NVS_KEY_WIFI_EN, -1);
         int32_t old_volume  = nvs_get_i32_def(NVS_KEY_VOLUME, -1);
         char old_ssid[33] = {}; nvs_get_str(NVS_KEY_WIFI_SSID, old_ssid, sizeof(old_ssid));
         char old_pass[65] = {}; nvs_get_str(NVS_KEY_WIFI_PASS, old_pass, sizeof(old_pass));
 
-        int32_t new_wifi_en = j_wifi_en ? j_wifi_en->valueint : old_wifi_en;
         const char *new_ssid = (j_ssid && cJSON_IsString(j_ssid) && j_ssid->valuestring)
                                ? j_ssid->valuestring : old_ssid;
         const char *new_pass = (j_pass && cJSON_IsString(j_pass) && j_pass->valuestring)
@@ -916,9 +907,8 @@ static esp_err_t settings_handler(httpd_req_t *req)
         if (new_volume < VOLUME_MIN) new_volume = VOLUME_MIN;
         if (new_volume > VOLUME_MAX) new_volume = VOLUME_MAX;
 
-        ESP_LOGI(TAG, "Settings requested: wifi_en=%ld->%ld, ssid=\"%s\"->\"%s\", "
+        ESP_LOGI(TAG, "Settings requested: ssid=\"%s\"->\"%s\", "
                  "pass_len=%d->%d, volume=%ld->%ld",
-                 old_wifi_en, new_wifi_en,
                  old_ssid, new_ssid,
                  (int)strlen(old_pass), (int)strlen(new_pass),
                  old_volume, new_volume);
@@ -947,10 +937,10 @@ static esp_err_t settings_handler(httpd_req_t *req)
         skip_wifi = true;
     }
 
-    /* WiFi: try connecting first, save to NVS only on success */
+    /* WiFi: try connecting first, save to NVS only on success.
+     * WiFi is always enabled — no wifi_en check needed. */
     bool wifi_ok = true;  /* default true if no WiFi change */
     bool need_reconnect = !skip_wifi
-                          && j_wifi_en && j_wifi_en->valueint != 0
                           && j_ssid && cJSON_IsString(j_ssid)
                           && j_ssid->valuestring && strlen(j_ssid->valuestring) > 0;
     if (need_reconnect) {
@@ -999,7 +989,6 @@ static esp_err_t settings_handler(httpd_req_t *req)
 
         if (wifi_connected) {
             ESP_LOGI(TAG, "WiFi connected to %s — saving to NVS", target_ssid);
-            nvs_write_i32(NVS_KEY_WIFI_EN, 1);
             nvs_set_str_def(NVS_KEY_WIFI_SSID, target_ssid);
             if (target_pass && strlen(target_pass) > 0)
                 nvs_set_str_def(NVS_KEY_WIFI_PASS, target_pass);
@@ -1019,31 +1008,6 @@ static esp_err_t settings_handler(httpd_req_t *req)
                 if (strlen(old_pass) > 0)
                     strlcpy((char *)old_cfg.sta.password, old_pass, sizeof(old_cfg.sta.password));
                 esp_wifi_set_config(WIFI_IF_STA, &old_cfg);
-                esp_wifi_connect();
-            }
-        }
-    } else if (j_wifi_en && !skip_wifi) {
-        nvs_write_i32(NVS_KEY_WIFI_EN, j_wifi_en->valueint);
-        if (j_wifi_en->valueint == 0) {
-            /* WiFi OFF: disconnect and stop WiFi hardware immediately */
-            ESP_LOGI(TAG, "WiFi OFF requested — stopping WiFi");
-            esp_wifi_disconnect();
-            esp_wifi_stop();
-        } else {
-            /* WiFi ON (no new SSID): start WiFi and connect with saved credentials */
-            ESP_LOGI(TAG, "WiFi ON requested — connecting with saved credentials");
-            char saved_ssid[33] = {};
-            char saved_pass[65] = {};
-            nvs_get_str(NVS_KEY_WIFI_SSID, saved_ssid, sizeof(saved_ssid));
-            nvs_get_str(NVS_KEY_WIFI_PASS, saved_pass, sizeof(saved_pass));
-            if (strlen(saved_ssid) > 0) {
-                esp_wifi_start();
-                vTaskDelay(pdMS_TO_TICKS(500));
-                wifi_config_t wifi_cfg = {};
-                strlcpy((char *)wifi_cfg.sta.ssid, saved_ssid, sizeof(wifi_cfg.sta.ssid));
-                if (strlen(saved_pass) > 0)
-                    strlcpy((char *)wifi_cfg.sta.password, saved_pass, sizeof(wifi_cfg.sta.password));
-                esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
                 esp_wifi_connect();
             }
         }

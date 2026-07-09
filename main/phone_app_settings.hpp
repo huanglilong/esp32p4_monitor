@@ -67,7 +67,6 @@ private:
     static void wifiReconnectTimerCallback(TimerHandle_t xTimer);
 
     /* WiFi callbacks */
-    static void onWifiSwitchChanged(lv_event_t *e);
     static void onWifiRowClicked(lv_event_t *e);
     static void onWifiItemClicked(lv_event_t *e);
     static void onKeyboardEnterClicked(lv_event_t *e);
@@ -89,9 +88,8 @@ private:
     std::atomic<bool>      _is_ui_del;
 
     /* NVS parameters — flat struct avoids std::map / std::string heap allocations.
-     * Only 3 keys: wifi_en, volume, brightness — no need for a map. */
+     * Only 2 keys: volume, brightness — no need for a map. WiFi is always enabled. */
     struct {
-        int32_t wifi_en;
         int32_t volume;
         int32_t brightness;
     } _nvs;
@@ -104,7 +102,6 @@ private:
     /* LVGL objects - Main screen */
     lv_obj_t              *_scr_main;
 
-    lv_obj_t              *_sw_wifi;
     lv_obj_t              *_label_wifi;
 
     lv_obj_t              *_slider_vol;
@@ -129,12 +126,12 @@ private:
     static std::atomic<TaskHandle_t> _wifi_scan_task;
     static EventGroupHandle_t _wifi_event_group;
     static bool              _wifi_initialized;  // one-time netif/wifi init done
+    static std::atomic<bool> _wifi_connecting;   // true while connect task is running (intentional disconnect, also guards against multiple connect tasks)
     static TimerHandle_t     _wifi_reconnect_timer;  // 10s periodic reconnect timer
     static uint32_t          _wifi_reconnect_count;  // consecutive reconnect attempts
     static esp_event_handler_instance_t _wifi_handler_inst;  // WIFI_EVENT handler instance
     static esp_event_handler_instance_t _ip_handler_inst;    // IP_EVENT handler instance
     std::atomic<bool>       _wifi_scanning;
-    std::atomic<bool>       _wifi_connecting;     // Guard against multiple connect tasks
     static std::atomic<TaskHandle_t> _wifi_connect_task;   // Handle for connect task (for cleanup)
 
     static constexpr int   WIFI_SCAN_MAX = 20;

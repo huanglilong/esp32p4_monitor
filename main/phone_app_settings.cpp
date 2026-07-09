@@ -31,6 +31,7 @@ TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
 uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
+std::atomic<bool> PhoneAppSettings::_wifi_connecting{false};
 std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_connect_task{nullptr};
 
 /* Thread-safe WiFi state uORB publisher.
@@ -82,10 +83,10 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     _nvs_dirty(false), _nvs_save_timer(nullptr),
     _status_timer(nullptr),
     _screen_index(SCREEN_MAIN), _is_ui_del(true),
-    _nvs{0, VOLUME_DEFAULT, BRIGHTNESS_DEFAULT},
+    _nvs{VOLUME_DEFAULT, BRIGHTNESS_DEFAULT},
     _scr_main(nullptr),
 
-    _sw_wifi(nullptr), _label_wifi(nullptr),
+    _label_wifi(nullptr),
 
     _slider_vol(nullptr), _label_vol(nullptr),
     _slider_brightness(nullptr), _label_brightness(nullptr),
@@ -93,8 +94,7 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
     _scr_wifi_list(nullptr), _list_wifi(nullptr), _spinner_wifi(nullptr),
     _scr_wifi_pass(nullptr), _label_pass_ssid(nullptr),
 
-    _wifi_scanning(false),
-    _wifi_connecting(false)
+    _wifi_scanning(false)
 {
     memset(_wifi_ssid, 0, sizeof(_wifi_ssid));
     memset(_wifi_password, 0, sizeof(_wifi_password));
@@ -172,15 +172,9 @@ PhoneAppSettings::~PhoneAppSettings()
  *============================================================================*/
 void PhoneAppSettings::bootWifiAutoConnect(void)
 {
+    /* WiFi is always enabled — always attempt auto-connect if SSID is stored */
     nvs_handle_t nvs_h;
     if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READONLY, &nvs_h) != ESP_OK) {
-        return;
-    }
-
-    int32_t wifi_en = 0;
-    nvs_get_i32(nvs_h, NVS_KEY_WIFI_EN, &wifi_en);
-    if (!wifi_en) {
-        nvs_close(nvs_h);
         return;
     }
 
@@ -232,6 +226,9 @@ void PhoneAppSettings::bootWifiAutoConnect(void)
 
     esp_wifi_start();
 
+    /* Mark WiFi init as done so wifiConnectTaskHandler doesn't wait unnecessarily */
+    xEventGroupSetBits(_wifi_event_group, WIFI_INIT_DONE_BIT);
+
     /* Set credentials and connect */
     wifi_config_t wifi_cfg = {};
     size_t slen = strlen(ssid);
@@ -269,10 +266,10 @@ bool PhoneAppSettings::run(void)
     /* Start NVS commit debounce timer (500ms) to avoid flash wear from rapid slider events */
     _nvs_save_timer = lv_timer_create(_nvs_save_timer_cb, 500, this);
 
-    /* Auto-start WiFi scan task if WiFi was enabled from NVS.
+    /* WiFi is always enabled — start WiFi scan task if not already running.
      * If task already running (kept alive from previous session by close()),
      * reuse it — don't recreate. */
-    if (_nvs.wifi_en && _wifi_scan_task.load(std::memory_order_acquire) == nullptr) {
+    if (_wifi_scan_task.load(std::memory_order_acquire) == nullptr) {
         if (_wifi_event_group == nullptr) {
             _wifi_event_group = xEventGroupCreate();
         }
@@ -299,20 +296,15 @@ bool PhoneAppSettings::run(void)
         PhoneAppSettings *app = (PhoneAppSettings *)t->user_data;
         if (!app || app->_is_ui_del || app->_screen_index != SCREEN_MAIN) return;
 
-        /* WiFi status */
+        /* WiFi status — always enabled */
         if (app->_label_wifi) {
-            bool wifi_on = app->_nvs.wifi_en != 0;
-            if (wifi_on) {
-                if (app->_wifi_event_group &&
-                    (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
-                    esp_wifi_sta_get_rssi(&app->_wifi_rssi);
-                    const char *sig = (app->_wifi_rssi > -60) ? "***" : (app->_wifi_rssi > -80) ? "** " : "*  ";
-                    lv_label_set_text_fmt(app->_label_wifi, "Wi-Fi  %s  %s", sig, app->_wifi_ip);
-                } else {
-                    lv_label_set_text(app->_label_wifi, "Wi-Fi (connecting...)");
-                }
+            if (app->_wifi_event_group &&
+                (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
+                esp_wifi_sta_get_rssi(&app->_wifi_rssi);
+                const char *sig = (app->_wifi_rssi > -60) ? "***" : (app->_wifi_rssi > -80) ? "** " : "*  ";
+                lv_label_set_text_fmt(app->_label_wifi, "Wi-Fi  %s  %s", sig, app->_wifi_ip);
             } else {
-                lv_label_set_text(app->_label_wifi, "Wi-Fi");
+                lv_label_set_text(app->_label_wifi, "Wi-Fi (connecting...)");
             }
         }
 
@@ -424,9 +416,9 @@ bool PhoneAppSettings::loadNvsParam(void)
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) { ESP_LOGW(TAG, "NVS open failed, using defaults"); return false; }
-    /* Load each parameter; write default if not found in NVS */
+    /* Load each parameter; write default if not found in NVS.
+     * WiFi is always enabled — no wifi_en key needed. */
     struct { const char *key; int32_t *val; } params[] = {
-        { NVS_KEY_WIFI_EN,    &_nvs.wifi_en },
         { NVS_KEY_VOLUME,     &_nvs.volume },
         { NVS_KEY_BRIGHTNESS, &_nvs.brightness },
     };
@@ -529,7 +521,8 @@ void PhoneAppSettings::createMainScreen(void)
     lv_obj_set_style_border_width(cont_wifi, 0, 0);
     lv_obj_set_style_bg_opa(cont_wifi, LV_OPA_20, 0);
     lv_obj_set_style_bg_color(cont_wifi, lv_color_hex(0xE0E0E0), 0);
-    /* Tap the row to enter WiFi list */
+    /* WiFi is always enabled — no switch, just a label showing status.
+     * Tap the row to enter WiFi list for SSID selection. */
     lv_obj_add_flag(cont_wifi, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(cont_wifi, onWifiRowClicked, LV_EVENT_CLICKED, this);
 
@@ -541,10 +534,6 @@ void PhoneAppSettings::createMainScreen(void)
     lv_label_set_text(_label_wifi, "Wi-Fi");
     lv_obj_set_style_text_color(_label_wifi, lv_color_hex(0x000000), 0);
     lv_obj_align(_label_wifi, LV_ALIGN_LEFT_MID, 55, 0);
-
-    _sw_wifi = lv_switch_create(cont_wifi);
-    lv_obj_align(_sw_wifi, LV_ALIGN_RIGHT_MID, -15, 0);
-    lv_obj_add_event_cb(_sw_wifi, onWifiSwitchChanged, LV_EVENT_VALUE_CHANGED, this);
     /* --- Volume row --- */
     lv_obj_t *cont_vol = lv_obj_create(_scr_main);
     lv_obj_set_size(cont_vol, 620, 90);
@@ -601,19 +590,14 @@ void PhoneAppSettings::updateMainScreenFromNvs(void)
     int32_t vol = _nvs.volume;
     int32_t bri = _nvs.brightness;
 
-    int32_t wifi_en = _nvs.wifi_en;
-    if (wifi_en) {
-        lv_obj_add_state(_sw_wifi, LV_STATE_CHECKED);
-        /* Show connection status in WiFi row */
+    /* WiFi is always enabled — show connection status */
+    {
         if (strlen(_wifi_ip) > 0) {
             const char *sig = (_wifi_rssi > -60) ? "***" : (_wifi_rssi > -80) ? "** " : "*  ";
             lv_label_set_text_fmt(_label_wifi, "Wi-Fi  %s  %s", sig, _wifi_ip);
         } else {
             lv_label_set_text(_label_wifi, "Wi-Fi (connecting...)");
         }
-    } else {
-        lv_obj_clear_state(_sw_wifi, LV_STATE_CHECKED);
-        lv_label_set_text(_label_wifi, "Wi-Fi");
     }
     lv_slider_set_value(_slider_vol, (int32_t)vol, LV_ANIM_OFF);
     char buf[32];
@@ -991,18 +975,32 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
     memcpy(app->_wifi_password, pass, slen); app->_wifi_password[slen] = '\0';
 
     if (!app->_is_ui_del) app->processWifiConnect(WIFI_CONNECT_RUNNING);
+
+    /* Wait for WiFi init to complete (scan task calls wifiInit) */
+    if (app->_wifi_event_group) {
+        xEventGroupWaitBits(app->_wifi_event_group, WIFI_INIT_DONE_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(5000));
+    }
+
     esp_wifi_disconnect();
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     esp_wifi_connect();
+
+    if (!app->_wifi_event_group) {
+        ESP_LOGE(TAG, "WiFi event group is null — cannot wait for connection");
+        app->_wifi_connecting = false;
+        app->_wifi_connect_task.store(nullptr, std::memory_order_release);
+        vTaskDelete(NULL);
+        return;
+    }
 
     EventBits_t bits = xEventGroupWaitBits(app->_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
     if (bits & WIFI_CONNECTED_BIT) {
         app->setNvsStr(NVS_KEY_WIFI_SSID, app->_wifi_ssid);
         app->setNvsStr(NVS_KEY_WIFI_PASS, app->_wifi_password);
-        app->setNvsParam(NVS_KEY_WIFI_EN, 1);
-        app->_nvs.wifi_en = 1;
         vTaskDelay(pdMS_TO_TICKS(1000));
         if (!app->_is_ui_del) {
+            app->processWifiConnect(WIFI_CONNECT_SUCCESS);
+            vTaskDelay(pdMS_TO_TICKS(1500));
             app->processWifiConnect(WIFI_CONNECT_HIDE);
             if (bsp_display_lock(0)) {
                 lv_textarea_set_text(app->_ta_password, "");
@@ -1012,6 +1010,7 @@ void PhoneAppSettings::wifiConnectTaskHandler(void *arg)
             }
         }
     } else {
+        ESP_LOGW(TAG, "WiFi connect timed out waiting for WIFI_CONNECTED_BIT");
         if (!app->_is_ui_del) {
             app->processWifiConnect(WIFI_CONNECT_FAIL);
             vTaskDelay(pdMS_TO_TICKS(2000));
@@ -1055,19 +1054,14 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
         wifi_event_sta_disconnected_t *evt = (wifi_event_sta_disconnected_t *)event_data;
         ESP_LOGI(TAG, "WiFi disconnected, reason=%d", evt->reason);
         publish_wifi_state(false, false, 0, "");
-        /* Check if WiFi is enabled in NVS — if so, start 10s periodic reconnect */
-        nvs_handle_t nvs_h;
-        if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READONLY, &nvs_h) == ESP_OK) {
-            int32_t wifi_en = 0;
-            nvs_get_i32(nvs_h, NVS_KEY_WIFI_EN, &wifi_en);
-            nvs_close(nvs_h);
-            if (wifi_en && !_wifi_reconnect_timer) {
-                _wifi_reconnect_timer = xTimerCreate("wifi_recon",
-                    pdMS_TO_TICKS(10000), pdTRUE, NULL, wifiReconnectTimerCallback);
-                if (_wifi_reconnect_timer) {
-                    xTimerStart(_wifi_reconnect_timer, 0);
-                    ESP_LOGI(TAG, "WiFi auto-reconnect timer started (10s interval)");
-                }
+        /* WiFi is always enabled — start 10s periodic reconnect on disconnect,
+         * but skip if connect task is actively running (intentional disconnect for AP switch). */
+        if (!_wifi_connecting.load() && !_wifi_reconnect_timer) {
+            _wifi_reconnect_timer = xTimerCreate("wifi_recon",
+                pdMS_TO_TICKS(10000), pdTRUE, NULL, wifiReconnectTimerCallback);
+            if (_wifi_reconnect_timer) {
+                xTimerStart(_wifi_reconnect_timer, 0);
+                ESP_LOGI(TAG, "WiFi auto-reconnect timer started (10s interval)");
             }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -1105,76 +1099,8 @@ void PhoneAppSettings::onWifiRowClicked(lv_event_t *e)
     app->_screen_index = SCREEN_WIFI_LIST;
     lv_scr_load(app->_scr_wifi_list);
 
-    /* Start scan if WiFi is enabled */
-    if (app->_nvs.wifi_en) {
-        app->startWifiScan();
-    }
-}
-
-void PhoneAppSettings::onWifiSwitchChanged(lv_event_t *e)
-{
-    PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
-    if (!app) return;
-    bool on = lv_obj_has_state(app->_sw_wifi, LV_STATE_CHECKED);
-    app->_nvs.wifi_en = on ? 1 : 0;
-    app->setNvsParam(NVS_KEY_WIFI_EN, on ? 1 : 0);
-
-    if (on) {
-        if (app->_wifi_scan_task.load(std::memory_order_acquire) == nullptr) {
-            /* Create event group BEFORE spawning task (OFF path needs it) */
-            if (app->_wifi_event_group == NULL) {
-                app->_wifi_event_group = xEventGroupCreate();
-            }
-            if (app->_wifi_event_group == NULL) {
-                ESP_LOGE(TAG, "Failed to create WiFi event group");
-                lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
-                app->_nvs.wifi_en = 0;
-                app->setNvsParam(NVS_KEY_WIFI_EN, 0);
-                return;
-            }
-            TaskHandle_t h = nullptr;
-            BaseType_t ret = xTaskCreatePinnedToCore(wifiScanTaskHandler, "wifi_scan", TASK_STACK_WIFI_SCAN,
-                                         app, TASK_PRIO_WIFI_SCAN, &h, 1);  /* Core 1 */
-            if (ret != pdPASS) {
-                ESP_LOGE(TAG, "Failed to create WiFi scan task");
-                lv_obj_clear_state(app->_sw_wifi, LV_STATE_CHECKED);
-                app->_nvs.wifi_en = 0;
-                app->setNvsParam(NVS_KEY_WIFI_EN, 0);
-                vEventGroupDelete(app->_wifi_event_group);
-                app->_wifi_event_group = nullptr;
-            } else {
-                app->_wifi_scan_task.store(h, std::memory_order_release);
-            }
-        }
-    } else {
-        app->stopWifiScan();
-        if (app->_wifi_event_group &&
-            (xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
-            esp_wifi_disconnect();
-        }
-        esp_wifi_stop();  // Power down WiFi hardware (keeps stack init'd)
-        /* Stop and delete reconnection timer, reset count */
-        if (_wifi_reconnect_timer) {
-            xTimerStop(_wifi_reconnect_timer, 0);
-            xTimerDelete(_wifi_reconnect_timer, 0);
-            _wifi_reconnect_timer = nullptr;
-        }
-        _wifi_reconnect_count = 0;
-        /* Clean up scan task and event group on WiFi OFF */
-        if (app->_wifi_scan_task.load(std::memory_order_acquire)) {
-            vTaskDelete(app->_wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel));
-        }
-        if (app->_wifi_event_group) {
-            vEventGroupDelete(app->_wifi_event_group);
-            app->_wifi_event_group = nullptr;
-        }
-        /* Note: do NOT reset _wifi_initialized or unregister event handlers here.
-         * esp_netif_init() and esp_event_loop_create_default() are one-time init
-         * that abort if called again (ESP_ERROR_CHECK). esp_wifi_stop() is
-         * sufficient to power down WiFi. Handlers stay registered and check
-         * _wifi_event_group for null before use. On next ON, wifiInit() skips
-         * the one-time init and just calls esp_wifi_start(). */
-    }
+    /* Start scan — WiFi is always enabled */
+    app->startWifiScan();
 }
 
 void PhoneAppSettings::onWifiItemClicked(lv_event_t *e)
@@ -1220,5 +1146,5 @@ void PhoneAppSettings::onWifiListScreenLoaded(lv_event_t *e)
     if (!app) return;
     app->_screen_index = SCREEN_WIFI_LIST;
     app->processWifiConnect(WIFI_CONNECT_HIDE);
-    if (app->_nvs.wifi_en) app->startWifiScan();
+    app->startWifiScan();  // WiFi always enabled
 }

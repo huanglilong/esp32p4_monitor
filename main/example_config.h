@@ -62,7 +62,6 @@ extern "C" {
 /* NVS shared keys — used by PhoneAppSettings, PhoneAppMusic, web_config_server.
  * All settings use NVS namespace "settings". Keys must match across modules. */
 #define NVS_NAMESPACE_SETTINGS        "settings"
-#define NVS_KEY_WIFI_EN               "wifi_en"
 #define NVS_KEY_WIFI_SSID             "ssid"
 #define NVS_KEY_WIFI_PASS             "pass"
 #define NVS_KEY_VOLUME                "volume"

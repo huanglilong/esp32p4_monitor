@@ -23,7 +23,7 @@ class _CameraScreenState extends State<CameraScreen> {
   late final AppState _state = AppStateScope.of(context);
 
   // Parameter config form state
-  bool _wifiEnabled = false;
+  bool _wifiEnabled = true;  // WiFi is always enabled on device
   final _ssidController = TextEditingController();
   final _passwordController = TextEditingController();
   double _volume = 60;
@@ -54,7 +54,6 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _saveSettings() {
     _state.updateSettings(
-      wifiEnabled: _wifiEnabled,
       ssid: _ssidController.text,
       password: _passwordController.text,
       volume: _volume.round(),
@@ -147,34 +146,16 @@ class _CameraScreenState extends State<CameraScreen> {
                 onChanged: _setQuality,
               ),
               const SizedBox(height: 20),
-              _sectionTitle(Icons.wifi, 'WiFi'),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Text('启用 WiFi',
-                      style: TextStyle(color: Colors.white70, fontSize: 13)),
-                  const Spacer(),
-                  SizedBox(
-                    height: 24,
-                    child: Switch.adaptive(
-                      value: _wifiEnabled,
-                      activeTrackColor: Colors.cyan,
-                      onChanged: (v) => setState(() => _wifiEnabled = v),
-                    ),
-                  ),
-                ],
-              ),
+              _sectionTitle(Icons.wifi, 'WiFi (Always On)'),
               const SizedBox(height: 8),
               TextField(
                 controller: _ssidController,
-                enabled: _wifiEnabled,
                 style: const TextStyle(color: Colors.white, fontSize: 14),
                 decoration: _inputDecoration('SSID'),
               ),
               const SizedBox(height: 8),
               TextField(
                 controller: _passwordController,
-                enabled: _wifiEnabled,
                 obscureText: true,
                 style: const TextStyle(color: Colors.white, fontSize: 14),
                 decoration: _inputDecoration('Password'),

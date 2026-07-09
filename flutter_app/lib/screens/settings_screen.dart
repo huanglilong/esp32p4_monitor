@@ -21,7 +21,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Esp32HttpService? _http;
   bool _initialized = false;
 
-  bool _wifiEnabled = false;
+  bool _wifiEnabled = true;  // WiFi is always enabled on device
   final _ssidController = TextEditingController();
   final _passwordController = TextEditingController();
   double _volume = 60;
@@ -89,7 +89,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _saveSettings() async {
     await _state!.updateSettings(
-      wifiEnabled: _wifiEnabled, ssid: _ssidController.text,
+      ssid: _ssidController.text,
       password: _passwordController.text, volume: _volume.round(),
     );
     if (mounted) _loadSettings();
@@ -477,11 +477,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           constraints: const BoxConstraints(maxWidth: 420),
           child: ListView(padding: const EdgeInsets.all(12), children: [
         if (_settingsLoading) const Center(child: CircularProgressIndicator()) else ...[
-          Text('WiFi', style: tt.titleSmall),
-          Row(children: [const Text('Enable'), const Spacer(), Switch.adaptive(value: _wifiEnabled, onChanged: (v) => setState(() => _wifiEnabled = v))]),
-          TextField(controller: _ssidController, enabled: _wifiEnabled, decoration: const InputDecoration(labelText: 'SSID', border: OutlineInputBorder(), isDense: true)),
+          Text('WiFi (Always On)', style: tt.titleSmall),
+          TextField(controller: _ssidController, decoration: const InputDecoration(labelText: 'SSID', border: OutlineInputBorder(), isDense: true)),
           const SizedBox(height: 8),
-          TextField(controller: _passwordController, enabled: _wifiEnabled, obscureText: true, decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder(), isDense: true)),
+          TextField(controller: _passwordController, obscureText: true, decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder(), isDense: true)),
           const SizedBox(height: 12),
           Text('Volume: ${_volume.round()}', style: tt.titleSmall),
           Slider(value: _volume, min: 0, max: 100, divisions: 100, onChanged: (v) => setState(() => _volume = v)),

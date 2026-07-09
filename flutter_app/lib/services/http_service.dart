@@ -356,13 +356,11 @@ class Esp32HttpService {
 
   /// Update device settings via POST /api/settings.
   Future<void> updateSettings({
-    bool? wifiEnabled,
     String? ssid,
     String? password,
     int? volume,
   }) async {
     final body = <String, dynamic>{};
-    if (wifiEnabled != null) body['wifi_en'] = wifiEnabled ? 1 : 0;
     if (ssid != null) body['ssid'] = ssid;
     if (password != null) body['pass'] = password;
     if (volume != null) body['volume'] = volume;

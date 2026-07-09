@@ -441,7 +441,6 @@ static void boot_sdcard_wifi_config(void)
     nvs_set_str(nvs_h, "ssid", file_ssid);
     if (strlen(file_pass) > 0)
         nvs_set_str(nvs_h, "pass", file_pass);
-    nvs_set_i32(nvs_h, "wifi_en", 1);
     nvs_commit(nvs_h);
     nvs_close(nvs_h);
     ESP_LOGI(TAG, "WiFi config saved to NVS from SD wifi.txt");

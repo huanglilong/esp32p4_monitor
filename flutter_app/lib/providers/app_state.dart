@@ -50,7 +50,7 @@ class AppState extends ChangeNotifier {
   static const int _fpsWindowMs = 2000;
 
   // Device settings (from GET /api/status)
-  bool _wifiEnabled = false;
+  bool _wifiEnabled = true;  // WiFi is always enabled on device
   String _ssid = '';
   String _password = '';
   int _volume = 60;
@@ -310,7 +310,7 @@ class AppState extends ChangeNotifier {
     _detectionEnabled = false;
     _fps = 0.0;
     _fpsTimestamps.clear();
-    _wifiEnabled = false;
+    _wifiEnabled = true;  // WiFi is always enabled on device
     _ssid = '';
     _password = '';
     _volume = 60;
@@ -411,7 +411,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     try {
       final s = await _httpService.fetchSettings();
-      _wifiEnabled = (s['wifi_en'] as num?)?.toInt() == 1;
+      _wifiEnabled = true;  // WiFi is always enabled on device
       _ssid = (s['ssid'] as String?) ?? '';
       _password = (s['pass'] as String?) ?? '';
       _volume = (s['volume'] as num?)?.toInt() ?? 60;
@@ -426,7 +426,6 @@ class AppState extends ChangeNotifier {
 
   /// Save settings (WiFi, volume) to device.
   Future<void> updateSettings({
-    bool? wifiEnabled,
     String? ssid,
     String? password,
     int? volume,
@@ -434,7 +433,6 @@ class AppState extends ChangeNotifier {
     _addLog('Saving settings...');
     try {
       await _httpService.updateSettings(
-        wifiEnabled: wifiEnabled,
         ssid: ssid,
         password: password,
         volume: volume,

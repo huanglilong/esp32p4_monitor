@@ -30,7 +30,7 @@
 | R9 | **Audio MP3 录音** | Shine 定点编码器 128kbps stereo → SD 卡，录制/停止/文件列表 | ✅ |
 | R10 | **Music MP3/WAV 播放器** | ESP-GMF 音频管道，SD 卡音源，音量滑条 | ✅ |
 | R11 | **Settings 音量/亮度** | LVGL Slider (0–100 / 20–100), NVS 持久化，500ms 去抖写入 | ✅ |
-| R12 | **Settings WiFi 管理** | SSID 扫描 + 密码输入 + 连接，后台保持，条件编译 | ✅ |
+| R12 | **Settings WiFi 管理** | SSID 扫描 + 密码输入 + 连接，后台保持，WiFi 始终启用不可禁用 | ✅ |
 | R13 | **Web 配置服务器** | HTTP :8080，WiFi/音量远程设置，connect-before-save 验证 | ✅ |
 | R14 | **多板自动检测** | GT911 I2C (0x5D) 探测，自动适配 LCD-4B / WIFI6，单一固件 | ✅ |
 | R15 | **Web 音频录制** | WIFI6 无屏板通过 Web :8080 录制，Shine MP3 → SD 卡，Start/End 按钮 | ✅ |
@@ -133,6 +133,7 @@
 | R20 | ~~**CameraStream JPEG 快照**~~ | `/api/capture_image` 端点已移除，改为独立 capture task 架构 | ❌→移除 |
 | R21 | **CameraStream 内联人体检测** | capture task 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
 | R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, 默认 quality 30 下典型 5-8KB/帧、实测最大 ~9210B；`jpeg_data` 缓冲 10240B 覆盖绝大多数帧)，2fps；**录制随 Camera Stream 启停自动控制** (start→recording on, stop→recording off)，不再有独立按键/API；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`orb_metadata.o_size_no_padding` (PX4 惯例) 使 ULog writer 不写尾部 padding 字节，修复 pyulog 兼容性；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
+| R57 | **WiFi 始终启用** | 移除 `wifi_en` NVS 键和所有 UI 开关 (Settings App switch, Web checkbox, Flutter toggle)，WiFi 不可禁用；`bootWifiAutoConnect` 跳过 wifi_en 检查直接连接；断线自动重连无条件触发；`_nvs` struct 移除 `wifi_en` 字段 | ✅ |
 | S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
 | S87 | **AudioDriver deinit mutex 删除竞态** | `deinit()` 先置空 codec handles + yield 让 in-flight 操作退出，再安全删除 `_codec_mutex`；同时重置 `_vol_pub` 防止重启用 stale handle | ✅ |
 | S88 | **AudioDriver set_volume stale publish** | codec mutex 超时时跳过 uORB publish，避免发布未实际应用的音量值 | ✅ |
@@ -497,3 +498,4 @@
 | 2026-07-02 | +K4 Web 音频 Camera Stream 互斥未生效 (诊断中，已加 noinline + debug log) |
 | 2026-07-02 | **修复**: K4/R17 全部 6 个 Web 音频端点均加 `__cam_running()` 检查；CameraStream `_detector`/`_frame_count`/`_fps_total_bytes` 加 volatile；SD LDO re-acquire 返回值检查；`localtime()`→`localtime_r()`；`vTaskDelete` 自删除防护 |
 | 2026-07-08 | +S216 SRAM 优化: 禁用 EAP (WPA2-Enterprise, 省约1.1KB IRAM+21KB PSRAM) + DVP (此板仅用MIPI CSI); S175 TCP 窗口 64KB→32KB (65536超Kconfig range被钳制为5760, 32768无需WND_SCALE) |
+| 2026-07-09 | +R57 WiFi 始终启用: 移除 wifi_en NVS 键和 UI 开关, WiFi 不可禁用 (Settings App 移除 switch, Web 移除 checkbox, Flutter 移除 toggle, bootWifiAutoConnect 跳过 wifi_en 检查, 断线自动重连无条件触发) |
