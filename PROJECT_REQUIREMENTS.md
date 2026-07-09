@@ -294,6 +294,11 @@
 | S238 | **WeChat/LLM handler cJSON NULL + token 暴露** | 9 个 HTTP handler 将 `cJSON_PrintUnformatted()` 结果直接传给 `httpd_resp_sendstr()` 无 NULL 检查，OOM 时 NPE 崩溃。同时 `h_wx_login_status` 返回明文 WeChat auth token。修复: 全部添加 NULL 检查 + HTTP 500 fallback + `free()`→`cJSON_free()`；token 改为 `has_token` 布尔标志 | ✅ |
 | S239 | **PhoneAppCamera _v4l2_buf_count 未截断** | `VIDIOC_REQBUFS` 返回的 `req.count` 直接赋值给 `_v4l2_buf_count`，未截断到固定数组大小 2。V4L2 驱动返回 >2 时，后续循环越界写入 `_v4l2_buffers[]`/`_v4l2_buf_len[]` 导致栈/堆损坏。修复: 添加截断检查，匹配 CameraStream 已有的相同防护 (S196) | ✅ |
 | S240 | **PhoneAppAudio _stop_recording UAF** | `_stop_recording()` 用 `vTaskDelay(200ms)` 等待音频任务退出录制块后释放 `_pcm_buffer`/`_encoder`，但系统负载高时任务可能被抢占超过 200ms，导致 use-after-free。修复: 新增 `_recording_ops_in_flight` 原子计数器，任务进入录制块递增/退出递减，`_stop_recording()` 轮询等待计数归零 (最长 1s)，匹配 AudioDriver `_codec_ops_in_flight` 模式 (S182) | ✅ |
+| S241 | **uORB 订阅者槽位泄漏 (xQueueCreate 失败)** | `orb_subscribe()` 消耗槽位后若 `xQueueCreate()` 失败 (OOM)，槽位永久丢失。修复: 失败时将槽位归还 free-list 或回退 `s_num_subs`，防止内存压力下耗尽 ORB_MAX_SUBS 池 | ✅ |
+| S242 | **ULog 订阅泄漏 (start 失败)** | `ulog_writer_start()` 订阅所有 topic 后若写入/task 创建失败，订阅永不释放；`stop()` 仅处理 RUNNING 态，重试循环可耗尽 256 订阅者槽位。修复: `stop()` 改为仅跳过 IDLE 态，ERROR 态也执行完整清理 (unsubscribe + close + free) | ✅ |
+| S243 | **orb_publish 无锁投递 use-after-free** | `orb_publish()` 快照订阅者后释放锁，并发 `orb_unsubscribe()` 可 `vQueueDelete` 释放队列，投递时写入已释放内存。修复: 整个 publish (查找 topic + 投递) 全程持锁，xQueue 操作非阻塞锁时间极短 | ✅ |
+| S244 | **AudioDriver codec I2C 控制句柄 NULL** | `audio_codec_new_i2c_ctrl()` 分配失败可返回 NULL，但三个调用点 (DAC ctrl/ADC ctrl/WIFI6 ES8311 ctrl) 均未检查，传入 codec 构造函数导致崩溃。修复: 三处均添加 NULL 检查，失败时设 `init_ok=false` 跳过 codec 创建 | ✅ |
+| S245 | **CameraStream PSRAM 缓冲区 free/alloc 不匹配** | 析构函数用 `free()` 释放 `_shared_jpeg_buf` (由 `heap_caps_realloc(..., MALLOC_CAP_SPIRAM)` 分配)，API 不匹配。修复: 改用 `heap_caps_free()` 匹配分配 API，避免分配器实现变更风险 | ✅ |
 
 ### 2.3 系统性能监控
 
