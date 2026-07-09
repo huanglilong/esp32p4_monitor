@@ -2196,6 +2196,20 @@ static esp_err_t cap_im_wechat_gateway_start(void)
     }
 
     s_wechat.stop_requested = false;
+    {
+        char masked[16];
+        size_t tlen = strlen(s_wechat.token);
+        if (tlen > 6) {
+            snprintf(masked, sizeof(masked), "%.6s...%s",
+                     s_wechat.token, s_wechat.token + tlen - 4);
+        } else if (tlen > 0) {
+            snprintf(masked, sizeof(masked), "%s", s_wechat.token);
+        } else {
+            snprintf(masked, sizeof(masked), "(empty)");
+        }
+        ESP_LOGI(TAG, "gateway start: base_url=%s token=%s configured=%d",
+                 s_wechat.base_url, masked, s_wechat.configured);
+    }
     ok = claw_task_create(&(claw_task_config_t){
                               .name = "wechat_poll",
                               .stack_size = 6144,
@@ -2705,6 +2719,10 @@ static esp_err_t cap_im_wechat_qr_poll_once_locked(void)
         }
         s_wechat.qr.completed = true;
         s_wechat.qr.active = false;
+        ESP_LOGI(TAG, "qr confirmed: bot_token[0..6]=%.*s ilink_bot_id=%s ilink_user_id=%s base_url=%s",
+                 s_wechat.qr.bot_token[0] ? 6 : 0, s_wechat.qr.bot_token,
+                 s_wechat.qr.ilink_bot_id, s_wechat.qr.ilink_user_id,
+                 s_wechat.qr.base_url);
     } else {
         strlcpy(s_wechat.qr.status, "error", sizeof(s_wechat.qr.status));
         strlcpy(s_wechat.qr.message, "二维码状态未知。", sizeof(s_wechat.qr.message));

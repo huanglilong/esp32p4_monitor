@@ -2199,6 +2199,25 @@ static esp_err_t h_wx_login_persist(httpd_req_t *req)
     nvs_commit(nvs_h);
     nvs_close(nvs_h);
     cap_im_wechat_qr_login_mark_persisted();
+
+    /* Apply the freshly scanned credentials to the live session. The poll task
+     * reads s_wechat.token / s_wechat.base_url on every iteration, so updating
+     * them here is enough for getupdates to switch to the new token on its next
+     * call. start() is a no-op if the gateway is already running, otherwise it
+     * launches it. No stop()/free is needed, which avoids blocking the httpd
+     * task while the long-poll exits. */
+    cap_im_wechat_client_config_t cfg = {
+        .token = st.token,
+        .base_url = st.base_url[0] ? st.base_url : "https://ilinkai.weixin.qq.com",
+        .cdn_base_url = "https://novac2c.cdn.weixin.qq.com/c2c",
+        .account_id = st.account_id[0] ? st.account_id : "default",
+        .app_id = "bot",
+        .client_version = "131329",
+        .route_tag = NULL,
+    };
+    if (cap_im_wechat_set_client_config(&cfg) == ESP_OK) {
+        cap_im_wechat_start();
+    }
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp, "ok", true);
     cJSON_AddStringToObject(resp, "message", "Token saved to NVS");
