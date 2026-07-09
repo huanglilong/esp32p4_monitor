@@ -184,7 +184,9 @@ orb_sub_t orb_subscribe(orb_id_t meta)
     /* Allocate a subscriber slot: prefer free-list (reused slots),
      * then fall back to appending at s_num_subs. */
     int s_idx;
+    bool from_free_list = false;
     if (s_sub_free_count > 0) {
+        from_free_list = true;
         s_idx = s_sub_free_list[--s_sub_free_count];
     } else if (s_num_subs < ORB_MAX_SUBS) {
         s_idx = s_num_subs++;
@@ -196,6 +198,12 @@ orb_sub_t orb_subscribe(orb_id_t meta)
     /* Create the per-subscriber queue */
     QueueHandle_t q = xQueueCreate(meta->o_depth, meta->o_size);
     if (q == NULL) {
+        /* Return the consumed slot to allow future subscribes */
+        if (from_free_list) {
+            s_sub_free_list[s_sub_free_count++] = s_idx;
+        } else {
+            s_num_subs--;
+        }
         unlock();
         return -1;
     }
