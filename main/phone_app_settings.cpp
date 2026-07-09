@@ -11,6 +11,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "example_config.h"
+#include "camera_stream.hpp"
 #include <string.h>
 #include <stdio.h>
 #include <atomic>
@@ -33,6 +34,9 @@ esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
 std::atomic<bool> PhoneAppSettings::_wifi_connecting{false};
 std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_connect_task{nullptr};
+
+/* uORB subscriber for camera stream FPS stats — static, shared across instances */
+orb_sub_t PhoneAppSettings::s_fps_sub = -1;
 
 /* Thread-safe WiFi state uORB publisher.
  * wifiEventHandler runs on the system event task and can fire concurrently
@@ -90,6 +94,9 @@ PhoneAppSettings::PhoneAppSettings(bool use_status_bar, bool use_navigation_bar)
 
     _slider_vol(nullptr), _label_vol(nullptr),
     _slider_brightness(nullptr), _label_brightness(nullptr),
+
+    _sw_cam_stream(nullptr), _label_cam_status(nullptr),
+    _cam_fps(0), _cam_frame_count(0),
 
     _scr_wifi_list(nullptr), _list_wifi(nullptr), _spinner_wifi(nullptr),
     _scr_wifi_pass(nullptr), _label_pass_ssid(nullptr),
@@ -291,7 +298,12 @@ bool PhoneAppSettings::run(void)
         ESP_LOGI(TAG, "Reusing existing WiFi background task");
     }
 
-    /* WiFi/Volume/Brightness status refresh timer: update every 1s */
+    /* Subscribe to fps_stats uORB topic for camera stream status */
+    if (s_fps_sub < 0) {
+        s_fps_sub = orb_subscribe(ORB_ID(fps_stats));
+    }
+
+    /* WiFi/Volume/Brightness/Camera status refresh timer: update every 1s */
     _status_timer = lv_timer_create([](lv_timer_t *t) {
         PhoneAppSettings *app = (PhoneAppSettings *)t->user_data;
         if (!app || app->_is_ui_del || app->_screen_index != SCREEN_MAIN) return;
@@ -322,6 +334,34 @@ bool PhoneAppSettings::run(void)
             char buf[32];
             snprintf(buf, sizeof(buf), "Brightness: %ld", bri);
             lv_label_set_text(app->_label_brightness, buf);
+        }
+
+        /* Camera Stream status — sync switch and label with actual state */
+        if (app->_sw_cam_stream && app->_label_cam_status) {
+            bool running = CameraStream::instance().isRunning();
+            bool sw_on = lv_obj_has_state(app->_sw_cam_stream, LV_STATE_CHECKED);
+            if (running != sw_on) {
+                if (running) lv_obj_add_state(app->_sw_cam_stream, LV_STATE_CHECKED);
+                else lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
+            }
+            if (running) {
+                /* Read latest FPS stats from uORB (non-blocking) */
+                bool updated = false;
+                struct fps_stats_s fps_data = {};
+                if (s_fps_sub >= 0 && orb_check(s_fps_sub, &updated) == 0 && updated) {
+                    orb_copy(ORB_ID(fps_stats), s_fps_sub, &fps_data);
+                    app->_cam_fps = (uint32_t)fps_data.fps;
+                    app->_cam_frame_count = fps_data.frame_count;
+                }
+                lv_label_set_text_fmt(app->_label_cam_status,
+                    "Stream  %lux%lu  %lu fps",
+                    (unsigned long)CameraStream::instance()._cam_width,
+                    (unsigned long)CameraStream::instance()._cam_height,
+                    (unsigned long)app->_cam_fps);
+            } else {
+                app->_cam_fps = 0;
+                lv_label_set_text(app->_label_cam_status, "Stream  idle");
+            }
         }
     }, 1000, this);
 
@@ -369,6 +409,12 @@ bool PhoneAppSettings::close(void)
 
     _is_ui_del = true;
 
+    /* Unsubscribe from fps_stats uORB topic */
+    if (s_fps_sub >= 0) {
+        orb_unsubscribe(s_fps_sub);
+        s_fps_sub = -1;
+    }
+
     /* Null out LVGL pointers — widgets may be freed by framework.
      * WiFi task and event group: keep alive if connected (persistent connection),
      * clean up only if WiFi is off or disconnected. */
@@ -379,6 +425,8 @@ bool PhoneAppSettings::close(void)
     _scr_wifi_pass = nullptr;
     _spinner_connect = nullptr;
     _label_connect_status = nullptr;
+    _sw_cam_stream = nullptr;
+    _label_cam_status = nullptr;
 
     bool wifi_connected = _wifi_event_group &&
         (xEventGroupGetBits(_wifi_event_group) & WIFI_CONNECTED_BIT);
@@ -582,6 +630,33 @@ void PhoneAppSettings::createMainScreen(void)
     lv_slider_set_range(_slider_brightness, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
     lv_obj_add_event_cb(_slider_brightness, onBrightnessSliderChanged, LV_EVENT_VALUE_CHANGED, this);
 
+    /* --- Camera Stream row --- */
+    lv_obj_t *cont_cam = lv_obj_create(_scr_main);
+    lv_obj_set_size(cont_cam, 620, 60);
+    lv_obj_align(cont_cam, LV_ALIGN_TOP_MID, 0, 355);
+    lv_obj_set_style_border_width(cont_cam, 0, 0);
+    lv_obj_set_style_bg_opa(cont_cam, LV_OPA_20, 0);
+    lv_obj_set_style_bg_color(cont_cam, lv_color_hex(0xE0E0E0), 0);
+
+    lv_obj_t *icon_cam = lv_label_create(cont_cam);
+    lv_label_set_text(icon_cam, LV_SYMBOL_IMAGE);
+    lv_obj_align(icon_cam, LV_ALIGN_LEFT_MID, 15, 0);
+
+    _label_cam_status = lv_label_create(cont_cam);
+    lv_label_set_text(_label_cam_status, "Stream  idle");
+    lv_obj_set_style_text_color(_label_cam_status, lv_color_hex(0x000000), 0);
+    lv_obj_align(_label_cam_status, LV_ALIGN_LEFT_MID, 55, 0);
+
+    _sw_cam_stream = lv_switch_create(cont_cam);
+    lv_obj_align(_sw_cam_stream, LV_ALIGN_RIGHT_MID, -15, 0);
+    /* Sync switch with CameraStream actual state (may already be running) */
+    if (CameraStream::instance().isRunning()) {
+        lv_obj_add_state(_sw_cam_stream, LV_STATE_CHECKED);
+    } else {
+        lv_obj_clear_state(_sw_cam_stream, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(_sw_cam_stream, onCamStreamSwitchChanged, LV_EVENT_VALUE_CHANGED, this);
+
     updateMainScreenFromNvs();
 }
 
@@ -726,6 +801,52 @@ void PhoneAppSettings::onMainScreenLoaded(lv_event_t *e)
     if (!app) return;
     app->_screen_index = SCREEN_MAIN;
     app->updateMainScreenFromNvs();
+}
+
+void PhoneAppSettings::onCamStreamSwitchChanged(lv_event_t *e)
+{
+    PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
+    if (!app) return;
+
+    bool on = lv_obj_has_state(app->_sw_cam_stream, LV_STATE_CHECKED);
+
+    if (on) {
+        /* Check WiFi is connected before starting stream */
+        if (!app->_wifi_event_group ||
+            !(xEventGroupGetBits(app->_wifi_event_group) & WIFI_CONNECTED_BIT)) {
+            ESP_LOGW(TAG, "Cannot start stream: WiFi not connected");
+            lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
+            return;
+        }
+        ESP_LOGI(TAG, "Starting camera stream...");
+        /* CameraStream::start() does heavy hardware init (V4L2, JPEG encoder,
+         * detection model load) that can take seconds — run in a separate task
+         * to avoid blocking the LVGL task and freezing the UI. */
+        xTaskCreatePinnedToCore([](void *arg) {
+            PhoneAppSettings *a = (PhoneAppSettings *)arg;
+            if (!CameraStream::instance().start()) {
+                ESP_LOGE(TAG, "Camera stream start failed");
+                /* Revert switch on LVGL task */
+                if (!a->_is_ui_del && a->_sw_cam_stream) {
+                    lv_obj_clear_state(a->_sw_cam_stream, LV_STATE_CHECKED);
+                }
+            } else {
+                ESP_LOGI(TAG, "Camera stream started — http://%s/stream", a->_wifi_ip);
+            }
+            vTaskDelete(NULL);
+        }, "cam_start", 4096, app, 3, nullptr, 1);  /* Core 1, low prio */
+    } else {
+        ESP_LOGI(TAG, "Stopping camera stream...");
+        /* stop() is relatively fast (signal task + wait), but run in separate
+         * task anyway to keep UI responsive. */
+        xTaskCreatePinnedToCore([](void *) {
+            CameraStream::instance().stop();
+            vTaskDelete(NULL);
+        }, "cam_stop", 3072, nullptr, 3, nullptr, 1);
+    }
+
+    app->_cam_fps = 0;
+    app->_cam_frame_count = 0;
 }
 
 /*============================================================================
@@ -1055,6 +1176,11 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
         wifi_event_sta_disconnected_t *evt = (wifi_event_sta_disconnected_t *)event_data;
         ESP_LOGI(TAG, "WiFi disconnected, reason=%d", evt->reason);
         publish_wifi_state(false, false, 0, "");
+        /* Auto-stop camera stream on WiFi disconnect */
+        if (CameraStream::instance().isRunning()) {
+            ESP_LOGW(TAG, "WiFi disconnected — stopping camera stream");
+            CameraStream::instance().stop();
+        }
         /* WiFi is always enabled — start 10s periodic reconnect on disconnect,
          * but skip if connect task is actively running (intentional disconnect for AP switch). */
         if (!_wifi_connecting.load() && !_wifi_reconnect_timer) {

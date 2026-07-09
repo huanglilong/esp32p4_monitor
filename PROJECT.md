@@ -23,8 +23,7 @@
 | 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
-| 🌐 **Camera Stream** | `PhoneAppCameraStream` | WiFi 启动后通过浏览器实时查看 MJPEG 摄像头流, mDNS 发现, **PPA 硬件加速检测**, CPU/PSRAM 监控 |
-| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi** (WiFi 始终启用, 后台运行, 退出 App 保持连接) |
+| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi + Camera Stream 开关** (WiFi 始终启用, 后台运行; Camera Stream 独立于 App 生命周期, 仅开关控制) |
 
 ## 开发环境
 - **芯片**: ESP32-P4NRW32
@@ -74,8 +73,6 @@ esp32p4_monitor/
 │   ├── phone_app_music.cpp     # Music App (MP3/WAV 播放器)
 │   ├── phone_app_settings.hpp     # Settings App 头文件
 │   ├── phone_app_settings.cpp     # Settings App (音量/亮度 + WiFi, WiFi 始终启用)
-│   ├── phone_app_camera_stream.hpp # Camera Stream App 头文件 (NEW)
-│   ├── phone_app_camera_stream.cpp # Camera Stream App (WiFi状态 + MJPEG切换 + 系统监控)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件
 │   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → capture task + HTTP MJPEG + mDNS)
 │   ├── ppa_preprocessor.hpp       # PPA 硬件预处理 (RGB565→RGB888 resize)
@@ -343,8 +340,7 @@ app_main()
   │      → PhoneAppCamera        (CSI camera: run→init, close→deinit)
   │      → PhoneAppAudio         (音频+SD: run→init SD, close→deinit audio only)
   │      → PhoneAppMusic         (音频+SD: run→init SD, close→deinit audio only)
-  │      → PhoneAppSettings      (WiFi: run→init)
-  │      → PhoneAppCameraStream  (CSI camera + mDNS + HTTP: run→init, close→deinit)
+  │      → PhoneAppSettings      (WiFi + Camera Stream: run→init)
   │
   ├─ 5. Web Config Server (HTTP :8080)
   │
@@ -603,11 +599,10 @@ SD Card (.mp3/.wav) → GMF File IO → GMF Audio Pipeline (解码) → _asp_out
 - 通过 WiFi 将摄像头画面以 MJPEG 格式推流到 HTTP (port 81)
 - 参考 `simple_video_server` 项目, 使用 V4L2 + `esp_new_jpeg` SW 编码器
 - mDNS: `esp-web-XXXXXX.local` (primary, unique per device) + `esp-web.local` (convenient alias)
-- 启动条件: Toggle ON + WiFi 已连接 + Settings App 运行中
-- 自动停止: Toggle OFF / WiFi 断开 / 退出 Settings App
+- 启动条件: Toggle ON + WiFi 已连接
+- 自动停止: Toggle OFF / WiFi 断开
+- **独立生命周期**: Camera Stream 不随 Settings App 退出而停止, 仅通过开关控制
 - **不持久化**: 重启后默认 OFF
-- **JPEG 快照**: `/api/capture_image` 返回最新帧 (stream handler 每帧缓存)
-- **内联人体检测**: 每 3 帧运行 COCODetect (PPA 加速预处理), 检测框绘制在 JPEG 帧上
 
 **NVS 命名空间**: `"settings"`
 
@@ -620,9 +615,10 @@ SD Card (.mp3/.wav) → GMF File IO → GMF Audio Pipeline (解码) → _asp_out
 - 主程序启动后从 NVS 读取并应用亮度
 - 所有更改立即保存到 NVS
 
-### 14. Camera Stream App — 流媒体优化与 Web UI
+### 14. Camera Stream — 流媒体优化与 Web UI
 
-`PhoneAppCameraStream` 独立于 Settings App, 通过浏览器实时查看 MJPEG 摄像头流。
+Camera Stream 通过 Settings App 的开关控制, 退出 Settings App 不会停止推流。
+通过浏览器实时查看 MJPEG 摄像头流。
 
 | 项目 | 配置 |
 |------|------|

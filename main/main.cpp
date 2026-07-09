@@ -25,7 +25,6 @@
 #include "phone_app_audio.hpp"
 #include "phone_app_music.hpp"
 #include "phone_app_settings.hpp"
-#include "phone_app_camera_stream.hpp"
 #include "web_config_server.hpp"
 #include "logger/logger.hpp"
 #include "system_monitor.hpp"
@@ -339,11 +338,6 @@ static void monitor_init_brookesia(lv_display_t *disp)
     {
         PhoneAppSettings *app_settings = new (std::nothrow) PhoneAppSettings(false, false);
         if (!app_settings || phone->installApp(app_settings) < 0) { ESP_LOGE(TAG, "Install settings app failed"); delete app_settings; goto cleanup; }
-    }
-
-    {
-        PhoneAppCameraStream *app_cam_stream = new (std::nothrow) PhoneAppCameraStream(false, false);
-        if (!app_cam_stream || phone->installApp(app_cam_stream) < 0) { ESP_LOGE(TAG, "Install camera stream app failed"); delete app_cam_stream; goto cleanup; }
     }
 
     lv_timer_create(on_clock_update_timer_cb, 1000, phone);

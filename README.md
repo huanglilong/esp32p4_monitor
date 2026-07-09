@@ -100,9 +100,10 @@
 ### Software Features
 - **MIPI DSI** 720×720 LCD + GT911 Touch (ESP-Brookesia Phone UI, LVGL v9.2.2)
 - **MIPI CSI** OV5647 camera (V4L2, ~5fps, HW JPEG, PPA-accelerated preprocessing; Camera App is preview-only, detection runs in Camera Stream)
-- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, inline detection, independent capture task, TCP keep-alive)
+- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, inline detection, independent capture task, TCP keep-alive; toggle in Settings App)
 - **Audio** Dual mic monitoring + MP3 recording (Shine encoder, SD card) + Music playback (ESP-GMF)
 - **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording, WiFi recovery httpd restart)
+- **Settings App** Volume/brightness sliders + WiFi + Camera Stream enable/disable (stream persists across app close/open)
 - **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video viewer (parse .ulg frames, slideshow, save)
 - **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
 - **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible, auto-start on WiFi+SNTP)

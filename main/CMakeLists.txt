@@ -97,7 +97,7 @@ idf_component_register(
          "logger/logger.cpp"
          "phone_app_camera.cpp" "phone_app_audio.cpp"
          "phone_app_music.cpp" "phone_app_settings.cpp"
-         "phone_app_camera_stream.cpp" "camera_stream.cpp"
+         "camera_stream.cpp"
          "web_config_server.cpp"
          "ppa_preprocessor.cpp"
          "generated/fps_stats.cpp"

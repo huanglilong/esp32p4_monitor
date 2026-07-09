@@ -9,6 +9,9 @@
 #include "esp_brookesia.hpp"
 #include "esp_event.h"
 #include "esp_wifi.h"
+#include "uorb.h"
+#include "topics.h"
+
 class PhoneAppSettings : public ESP_Brookesia_PhoneApp {
 public:
     PhoneAppSettings(bool use_status_bar = false, bool use_navigation_bar = false);
@@ -77,6 +80,9 @@ private:
     static void onBrightnessSliderChanged(lv_event_t *e);
     static void onMainScreenLoaded(lv_event_t *e);
 
+    /* Camera Stream callback */
+    static void onCamStreamSwitchChanged(lv_event_t *e);
+
     /* NVS debounce save (avoids flash wear from rapid slider events) */
     static void _nvs_save_timer_cb(lv_timer_t *timer);
     bool                   _nvs_dirty;
@@ -108,6 +114,15 @@ private:
     lv_obj_t              *_label_vol;
     lv_obj_t              *_slider_brightness;
     lv_obj_t              *_label_brightness;
+
+    /* LVGL objects - Camera Stream */
+    lv_obj_t              *_sw_cam_stream;
+    lv_obj_t              *_label_cam_status;
+
+    /* Camera Stream state */
+    static orb_sub_t       s_fps_sub;
+    uint32_t               _cam_fps;
+    uint32_t               _cam_frame_count;
 
     /* LVGL objects - WiFi list screen */
     lv_obj_t              *_scr_wifi_list;
