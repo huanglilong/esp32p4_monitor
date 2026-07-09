@@ -15,12 +15,20 @@
     - check the logs and error messages, try to find the root cause
     - if cannot confirm the root cause, add logs in the code to help debug.
 
-# Git
+## Git
 1. every git commit must be approved by user!
 2. git push is forbidden!
 3. **one issue, one commit** — each commit must address exactly ONE issue/feature/bugfix. Never bundle multiple unrelated changes into a single commit. If a task involves multiple issues, create separate commits for each one.
 4. commit message should be clear and concise, describing the changes made and useful for future reference, use english language for commit message by default
 5. before committing, verify the build passes (`idf.py build`) to ensure the commit does not introduce regressions
+
+## Reference Open source Projects
+1. PX4-Autopilot: https://github.com/PX4/PX4-Autopilot
+    - uORB
+    - Ulog
+    - Architecture
+2. ESP-Claw: https://github.com/espressif/esp-claw
+3. if any changes are made to the code(include in components), please follow the coding style and architecture!
 
 ## ESP-DIF Build, Flash, and Monitor
 1. source ~/.espressif/v6.x/esp-idf/export.sh
