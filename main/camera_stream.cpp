@@ -894,11 +894,15 @@ void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
     }
 #endif
 
-    /* CPU fallback: pass RGB565 directly, COCODetect does full preprocess */
+    /* CPU fallback: pass RGB565 directly, COCODetect does full preprocess.
+     * If buffer is NULL, _detect_in_buf was already populated by the caller
+     * (e.g. capture task copied V4L2 data before calling us). */
     if (!ppa_ok) {
-        if (!buffer || !_detect_in_buf) return;
-        uint32_t copy_sz = (size < _detect_in_size) ? size : _detect_in_size;
-        memcpy(_detect_in_buf, buffer, copy_sz);
+        if (!_detect_in_buf) return;
+        if (buffer) {
+            uint32_t copy_sz = (size < _detect_in_size) ? size : _detect_in_size;
+            memcpy(_detect_in_buf, buffer, copy_sz);
+        }
         img = {
             .data = _detect_in_buf,
             .width = (uint16_t)_cam_width,
