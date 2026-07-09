@@ -2664,7 +2664,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 29;  /* 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 2 spare */
+    config.max_uri_handlers = 42;  /* 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 8 WeChat + 3 LLM + 2 TG + 2 spare */
     config.max_open_sockets = 12;  /* Headroom for Web UI keep-alive connections; lru_purge keeps accept() always active */
     config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
                                       stack vars + ESP_LOGI → uart_write → recursive mutex
@@ -2758,7 +2758,7 @@ static void web_config_task(void *arg)
             httpd_config_t config = HTTPD_DEFAULT_CONFIG();
             config.server_port = WEB_CONFIG_PORT;
             config.ctrl_port   = WEB_CONFIG_PORT + 1;
-            config.max_uri_handlers = 30;
+            config.max_uri_handlers = 42;  /* must match initial start value */
             /* Large enough socket pool so the web UI's multiple keep-alive
              * connections don't exhaust it. */
             config.max_open_sockets = 12;

@@ -646,7 +646,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | 懒加载 | SD 卡 + 音频首次访问时才初始化 (`__audio_init()`) |
 | 清理 | `web_config_server_stop()` 刷新编码器、关闭文件、释放 SD/音频 |
 
-**API 端点** (6 个音频 + 3 个文件管理 + 3 个 ULog + 3 个 Camera Record + 2 个 System + 5 个核心 + 8 个 CORS = 30 个 handler):
+**API 端点** (5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 8 WeChat + 3 LLM + 2 TG = 40 handlers, `max_uri_handlers=42`):
 - `GET /` — Web UI 首页
 - `GET /api/status` — 设备状态
 - `POST /api/settings` — 保存 WiFi/音量
@@ -661,13 +661,20 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - `GET /api/files/list?dir=/` — 列出目录内容 (JSON)
 - `GET /api/files/download?path=xxx` — 下载文件 (binary)
 - `POST /api/files/delete` — 删除文件 (body: `{"path": "xxx"}`)
+- `POST /api/files/delete_batch` — 批量删除 (body: `{"paths": [...]}`)
 - `GET /api/ulog/status` — 日志状态 (running/filepath/bytes_written)
 - `POST /api/ulog/start` — 开始 ULog 录制
 - `POST /api/ulog/stop` — 停止 ULog 录制
-- `POST /api/camera_record` — 开始/停止 Camera Frame ULog 录制
-- `GET /api/camera_record` — Camera Frame 录制状态
 - `GET /api/system_stats` — CPU/内存/任务快照
 - `GET /api/system_alerts` — CPU/内存告警状态 + 阈值
+- `POST /api/wechat/login/start` — 微信扫码登录 (CONFIG_APP_CLAW_CAP_IM_WECHAT)
+- `GET /api/wechat/login/status` — 微信登录状态
+- `POST /api/wechat/login/cancel` — 取消微信登录
+- `POST /api/wechat/login/persist` — 持久化微信凭据
+- `GET /api/llm/config` — LLM/AI 配置 (has_api_key)
+- `POST /api/llm/config` — 设置 LLM API key/model/base_url
+- `POST /api/tg/config` — Telegram Bot 配置 (CONFIG_APP_CLAW_CAP_IM_TG)
+- + 12 个 CORS OPTIONS 预检 handler (settings, camera_stream, factory_reset, files/delete, files/delete_batch, ulog/start, ulog/stop, wechat/login/start, wechat/login/status, wechat/login/cancel, wechat/login/persist, llm/config)
 
 ### 19. Web File Manager (web_config_server 文件管理)
 
@@ -761,6 +768,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 - **2026-07-08**: LWIP_MAX_SOCKETS 22→28 (3 httpd 实例内部占用 17 个 socket, 22 太紧导致 accept() ENOTSOCK), httpd 启用 TCP keep-alive + WiFi 断连重启
 - **2026-07-08**: Web Config (8080) `lru_purge_enable` false→true + `max_open_sockets` 3→12 + 新增 `web_config_self_probe()` 自检看门狗, 修复客户端断开 (recv 113) 后 WiFi 仍 UP 但无法重连的问题
 - **2026-07-08**: SystemMonitor 内存告警阈值 80%→85% (减少 Internal SRAM 误报)
+- **2026-07-09**: `max_uri_handlers` 29/30→42, 修复 ESP-Claw IM (WeChat+TG) + LLM API 添加后 handler 注册失败 (`no slots left`)
 - **2026-07-06**: `SPIRAM_MALLOC_ALWAYSINTERNAL` 从 16384 降至 4096 → LWIP pbufs (~1.5KB) 走 PSRAM，释放 ~20-30KB
 - **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
 - **2026-07-06**: detect task 16KB 栈移入 PSRAM (`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM)`)
