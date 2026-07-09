@@ -285,24 +285,29 @@ void PhoneAppAudio::_audio_task(void *arg)
 
         /* If recording, accumulate PCM and encode to MP3 */
         if (app->_is_recording && app->_pcm_buffer && app->_encoder) {
-            for (int32_t i = 0; i < samples_per_ch; i++) {
-                int idx = app->_pcm_buf_count * 2;
-                app->_pcm_buffer[idx]     = buf[i * 2];
-                app->_pcm_buffer[idx + 1] = buf[i * 2 + 1];
-                app->_pcm_buf_count++;
+            app->_recording_ops_in_flight.fetch_add(1, std::memory_order_acquire);
+            /* Re-check under counter — _stop_recording waits for counter to drain */
+            if (app->_is_recording && app->_pcm_buffer && app->_encoder) {
+                for (int32_t i = 0; i < samples_per_ch; i++) {
+                    int idx = app->_pcm_buf_count * 2;
+                    app->_pcm_buffer[idx]     = buf[i * 2];
+                    app->_pcm_buffer[idx + 1] = buf[i * 2 + 1];
+                    app->_pcm_buf_count++;
 
-                if (app->_pcm_buf_count >= ENC_SAMPLES_PER_CH) {
-                    /* Encode one frame of MP3 */
-                    int written = 0;
-                    unsigned char *mp3_data = shine_encode_buffer_interleaved(
-                        app->_encoder, app->_pcm_buffer, &written);
-                    if (mp3_data && written > 0 && app->_record_file) {
-                        size_t wr = fwrite(mp3_data, 1, written, app->_record_file);
-                        app->_record_bytes_written += wr;
+                    if (app->_pcm_buf_count >= ENC_SAMPLES_PER_CH) {
+                        /* Encode one frame of MP3 */
+                        int written = 0;
+                        unsigned char *mp3_data = shine_encode_buffer_interleaved(
+                            app->_encoder, app->_pcm_buffer, &written);
+                        if (mp3_data && written > 0 && app->_record_file) {
+                            size_t wr = fwrite(mp3_data, 1, written, app->_record_file);
+                            app->_record_bytes_written += wr;
+                        }
+                        app->_pcm_buf_count = 0;
                     }
-                    app->_pcm_buf_count = 0;
                 }
             }
+            app->_recording_ops_in_flight.fetch_sub(1, std::memory_order_release);
         }
     }
 
@@ -451,11 +456,14 @@ void PhoneAppAudio::_stop_recording(void)
     ESP_LOGI(TAG, "Stopping MP3 recording...");
     _is_recording = false;
 
-    /* Give audio task time to exit recording block.
-     * Task checks _is_recording at loop top; worst case it's in i2s_channel_read
-     * (100ms timeout) + encoding (~10ms). 200ms ensures it has exited the write path
-     * and will not attempt fwrite to _record_file after we close it. */
-    vTaskDelay(pdMS_TO_TICKS(200));
+    /* Wait for audio task to exit the recording block before freeing
+     * _pcm_buffer/_encoder. The task increments _recording_ops_in_flight
+     * while in the block; we poll until it drains (max 1s).
+     * This replaces the previous vTaskDelay(200ms) heuristic which could
+     * fail under heavy system load (S240). */
+    for (int i = 0; i < 100 && _recording_ops_in_flight.load(std::memory_order_acquire) > 0; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 
     /* Save file handle locally before nulling — task won't access it after _is_recording=false */
     FILE *file = _record_file;

@@ -43,6 +43,7 @@ private:
 
     /* Recording state */
     std::atomic<bool>  _is_recording;
+    std::atomic<int>   _recording_ops_in_flight;  /* Non-zero while audio task is in recording block — prevents _stop_recording from freeing _pcm_buffer/_encoder prematurely */
     shine_t            _encoder;
     FILE              *_record_file;
     int16_t           *_pcm_buffer;      // Accumulation buffer for 1152*2 samples
