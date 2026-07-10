@@ -244,10 +244,14 @@ static int _logger_vprintf(const char *format, va_list args)
 {
     /* 1. UART output via the original vprintf */
     int ret = 0;
-    if (s_log.orig_vprintf) {
+    /* Read orig_vprintf into a local before the running check, so even if
+     * logger_deinit() restores it between our check and the call, we use a
+     * consistent pointer. */
+    vprintf_like_t orig_vprintf = s_log.orig_vprintf;
+    if (orig_vprintf) {
         va_list uart_args;
         va_copy(uart_args, args);
-        ret = s_log.orig_vprintf(format, uart_args);
+        ret = orig_vprintf(format, uart_args);
         va_end(uart_args);
     }
 
