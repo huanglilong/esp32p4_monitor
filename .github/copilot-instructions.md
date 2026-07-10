@@ -91,6 +91,12 @@ idf.py fullclean                                # Full clean (only when config c
 
 After code changes, rebuild. If `sdkconfig.defaults` changed, `fullclean` first.
 
+**Flutter app** (`flutter_app/`): if any code under `flutter_app/lib/` changes, verify with:
+```bash
+cd flutter_app && flutter build macos
+```
+This must pass before committing Flutter app changes.
+
 ---
 
 ## 5. Protected Files
@@ -110,7 +116,7 @@ After code changes, rebuild. If `sdkconfig.defaults` changed, `fullclean` first.
 2. **git push is forbidden** — never push without explicit request
 3. **One issue, one commit** — each commit addresses exactly ONE issue/feature/bugfix
 4. **Commit messages**: clear, concise, in English
-5. **Before committing**: verify build passes (`idf.py build`)
+5. **Before committing**: verify build passes (`idf.py build` for firmware, `cd flutter_app && flutter build macos` for Flutter app)
 
 ---
 
