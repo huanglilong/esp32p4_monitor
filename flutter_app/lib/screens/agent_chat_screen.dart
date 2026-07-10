@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../services/http_service.dart';
 import '../providers/app_state.dart';
+import '../main.dart' show AppStateScope;
 
 /// AI Agent chat screen — send messages to the ESP32-P4 agent and display responses.
 class AgentChatScreen extends StatefulWidget {
@@ -45,7 +46,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> {
   }
 
   Future<void> _loadLlmConfig() async {
-    final state = AppState.of(context);
+    final state = AppStateScope.of(context);
     final http = state.httpService;
     if (http == null) return;
     try {
@@ -69,7 +70,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> {
   }
 
   Future<void> _saveLlmConfig() async {
-    final state = AppState.of(context);
+    final state = AppStateScope.of(context);
     final http = state.httpService;
     if (http == null) return;
     try {
@@ -110,7 +111,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> {
     });
     _scrollToBottom();
 
-    final state = AppState.of(context);
+    final state = AppStateScope.of(context);
     final http = state.httpService;
     if (http == null) {
       setState(() {
