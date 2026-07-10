@@ -138,7 +138,7 @@ bool SystemMonitor::start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "Started on core 0");
+    ESP_LOGI(TAG, "Started on core 1");
     return true;
 }
 
