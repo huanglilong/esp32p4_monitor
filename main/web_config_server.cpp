@@ -139,7 +139,7 @@ static std::atomic<bool>  s_mdns_running{false};
 #define ENC_SAMPLES_PER_CH   1152
 #define PCM_BUF_SAMPLES      (ENC_SAMPLES_PER_CH * 2)
 
-static bool           s_audio_inited = false;
+static std::atomic<bool> s_audio_inited{false};
 static std::atomic<TaskHandle_t> s_audio_task{nullptr};
 static StackType_t   *s_audio_stack = NULL;   /* 12KB, PSRAM (saves internal SRAM) */
 static StaticTask_t  *s_audio_tcb = NULL;     /* small, internal SRAM */
@@ -830,7 +830,7 @@ static const char *WEB_UI_HTML =
 static orb_sub_t s_wifi_state_sub = -1;
 
 /* SNTP initialized flag — prevent double init */
-static bool s_sntp_initialized = false;
+static std::atomic<bool> s_sntp_initialized{false};
 
 /* SNTP synced flag — set by callback (lwIP task), consumed by web_config_task.
  * ulog_writer_start() does heavy file I/O (statvfs, opendir, write, xTaskCreate)
@@ -842,20 +842,20 @@ static std::atomic<bool> s_sntp_synced{false};
  * Called once when WiFi first gets an IP address. */
 static void sntp_start_and_ulog_autostart(void)
 {
-    if (s_sntp_initialized) return;
+    if (s_sntp_initialized.load(std::memory_order_acquire)) return;
 
     /* If SNTP was already initialized elsewhere (shouldn't happen after we
      * removed it from PhoneAppSettings, but defensive), just mark synced
      * if time is already available and let the main loop handle ULog start. */
     if (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
         s_sntp_synced.store(true, std::memory_order_release);
-        s_sntp_initialized = true;
+        s_sntp_initialized.store(true, std::memory_order_release);
         ulog_writer_set_wall_clock(ulog_writer_get(), true);
         return;
     }
     if (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_RESET) {
         /* SNTP init already done but not yet synced — register our callback */
-        s_sntp_initialized = true;
+        s_sntp_initialized.store(true, std::memory_order_release);
         esp_sntp_set_time_sync_notification_cb([](struct timeval *tv) {
             struct tm tm;
             localtime_r(&tv->tv_sec, &tm);
@@ -885,7 +885,7 @@ static void sntp_start_and_ulog_autostart(void)
         s_sntp_synced.store(true, std::memory_order_release);
     });
     esp_sntp_init();
-    s_sntp_initialized = true;
+    s_sntp_initialized.store(true, std::memory_order_release);
     ESP_LOGI(TAG, "SNTP started — wall-clock time will sync shortly");
 }
 
@@ -1226,7 +1226,7 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
 
 /* Lazy-init SD card + audio codec on headless boards */
 static bool __audio_init(void) {
-    if (s_audio_inited) return true;
+    if (s_audio_inited.load(std::memory_order_acquire)) return true;
     if (!PeripheralManager::instance().init_sdcard()) { ESP_LOGE(TAG,"SD init fail"); return false; }
     PeripheralManager::instance().init_audio();
     /* Pre-allocate TCB for audio task — reused across start/stop cycles.
@@ -1235,7 +1235,7 @@ static bool __audio_init(void) {
         s_audio_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (!s_audio_tcb) { ESP_LOGE(TAG, "Failed to allocate audio TCB"); return false; }
     }
-    s_audio_inited = true;
+    s_audio_inited.store(true, std::memory_order_release);
     return true;
 }
 
@@ -3233,7 +3233,7 @@ void web_config_server_stop(void)
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
     s_playing = false;
     if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
-    if (s_audio_inited) { PeripheralManager::instance().deinit_audio(); s_audio_inited=false; }
+    if (s_audio_inited.load(std::memory_order_acquire)) { PeripheralManager::instance().deinit_audio(); s_audio_inited.store(false, std::memory_order_release); }
     audio_unlock();
 
     /* Signal task to exit its idle loop — it will clean up HTTP server
