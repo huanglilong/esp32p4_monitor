@@ -343,7 +343,8 @@ app_main()
   ├─ 5. Web Config Server (HTTP :8080)
   │
   ├─ 6. ULog Logger (仅当 SD 卡成功挂载时初始化, WiFi+SNTP 同步后自动 Start, Web/Flutter 可手动 Start/Stop)
-  │    - 自动启动: web_config_server WiFi 连接后启动 SNTP, SNTP 同步回调自动 ulog_writer_start()
+  │    - 自动启动: web_config_server WiFi 连接后启动 SNTP, SNTP 同步后 web_config_task 循环中 ulog_writer_start()
+  │    - 竞态保护: SNTP 可能在 ULog init 之前完成同步, 此时 state==UNINIT, 自动启动逻辑会等待下一轮重试直到 state==IDLE
   │    - Web: `POST /api/ulog/start` / `POST /api/ulog/stop` / `GET /api/ulog/status`
   │    - Web UI: 设置页 "ULog Recording" 卡片, Start/Stop 按钮 + 状态显示
   │    - Flutter: SettingsScreen "ULog Logger" 卡片, Start/Stop 按钮 + 字节/文件路径

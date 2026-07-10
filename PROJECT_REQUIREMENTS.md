@@ -486,6 +486,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-11 | +S280 **ULog writer 自动启动竞态修复**: SNTP 同步早于 ULog 初始化完成时，`ulog_autostart_done` 在 state==UNINIT 时即被设为 true，导致 ULog 永远不会自动启动。修复: 仅在 state==IDLE (成功启动) 或 state!=UNINIT (无需重试) 时设置 ulog_autostart_done；state==UNINIT 时跳过本轮等待下一轮重试 |
 | 2026-07-11 | +S279 **claw 组件 NVS 依赖解耦**: `components/claw/` 内 3 处直接依赖 `nvs_flash` (settings_store/cap_scheduler/cap_im_wechat)，违反组件应独立于外部存储的设计原则。参考 esp-claw 上游依赖反转模式修复: ① 新增 `claw_kv_backend` 纯接口组件 (函数指针表: init/get_str/set_str/has_key/erase_key/get_blob/set_blob/commit/deinit) ② 新增 `claw_kv_nvs` — 唯一依赖 nvs_flash 的 NVS 实现 ③ settings_store 重构为 backend 驱动 + 新增 blob API ④ cap_scheduler_store 替换 nvs_get_blob/set_blob/erase_key 为 backend 调用 ⑤ cap_im_wechat 替换 nvs_open/erase_key 为 backend 调用 (s_wechat_kv_backend) ⑥ main.cpp 创建 claw_kv_nvs 实例并注入各组件。二次修复: NVS handle 从共享 ctx 移至每操作局部变量，消除双核并发竞态；init() 返回值检查。构建通过，nvs_flash 依赖仅限 claw_kv_nvs 单一组件 |
 | 2026-07-10 | +S263 **QR fetch_code 网络未就绪误判为致命错误 (CR)**: `cap_im_wechat_qr_task` 两处 `cap_im_wechat_qr_fetch_code_locked()` 调用将 `ESP_ERR_NOT_FOUND` (DNS/SNTP 未就绪) 当致命错误处理。修复: 回退 refresh_count + 2s 重试，匹配 poll 路径模式 |
 | 2026-07-10 | **ESP-Claw AI Agent Phase 3 集成**: Web Agent Chat UI (/api/agent/chat POST → claw_event_router); Flutter Agent Chat 页面 (agent_chat_screen.dart + http_service getJson/postJson); LLM Vision 启用 (supports_vision=true) + camera.capture_vision MCP tool; 15个设备 MCP tools (新增 vision)。P3-4 ASR/TTS 待开发 (需外部服务) |

@@ -3102,18 +3102,28 @@ static void web_config_task(void *arg)
          * tcpip task with only 3KB stack — too small for ulog_writer_start()'s
          * heavy file I/O). Check the flag set by the callback and start here
          * in the web_config_task (8KB stack). Only auto-start once per boot;
-         * if user manually stops ULog, it stays stopped. */
+         * if user manually stops ULog, it stays stopped.
+         *
+         * Race condition guard: SNTP may sync before ULog is initialized
+         * (state == ULOG_STATE_UNINIT). In that case, skip this iteration
+         * without setting ulog_autostart_done so we retry on the next pass
+         * once ULog init completes and state transitions to IDLE. */
         if (s_sntp_synced.load(std::memory_order_acquire) && !ulog_autostart_done) {
-            ulog_autostart_done = true;
             ulog_writer_t *ulog = ulog_writer_get();
-            if (ulog_writer_get_state(ulog) == ULOG_STATE_IDLE) {
+            ulog_state_t state = ulog_writer_get_state(ulog);
+            if (state == ULOG_STATE_IDLE) {
+                ulog_autostart_done = true;
                 esp_err_t err = ulog_writer_start(ulog);
                 if (err == ESP_OK) {
                     ESP_LOGI(TAG, "ULog auto-started after SNTP sync");
                 } else {
                     ESP_LOGW(TAG, "ULog auto-start failed: %s", esp_err_to_name(err));
                 }
+            } else if (state != ULOG_STATE_UNINIT) {
+                /* RUNNING, ERROR, etc. — no point retrying */
+                ulog_autostart_done = true;
             }
+            /* else: UNINIT — ULog not initialized yet, retry next iteration */
         }
 
         bool wifi_up = wifi_sta_is_connected();
