@@ -141,6 +141,7 @@ typedef struct {
     cap_im_wechat_stage_entry_t stage_cache[CAP_IM_WECHAT_STAGE_CACHE_SIZE];
     size_t stage_idx;
     cap_im_wechat_qr_state_t qr;
+    bool net_ready;
 } cap_im_wechat_state_t;
 
 static void cap_im_wechat_qr_reset_locked(void);
@@ -602,8 +603,12 @@ static esp_err_t cap_im_wechat_http_request(const char *url,
      *    epoch 0 and TLS certificate validation will fail.
      *
      * Both checks use only standard POSIX APIs — no esp_netif / esp_wifi
-     * dependency, future-proof for non-WiFi chips (Ethernet, PPPoS, etc.). */
-    {
+     * dependency, future-proof for non-WiFi chips (Ethernet, PPPoS, etc.).
+     *
+     * Once both checks pass, the result is cached in s_wechat.net_ready so
+     * subsequent requests skip the overhead.  The flag is reset if a later
+     * request fails with a network-related error. */
+    if (!s_wechat.net_ready) {
         const char *h = url;
         if (strncmp(h, "https://", 8) == 0) {
             h += 8;
@@ -616,7 +621,7 @@ static esp_err_t cap_im_wechat_http_request(const char *url,
             host_len++;
         }
         if (host_len >= sizeof(host)) {
-            host_len = sizeof(host) - 1;
+            return ESP_ERR_INVALID_ARG;
         }
         memcpy(host, h, host_len);
         host[host_len] = '\0';
@@ -624,13 +629,14 @@ static esp_err_t cap_im_wechat_http_request(const char *url,
             struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
             struct addrinfo *res = NULL;
             if (getaddrinfo(host, NULL, &hints, &res) != 0) {
-                return ESP_ERR_INVALID_STATE;
+                return ESP_ERR_NOT_FOUND;
             }
             freeaddrinfo(res);
         }
         if ((uint64_t)time(NULL) < CAP_IM_WECHAT_TIME_SYNC_THRESHOLD) {
-            return ESP_ERR_INVALID_STATE;
+            return ESP_ERR_NOT_FOUND;
         }
+        s_wechat.net_ready = true;
     }
 
     ESP_RETURN_ON_ERROR(cap_im_wechat_resp_prepare(response), TAG, "prepare response failed");
@@ -688,6 +694,9 @@ static esp_err_t cap_im_wechat_http_request(const char *url,
 
     err = esp_http_client_perform(client);
     if (err != ESP_OK) {
+        /* Network may have dropped — reset readiness flag so next call
+         * re-checks DNS / SNTP before attempting TLS again. */
+        s_wechat.net_ready = false;
         goto cleanup;
     }
 
@@ -2385,6 +2394,7 @@ esp_err_t cap_im_wechat_set_client_config(const cap_im_wechat_client_config_t *c
             (config->route_tag && config->route_tag[0]) ? config->route_tag : "",
             sizeof(s_wechat.route_tag));
     s_wechat.configured = s_wechat.token[0] && s_wechat.base_url[0];
+    s_wechat.net_ready = false;
     return ESP_OK;
 }
 
@@ -2847,6 +2857,12 @@ static void cap_im_wechat_qr_task(void *arg)
             }
             s_wechat.qr.refresh_count++;
             needs_refresh = true;
+        } else if (err == ESP_ERR_NOT_FOUND) {
+            /* Network not ready (DNS / SNTP) — transient, retry after delay. */
+            ESP_LOGW(TAG, "QR poll: network not ready, retrying in 2 s");
+            cap_im_wechat_unlock();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
         } else if (err != ESP_OK) {
             strlcpy(s_wechat.qr.status, "error", sizeof(s_wechat.qr.status));
             snprintf(s_wechat.qr.message,
