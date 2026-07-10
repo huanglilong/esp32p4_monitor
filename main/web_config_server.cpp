@@ -2355,12 +2355,12 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
         return ESP_FAIL;
     }
     char *body = (char *)calloc(1, req->content_len + 1);
-    if (!body) return ESP_ERR_NO_MEM;
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory"); return ESP_ERR_NO_MEM; }
     int ret = httpd_req_recv(req, body, req->content_len);
-    if (ret <= 0) { free(body); ESP_LOGW(TAG, "LLM config save failed: recv error"); return ESP_FAIL; }
+    if (ret <= 0) { free(body); ESP_LOGW(TAG, "LLM config save failed: recv error"); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body"); return ESP_FAIL; }
     cJSON *root = cJSON_Parse(body);
     free(body);
-    if (!root) { ESP_LOGW(TAG, "LLM config save failed: invalid JSON body"); return ESP_FAIL; }
+    if (!root) { ESP_LOGW(TAG, "LLM config save failed: invalid JSON body"); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return ESP_FAIL; }
 
     auto field_ok = [](cJSON *f) -> bool {
         return f && cJSON_IsString(f) && f->valuestring && strlen(f->valuestring) > 0;
@@ -2432,12 +2432,12 @@ static esp_err_t h_feishu_config(httpd_req_t *req)
         return ESP_FAIL;
     }
     char *body = (char *)calloc(1, req->content_len + 1);
-    if (!body) return ESP_ERR_NO_MEM;
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory"); return ESP_ERR_NO_MEM; }
     int ret = httpd_req_recv(req, body, req->content_len);
-    if (ret <= 0) { free(body); return ESP_FAIL; }
+    if (ret <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body"); return ESP_FAIL; }
     cJSON *root = cJSON_Parse(body);
     free(body);
-    if (!root) return ESP_FAIL;
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return ESP_FAIL; }
     cJSON *app_id_j = cJSON_GetObjectItemCaseSensitive(root, "app_id");
     cJSON *app_secret_j = cJSON_GetObjectItemCaseSensitive(root, "app_secret");
     bool fs_ok = app_id_j && cJSON_IsString(app_id_j) && app_id_j->valuestring &&
@@ -2481,12 +2481,12 @@ static esp_err_t h_qq_config(httpd_req_t *req)
         return ESP_FAIL;
     }
     char *body = (char *)calloc(1, req->content_len + 1);
-    if (!body) return ESP_ERR_NO_MEM;
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory"); return ESP_ERR_NO_MEM; }
     int ret = httpd_req_recv(req, body, req->content_len);
-    if (ret <= 0) { free(body); return ESP_FAIL; }
+    if (ret <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body"); return ESP_FAIL; }
     cJSON *root = cJSON_Parse(body);
     free(body);
-    if (!root) return ESP_FAIL;
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return ESP_FAIL; }
     cJSON *app_id_j = cJSON_GetObjectItemCaseSensitive(root, "app_id");
     cJSON *app_secret_j = cJSON_GetObjectItemCaseSensitive(root, "app_secret");
     bool qq_ok = app_id_j && cJSON_IsString(app_id_j) && app_id_j->valuestring &&
@@ -2530,12 +2530,12 @@ static esp_err_t h_tg_config(httpd_req_t *req)
         return ESP_FAIL;
     }
     char *body = (char *)calloc(1, req->content_len + 1);
-    if (!body) return ESP_ERR_NO_MEM;
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory"); return ESP_ERR_NO_MEM; }
     int ret = httpd_req_recv(req, body, req->content_len);
-    if (ret <= 0) { free(body); return ESP_FAIL; }
+    if (ret <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body"); return ESP_FAIL; }
     cJSON *root = cJSON_Parse(body);
     free(body);
-    if (!root) return ESP_FAIL;
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return ESP_FAIL; }
     cJSON *token_j = cJSON_GetObjectItemCaseSensitive(root, "token");
     bool tg_ok = token_j && cJSON_IsString(token_j) && token_j->valuestring &&
                  strlen(token_j->valuestring) > 0;
