@@ -45,7 +45,7 @@ class _UlogViewerScreenState extends State<UlogViewerScreen> {
 
   int _selectedIndex = -1;
   bool _isPlaying = false;
-  double _framerate = 10.0;
+  double _framerate = 5.0;
   Timer? _playTimer;
   final Map<int, ImageProvider> _thumbCache = {};
   final ScrollController _thumbScrollController = ScrollController();

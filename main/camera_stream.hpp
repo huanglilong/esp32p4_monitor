@@ -16,7 +16,7 @@ class PPAPreprocessor;  // Forward declaration
  * VTS (Vertical Total Size) is the number of lines per frame including blanking.
  * Frame Rate = PCLK / (HTS × VTS)
  *   Default VTS=984 → ~50fps
- *   VTS=4920 → ~10fps (5x)
+ *   VTS=9840 → ~5fps (10x)
  *
  * Benefits of reduced frame rate:
  *   - ISP DMA bandwidth reduced proportionally
@@ -28,7 +28,7 @@ class PPAPreprocessor;  // Forward declaration
 #ifdef __cplusplus
 extern "C"
 #endif
-void ov5647_set_vts_10fps(void);
+void ov5647_set_vts_5fps(void);
 
 /**
  * @brief Camera stream over WiFi — V4L2 camera → JPEG encoding → HTTP MJPEG → mDNS

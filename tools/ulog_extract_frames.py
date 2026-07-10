@@ -207,8 +207,8 @@ def main():
                         help='Output directory for JPEG frames (default: <input>_frames/)')
     parser.add_argument('--no-video', action='store_true',
                         help='Skip video generation (only extract JPEG frames)')
-    parser.add_argument('--framerate', '-r', type=float, default=10,
-                        help='Video framerate in fps (default: 10)')
+    parser.add_argument('--framerate', '-r', type=float, default=5,
+                        help='Video framerate in fps (default: 5)')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Print detailed frame info')
     args = parser.parse_args()

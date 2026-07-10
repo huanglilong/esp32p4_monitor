@@ -32,9 +32,9 @@
 static const char *TAG = "CameraStream";
 
 /*============================================================================
- * OV5647 VTS helper: set sensor frame rate to ~10fps
+ * OV5647 VTS helper: set sensor frame rate to ~5fps
  *============================================================================*/
-void ov5647_set_vts_10fps(void)
+void ov5647_set_vts_5fps(void)
 {
     i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
     if (!i2c_handle) {
@@ -55,7 +55,7 @@ void ov5647_set_vts_10fps(void)
         return;
     }
 
-    const uint16_t NEW_VTS = 4920;  /* 5x original 984 → ~10fps */
+    const uint16_t NEW_VTS = 9840;  /* 10x original 984 → ~5fps */
     uint8_t data[3];
 
     /* Write VTS high byte (register 0x380E) */
@@ -86,7 +86,7 @@ void ov5647_set_vts_10fps(void)
         ret = i2c_master_transmit_receive(dev_handle, rd_cmd, 2, rd_val, 1, 100);
         if (ret == ESP_OK) {
             uint16_t vts = (vts_high << 8) | rd_val[0];
-            ESP_LOGI(TAG, "OV5647 VTS: 984→%u (target ~10 fps)", vts);
+            ESP_LOGI(TAG, "OV5647 VTS: 984→%u (target ~5 fps)", vts);
         }
     }
 
@@ -422,8 +422,8 @@ bool CameraStream::_init_video(void)
         return false;
     }
 
-    /* Step 1b: Set sensor frame rate to ~10fps by increasing VTS. */
-    ov5647_set_vts_10fps();
+    /* Step 1b: Set sensor frame rate to ~5fps by increasing VTS. */
+    ov5647_set_vts_5fps();
 
     bool ok = false;
     do {
@@ -440,14 +440,14 @@ bool CameraStream::_init_video(void)
         if (ioctl(_video_fd, VIDIOC_G_PARM, &sparm) == 0) {
             struct v4l2_fract *tpf = &sparm.parm.capture.timeperframe;
             uint32_t fps = (tpf->denominator && tpf->numerator) ? tpf->denominator / tpf->numerator : 0;
-            ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~10 fps from VTS=4920)", fps);
+            ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~5 fps from VTS=9840)", fps);
         } else {
             ESP_LOGW(TAG, "VIDIOC_G_PARM failed, frame rate unknown");
         }
 
         /* Step 4: REQBUFS */
         req = {};
-        req.count = 2;  // Double buffer: at 10fps, processing (~63ms) completes well before next frame (100ms)
+        req.count = 2;  // Double buffer: at 5fps, processing (~63ms) completes well before next frame (200ms)
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_MMAP;
         ESP_LOGI(TAG, "V4L2 REQBUFS: count=%" PRIu32, req.count);
@@ -1089,7 +1089,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "sensor_width", cs->_cam_width);
     cJSON_AddNumberToObject(root, "sensor_height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality.load());
-    cJSON_AddNumberToObject(root, "frame_rate", 10);   /* ~10fps from VTS=4920 */
+    cJSON_AddNumberToObject(root, "frame_rate", 5);   /* ~5fps from VTS=9840 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
 
     const char *fmt_str = "UNKNOWN";

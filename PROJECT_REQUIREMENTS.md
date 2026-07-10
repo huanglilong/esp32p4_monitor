@@ -20,7 +20,7 @@
 | # | 需求 | 说明 | 状态 |
 |---|------|------|:----:|
 | R1 | **MIPI DSI 显示** | ST7703 720×720 LCD，LVGL v9.2.2 + ESP-Brookesia Phone UI | ✅ |
-| R2 | **MIPI CSI 摄像头** | OV5647 RAW8 800×800，ISP RAW8→RGB565 实时预览 (~10fps) | ✅ |
+| R2 | **MIPI CSI 摄像头** | OV5647 RAW8 800×800，ISP RAW8→RGB565 实时预览 (~5fps) | ✅ |
 | R3 | ~~**Camera 人体检测**~~ | ESP-DL + YOLO11n 320×320, ~1.8fps — **已移除**: COCO detection 模型和 esp-dl 依赖已从项目中完全移除 | ❌→移除 |
 | R4 | **Camera V4L2 迁移** | 统一 esp_video 接口，与 Camera Stream 共享 | ✅ |
 | R5 | **Camera 红绿通道修正** | Bayer GBRG + byte_swap_en=1 修复颜色错误 | ✅ |

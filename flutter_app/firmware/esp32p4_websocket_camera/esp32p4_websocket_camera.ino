@@ -49,7 +49,7 @@ WebSocketsServer webSocket(81);  // WebSocket on port 81
 
 // 帧率控制
 unsigned long lastFrameTime = 0;
-const int frameInterval = 100;  // ms (~10 FPS)
+const int frameInterval = 200;  // ms (~5 FPS)
 
 void setup() {
   Serial.begin(115200);
