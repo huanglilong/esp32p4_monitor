@@ -67,9 +67,10 @@ bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint1
     /* Allocate PPA output buffer for the REQUESTED size (model input shape).
      * PPA writes actual_w×actual_h valid pixels; the remainder (right/bottom
      * border) stays zero from calloc. Passing actual_w×actual_h as
-     * img dimensions ensures correct stride for downstream consumers. */
+     * img dimensions ensures correct stride for downstream consumers.
+     * RGB565 output: 2 bytes per pixel. */
     size_t align = cache_hal_get_cache_line_size(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_DATA);
-    _out_buf_size = align_up((size_t)dst_w * dst_h * 3, align);
+    _out_buf_size = align_up((size_t)dst_w * dst_h * 2, align);
     _out_buf = (uint8_t *)heap_caps_aligned_calloc(align, 1, _out_buf_size,
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
     if (!_out_buf) {
@@ -92,7 +93,7 @@ bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint1
         return false;
     }
 
-    ESP_LOGI(TAG, "Initialized: %d×%d RGB565 → %d×%d BGR888 (contiguous, model=%d×%d with letterbox)",
+    ESP_LOGI(TAG, "Initialized: %d×%d RGB565 → %d×%d RGB565 (contiguous, model=%d×%d with letterbox)",
              src_w, src_h, _actual_w, _actual_h, dst_w, dst_h);
     return true;
 }
@@ -134,7 +135,7 @@ bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
     srm_cfg.in.block_offset_y = 0;
     srm_cfg.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
 
-    /* Output: RGB888 (actually BGR24 in memory per PPA spec).
+    /* Output: RGB565 (same format as input, resize only).
      * Use actual_w/actual_h as the output picture dimensions so PPA writes
      * contiguous data with the correct row stride.
      * E.g., 800→300: scale=0.375, actual=300. */
@@ -144,7 +145,7 @@ bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
     srm_cfg.out.pic_h = _actual_h;
     srm_cfg.out.block_offset_x = 0;
     srm_cfg.out.block_offset_y = 0;
-    srm_cfg.out.srm_cm = PPA_SRM_COLOR_MODE_RGB888;
+    srm_cfg.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
 
     /* Scale + no rotation/mirror */
     srm_cfg.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
@@ -154,7 +155,7 @@ bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
     srm_cfg.mirror_y = false;
 
     /* No byte swap for RGB565LE input.
-     * No RGB swap on output — PPA outputs BGR24 which we label as BGR888. */
+     * No RGB swap on output — same RGB565 format as input. */
     srm_cfg.rgb_swap = false;
     srm_cfg.byte_swap = false;
 

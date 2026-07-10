@@ -1,7 +1,7 @@
 # Camera JPEG frame for ULog recording
 # Records JPEG-encoded camera frames to .ulg files on SD card.
-# PPA path: 300x300 BGR888 → JPEG typically 5-8KB, observed max ~9210B at
-# default quality 30; buffer sized 10240 (10KB) to cover those frames.
+# PPA path: 300x300 RGB565 → JPEG typically 4-7KB (RGB565 input, quality 30);
+# buffer sized 10240 (10KB) to cover worst-case frames.
 # Variable-length JPEG: jpeg_size indicates actual data length, jpeg_data[] is a fixed-size
 # buffer that may be partially filled. ULog writer uses o_size_no_padding to avoid writing
 # trailing _padding, but still writes the full jpeg_data[10240] array (including unused bytes).

@@ -604,7 +604,7 @@ bool CameraStream::_init_encoder(void)
     }
 
     /* Determine encoder input: if PPA is active, encode from PPA output
-     * (300×300 BGR24) instead of full 800×800 RGB565. This reduces:
+     * (300×300 RGB565) instead of full 800×800 RGB565. This reduces:
      *   - JPEG encode time: ~200ms → ~30ms
      *   - JPEG size: ~30-50KB → ~5-8KB
      *   - WiFi bandwidth: ~80% reduction */
@@ -612,7 +612,7 @@ bool CameraStream::_init_encoder(void)
     if (_ppa && _ppa->is_initialized()) {
         _stream_enc_width = _ppa->actual_width();
         _stream_enc_height = _ppa->actual_height();
-        _stream_enc_format = V4L2_PIX_FMT_RGB24;  /* BGR24 in memory, matches PPA output */
+        _stream_enc_format = V4L2_PIX_FMT_RGB565;  /* RGB565, matches PPA output */
     } else
 #endif
     {
@@ -725,7 +725,7 @@ bool CameraStream::_init_ppa(void)
             _ppa = nullptr;
             return false;
         }
-        ESP_LOGI(TAG, "PPA enabled: %" PRIu32 "×%" PRIu32 " RGB565 → %d×%d BGR888",
+        ESP_LOGI(TAG, "PPA enabled: %" PRIu32 "×%" PRIu32 " RGB565 → %d×%d RGB565",
                  _cam_width, _cam_height, _ppa->actual_width(), _ppa->actual_height());
         return true;
     }
@@ -935,7 +935,7 @@ void CameraStream::_capture_task_fn(void *arg)
 
         bool buf_returned = false;
 
-        /*--- PPA resize: 800×800 RGB565 → 300×300 BGR24 ---*/
+        /*--- PPA resize: 800×800 RGB565 → 300×300 RGB565 ---*/
         bool ppa_ok = false;
 #if CONFIG_SOC_PPA_SUPPORTED
         if (cs->_ppa && cs->_ppa->is_initialized()) {
@@ -953,7 +953,7 @@ void CameraStream::_capture_task_fn(void *arg)
             jpeg_data = cs->_v4l2_bufs[buf.index];
             jpeg_size = buf.bytesused;
         } else if (ppa_ok) {
-            /* PPA output → encode at 300×300 BGR24 */
+            /* PPA output → encode at 300×300 RGB565 */
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             buf_returned = true;
             if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
@@ -962,7 +962,7 @@ void CameraStream::_capture_task_fn(void *arg)
             encoder_held = true;
             esp_err_t ret = example_encoder_process(cs->_encoder_handle,
                                                      cs->_ppa->out_buf(),
-                                                     cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
+                                                     cs->_ppa->actual_width() * cs->_ppa->actual_height() * 2,
                                                      cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
             if (ret != ESP_OK) {
                 xSemaphoreGive(cs->_encoder_sem);

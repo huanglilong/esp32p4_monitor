@@ -125,7 +125,7 @@ private:
     /* PPA hardware preprocessor: resize camera frames for lower-bandwidth JPEG encoding */
     bool _init_ppa(void);
     void _deinit_ppa(void);
-    PPAPreprocessor             *_ppa;                 /* PPA hardware preprocessor (resize + RGB565→BGR888) */
+    PPAPreprocessor             *_ppa;                 /* PPA hardware preprocessor (resize, RGB565→RGB565) */
 
     /* Capture task: independent frame capture/encode/publish loop */
     static void _capture_task_fn(void *arg);

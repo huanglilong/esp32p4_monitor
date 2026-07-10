@@ -14,8 +14,8 @@
 /**
  * PPAPreprocessor — Hardware-accelerated image preprocessing using ESP32-P4 PPA.
  *
- * Offloads resize + color conversion from CPU to PPA hardware:
- *   RGB565 (any resolution) → BGR888 (model input resolution, e.g. 320×320)
+ * Offloads resize from CPU to PPA hardware:
+ *   RGB565 (any resolution) → RGB565 (target resolution, e.g. 300×300)
  *
  * PPA scale uses 4-bit fractional precision (step = 1/16 = 0.0625).
  * If the ideal scale is not exactly representable, the actual output size
@@ -25,11 +25,9 @@
  * This class tracks the actual output dimensions and provides them
  * for correct coordinate rescaling and letterbox handling.
  *
- * Note: PPA_SRM_COLOR_MODE_RGB888 outputs BGR24 in memory (Byte0=B,G,R).
- *
  * Usage:
  *   PPAPreprocessor ppa;
- *   ppa.init(800, 800, 320, 320);
+ *   ppa.init(800, 800, 300, 300);
  *   ppa.process(rgb565_buf);
  *   // Use actual_width()/actual_height() for img descriptor and rescale
  *   ppa.deinit();
@@ -43,7 +41,7 @@ public:
     void deinit();
     bool process(const uint8_t *rgb565_buf);
 
-    /** PPA output buffer (BGR888, allocated for dst_w*dst_h*3) */
+    /** PPA output buffer (RGB565, allocated for dst_w*dst_h*2) */
     uint8_t *out_buf() const { return _out_buf; }
     size_t out_buf_size() const { return _out_buf_size; }
 
