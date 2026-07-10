@@ -42,7 +42,7 @@ public:
     void set_volume(int volume);
 
     /** Get current volume (cached). */
-    int volume(void) const { return _volume; }
+    int volume(void) const { return _volume.load(std::memory_order_relaxed); }
 
     /** Set microphone input gain. Thread-safe. */
     void set_mic_gain(int gain_db);
