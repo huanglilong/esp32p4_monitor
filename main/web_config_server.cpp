@@ -2416,6 +2416,40 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
              j_provider && j_provider->valuestring ? j_provider->valuestring : "",
              j_model && j_model->valuestring ? j_model->valuestring : "");
 
+    /* Update the running agent's core config if it was already hot-initialized.
+     * Otherwise the agent keeps using the stale/empty config from before the save. */
+    {
+        const char *provider = strcmp(j_provider->valuestring, "anthropic") == 0
+                               ? "anthropic" : "openai_compatible";
+        claw_core_config_t core_cfg = {};
+        core_cfg.api_key = j_api_key->valuestring;
+        core_cfg.backend_type = provider;
+        core_cfg.model = j_model->valuestring;
+        core_cfg.base_url = j_base_url->valuestring;
+        core_cfg.auth_type = "bearer";
+        core_cfg.max_tokens = 4096;
+        core_cfg.timeout_ms = 30000;
+        core_cfg.supports_tools = true;
+        core_cfg.supports_vision = true;
+        core_cfg.system_prompt = "";  /* Required by update_core_config, may be empty */
+        esp_err_t update_err = claw_agent_mgr_update_core_config(&core_cfg);
+        ESP_LOGI(TAG, "LLM save: agent core update result=%s", esp_err_to_name(update_err));
+        if (update_err == ESP_OK) {
+            /* Also try to create the root agent if it doesn't exist yet.
+             * The cold-init may have created the event router but failed to
+             * start the agent core (e.g. API key was empty at boot). */
+            if (claw_agent_mgr_get_root_core() == NULL) {
+                const char *root_id = NULL;
+                esp_err_t create_err = claw_agent_mgr_create_root_agent(&root_id);
+                ESP_LOGI(TAG, "LLM save: lazy create root agent result=%s",
+                         esp_err_to_name(create_err));
+            }
+        } else if (update_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Agent core config update skipped (agent not running yet): %s",
+                     esp_err_to_name(update_err));
+        }
+    }
+
     cJSON_Delete(root);
 
     cJSON_AddBoolToObject(resp, "ok", true);
@@ -2586,11 +2620,30 @@ static esp_err_t h_tg_config(httpd_req_t *req)
 static esp_err_t ensure_agent_started(void)
 {
     /* Fast path: try event router first */
-    claw_event_router_result_t result = {};
-    claw_event_t probe = {};
-    strlcpy(probe.event_type, "ping", sizeof(probe.event_type));
-    if (claw_event_router_handle_event(&probe, &result) == ESP_OK) {
-        return ESP_OK;
+    {
+        claw_event_router_result_t result = {};
+        claw_event_t probe = {};
+        strlcpy(probe.event_type, "ping", sizeof(probe.event_type));
+        if (claw_event_router_handle_event(&probe, &result) == ESP_OK) {
+            /* Event router is up — verify agent is functional.
+             * If cold-init successfully created the root agent, we're done.
+             * If not (e.g. LLM config was empty at boot), try to create it now
+             * with the current NVS config (which may have been updated via Web UI). */
+            if (claw_agent_mgr_get_root_core() != NULL) {
+                return ESP_OK;
+            }
+            /* Agent missing — attempt lazy creation with current core config.
+             * If LLM config was saved via Web UI after boot, the core config
+             * has already been updated by claw_agent_mgr_update_core_config(). */
+            const char *root_id = NULL;
+            esp_err_t create_err = claw_agent_mgr_create_root_agent(&root_id);
+            if (create_err == ESP_OK) {
+                ESP_LOGI(TAG, "Lazy-created root agent after LLM config update");
+                return ESP_OK;
+            }
+            ESP_LOGW(TAG, "Cannot create root agent (agent mgr up but core start failed): %s",
+                     esp_err_to_name(create_err));
+        }
     }
 
     /* Router not up — try direct agent mgr */
@@ -2676,53 +2729,68 @@ static esp_err_t ensure_agent_started(void)
         s_caps_initialized.store(true, std::memory_order_release);
     }
 
-    /* Init event router */
-    claw_event_router_config_t er_cfg = {};
-    er_cfg.rules_path = "/sdcard/claw/router_rules/router_rules.json";
-    er_cfg.task_stack_size = 8192;
-    er_cfg.task_priority = 5;
-    er_cfg.task_core = tskNO_AFFINITY;
-    er_cfg.default_route_messages_to_agent = true;
-    esp_err_t err = claw_event_router_init(&er_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Hot-init: event router init failed: %s", esp_err_to_name(err));
-        return err;
+    /* Init event router (skip if already up from cold-init) */
+    esp_err_t err;
+    {
+        claw_event_router_result_t er_probe = {};
+        claw_event_t er_ping = {};
+        strlcpy(er_ping.event_type, "ping", sizeof(er_ping.event_type));
+        if (claw_event_router_handle_event(&er_ping, &er_probe) != ESP_OK) {
+            /* Event router not up — initialize it */
+            claw_event_router_config_t er_cfg = {};
+            er_cfg.rules_path = "/sdcard/claw/router_rules/router_rules.json";
+            er_cfg.task_stack_size = 8192;
+            er_cfg.task_priority = 5;
+            er_cfg.task_core = tskNO_AFFINITY;
+            er_cfg.default_route_messages_to_agent = true;
+            err = claw_event_router_init(&er_cfg);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Hot-init: event router init failed: %s", esp_err_to_name(err));
+                return err;
+            }
+            claw_event_router_start();
+            claw_cap_start_all();
+            /* Bind outbound channels */
+            claw_event_router_register_outbound_binding("wechat", "cap_im_wechat");
+            claw_event_router_register_outbound_binding("telegram", "cap_im_tg");
+            claw_event_router_register_outbound_binding("feishu", "cap_im_feishu");
+            claw_event_router_register_outbound_binding("qq", "cap_im_qq");
+        }
     }
 
-    /* Init agent manager and create root agent */
-    claw_core_config_t core_cfg = {};
-    core_cfg.api_key = llm_cfg.api_key;
-    core_cfg.backend_type = llm_cfg.backend_type;
-    core_cfg.model = llm_cfg.model;
-    core_cfg.base_url = llm_cfg.base_url[0] ? llm_cfg.base_url : NULL;
-    core_cfg.auth_type = llm_cfg.auth_type;
-    core_cfg.max_tokens = 4096;
-    core_cfg.timeout_ms = 30000;
-    core_cfg.supports_tools = true;
-    core_cfg.supports_vision = true;
+    /* Init agent manager (skip if already up from cold-init) and create root agent */
+    err = ESP_OK;
+    if (claw_agent_mgr_get_root_core() == NULL) {
+        /* Either agent mgr not initialized, or initialized but root agent missing.
+         * Try init first (no-op if already initialized), then create root agent. */
+        claw_core_config_t core_cfg = {};
+        core_cfg.api_key = llm_cfg.api_key;
+        core_cfg.backend_type = llm_cfg.backend_type;
+        core_cfg.model = llm_cfg.model;
+        core_cfg.base_url = llm_cfg.base_url[0] ? llm_cfg.base_url : NULL;
+        core_cfg.auth_type = llm_cfg.auth_type;
+        core_cfg.max_tokens = 4096;
+        core_cfg.timeout_ms = 30000;
+        core_cfg.supports_tools = true;
+        core_cfg.supports_vision = true;
+        core_cfg.system_prompt = "";  /* Required by claw_agent_mgr_copy_core_config */
 
-    claw_agent_mgr_config_t mgr_cfg = { .core_config = &core_cfg };
-    err = claw_agent_mgr_init(&mgr_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Hot-init: agent mgr init failed: %s", esp_err_to_name(err));
-        return err;
+        claw_agent_mgr_config_t mgr_cfg;
+        memset(&mgr_cfg, 0, sizeof(mgr_cfg));
+        mgr_cfg.core_config = &core_cfg;
+        err = claw_agent_mgr_init(&mgr_cfg);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            /* ESP_ERR_INVALID_STATE = already initialized (ok), any other error = fatal */
+            ESP_LOGE(TAG, "Hot-init: agent mgr init failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        const char *root_id = NULL;
+        err = claw_agent_mgr_create_root_agent(&root_id);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Hot-init: create root agent failed: %s", esp_err_to_name(err));
+            return err;
+        }
     }
-    const char *root_id = NULL;
-    err = claw_agent_mgr_create_root_agent(&root_id);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Hot-init: create root agent failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    /* Start services */
-    claw_event_router_start();
-    claw_cap_start_all();
-
-    /* Bind outbound channels */
-    claw_event_router_register_outbound_binding("wechat", "cap_im_wechat");
-    claw_event_router_register_outbound_binding("telegram", "cap_im_tg");
-    claw_event_router_register_outbound_binding("feishu", "cap_im_feishu");
-    claw_event_router_register_outbound_binding("qq", "cap_im_qq");
 
     ESP_LOGI(TAG, "Hot-init: agent started successfully (model: %s)", llm_cfg.model);
     return ESP_OK;
@@ -2765,6 +2833,7 @@ static esp_err_t h_agent_chat(httpd_req_t *req)
         claw_event_t event = {};
         strlcpy(event.event_type, "message", sizeof(event.event_type));
         strlcpy(event.source_channel, "web_chat", sizeof(event.source_channel));
+        strlcpy(event.chat_id, "web_chat", sizeof(event.chat_id));
         strlcpy(event.content_type, "text/plain", sizeof(event.content_type));
         event.text = msg_j->valuestring;
 

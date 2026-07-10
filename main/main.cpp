@@ -779,13 +779,20 @@ extern "C" void app_main(void)
             core_cfg.timeout_ms = 30000;
             core_cfg.supports_tools = true;
             core_cfg.supports_vision = true;
+            core_cfg.system_prompt = "";  /* Required by claw_agent_mgr_copy_core_config */
 
-            claw_agent_mgr_config_t mgr_cfg = {
-                .core_config = &core_cfg,
-            };
-            claw_agent_mgr_init(&mgr_cfg);
+            claw_agent_mgr_config_t mgr_cfg;
+            memset(&mgr_cfg, 0, sizeof(mgr_cfg));
+            mgr_cfg.core_config = &core_cfg;
+            esp_err_t mgr_err = claw_agent_mgr_init(&mgr_cfg);
+            if (mgr_err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to init agent manager: %s", esp_err_to_name(mgr_err));
+            }
             const char *root_id = NULL;
-            claw_agent_mgr_create_root_agent(&root_id);
+            esp_err_t root_err = claw_agent_mgr_create_root_agent(&root_id);
+            if (root_err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to create root agent: %s (check LLM API key)", esp_err_to_name(root_err));
+            }
 
             /* Start services */
             claw_event_router_start();
