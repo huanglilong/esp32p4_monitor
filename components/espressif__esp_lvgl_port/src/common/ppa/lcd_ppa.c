@@ -38,9 +38,12 @@ static bool _lvgl_port_ppa_callback(ppa_client_handle_t ppa_client, ppa_event_da
 lvgl_port_ppa_handle_t lvgl_port_ppa_create(const lvgl_port_ppa_cfg_t *cfg)
 {
     esp_err_t ret = ESP_OK;
-    assert(cfg != NULL);
+    if (cfg == NULL) {
+        ESP_LOGE(TAG, "cfg is NULL");
+        return NULL;
+    }
 
-    lvgl_port_ppa_t *ppa_ctx = malloc(sizeof(lvgl_port_ppa_t));
+    lvgl_port_ppa_t *ppa_ctx = (lvgl_port_ppa_t *)malloc(sizeof(lvgl_port_ppa_t));
     ESP_GOTO_ON_FALSE(ppa_ctx, ESP_ERR_NO_MEM, err, TAG, "Not enough memory for PPA context allocation!");
     memset(ppa_ctx, 0, sizeof(lvgl_port_ppa_t));
 
@@ -58,7 +61,11 @@ lvgl_port_ppa_handle_t lvgl_port_ppa_create(const lvgl_port_ppa_cfg_t *cfg)
     ppa_ctx->buffer_size = ALIGN_UP(cfg->buffer_size, CONFIG_CACHE_L2_CACHE_LINE_SIZE);
     ppa_ctx->buffer = heap_caps_aligned_calloc(CONFIG_CACHE_L2_CACHE_LINE_SIZE, ppa_ctx->buffer_size, sizeof(uint8_t),
                       buffer_caps);
-    assert(ppa_ctx->buffer != NULL);
+    if (ppa_ctx->buffer == NULL) {
+        ESP_LOGE(TAG, "Not enough memory for PPA buffer allocation!");
+        ret = ESP_ERR_NO_MEM;
+        goto err;
+    }
 
     ppa_client_config_t ppa_client_config = {
         .oper_type = PPA_OPERATION_SRM,
@@ -79,7 +86,7 @@ lvgl_port_ppa_handle_t lvgl_port_ppa_create(const lvgl_port_ppa_cfg_t *cfg)
 err:
     if (ret != ESP_OK) {
         if (ppa_ctx->buffer) {
-            free(ppa_ctx->buffer);
+            heap_caps_free(ppa_ctx->buffer);
         }
         if (ppa_ctx) {
             free(ppa_ctx);
@@ -92,10 +99,12 @@ err:
 void lvgl_port_ppa_delete(lvgl_port_ppa_handle_t handle)
 {
     lvgl_port_ppa_t *ppa_ctx = (lvgl_port_ppa_t *)handle;
-    assert(ppa_ctx != NULL);
+    if (ppa_ctx == NULL) {
+        return;
+    }
 
     if (ppa_ctx->buffer) {
-        free(ppa_ctx->buffer);
+        heap_caps_free(ppa_ctx->buffer);
     }
 
     ppa_unregister_client(ppa_ctx->srm_handle);
@@ -106,15 +115,18 @@ void lvgl_port_ppa_delete(lvgl_port_ppa_handle_t handle)
 uint8_t *lvgl_port_ppa_get_output_buffer(lvgl_port_ppa_handle_t handle)
 {
     lvgl_port_ppa_t *ppa_ctx = (lvgl_port_ppa_t *)handle;
-    assert(ppa_ctx != NULL);
+    if (ppa_ctx == NULL) {
+        return NULL;
+    }
     return ppa_ctx->buffer;
 }
 
 esp_err_t lvgl_port_ppa_rotate(lvgl_port_ppa_handle_t handle, lvgl_port_ppa_disp_rotate_t *rotate_cfg)
 {
     lvgl_port_ppa_t *ppa_ctx = (lvgl_port_ppa_t *)handle;
-    assert(ppa_ctx != NULL);
-    assert(rotate_cfg != NULL);
+    if (ppa_ctx == NULL || rotate_cfg == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     const int w = rotate_cfg->area.x2 - rotate_cfg->area.x1 + 1;
     const int h = rotate_cfg->area.y2 - rotate_cfg->area.y1 + 1;
 
