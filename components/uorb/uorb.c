@@ -17,6 +17,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include "esp_log.h"
 #include <assert.h>
 #include <string.h>
 
@@ -80,9 +81,14 @@ void orb_init(void)
     /* Must be called exactly once from app_main() before any tasks are created.
      * Not safe to call concurrently — the idempotent check itself is a race.
      * In practice this is safe because app_main runs before other tasks exist. */
-    assert(s_mutex == NULL);
+    if (s_mutex != NULL) {
+        ESP_LOGE("uORB", "orb_init called twice — ignoring");
+        return;
+    }
     s_mutex = xSemaphoreCreateMutex();
-    assert(s_mutex != NULL);
+    if (s_mutex == NULL) {
+        ESP_LOGE("uORB", "Failed to create uORB mutex");
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -314,20 +320,33 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
         return -1;
     }
 
-    /* We access the subscriber entry lock-free because:
-     * - The handle is valid (checked above) and the entry is active
-     *   (topic_idx >= 0 checked below)
-     * - sub->queue is written once at creation and only cleared on
-     *   unsubscribe (which also requires the handle to be valid)
-     * - xQueueReceive is itself thread-safe.
-     */
-    orb_sub_entry_t *sub = &s_subs[handle];
-    if (sub->topic_idx < 0) {
-        return -1; /* Unsubscribed */
-    }
+    /* Hold the lock while checking topic_idx and getting the queue pointer.
+     * Without the lock, a concurrent orb_unsubscribe() could delete the queue
+     * between the topic_idx check and xQueueReceive, causing use-after-free.
+     * We use a non-blocking receive inside the lock, then retry outside if empty. */
+    while (1) {
+        lock();
+        orb_sub_entry_t *sub = &s_subs[handle];
+        if (sub->topic_idx < 0) {
+            unlock();
+            return -1; /* Unsubscribed */
+        }
+        QueueHandle_t q = sub->queue;
+        uint16_t gen = sub->generation;
+        unlock();
 
-    BaseType_t ret = xQueueReceive(sub->queue, buffer, portMAX_DELAY);
-    return (ret == pdTRUE) ? 0 : -1;
+        /* Wait for data outside the lock — xQueueReceive is thread-safe.
+         * After receiving, verify the subscriber hasn't been recycled
+         * (unsubscribed + resubscribed) by checking the generation counter. */
+        BaseType_t ret = xQueueReceive(q, buffer, portMAX_DELAY);
+        if (ret != pdTRUE) return -1;
+
+        lock();
+        bool valid = (s_subs[handle].topic_idx >= 0 && s_subs[handle].generation == gen);
+        unlock();
+        if (valid) return 0;
+        /* Subscriber was recycled — discard this message and retry */
+    }
 }
 
 int orb_check(orb_sub_t handle, bool *updated)
@@ -336,11 +355,15 @@ int orb_check(orb_sub_t handle, bool *updated)
         return -1;
     }
 
+    lock();
     orb_sub_entry_t *sub = &s_subs[handle];
     if (sub->topic_idx < 0) {
+        unlock();
         return -1; /* Unsubscribed */
     }
+    QueueHandle_t q = sub->queue;
+    unlock();
 
-    *updated = (uxQueueMessagesWaiting(sub->queue) > 0);
+    *updated = (uxQueueMessagesWaiting(q) > 0);
     return 0;
 }
