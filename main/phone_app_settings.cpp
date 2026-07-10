@@ -27,7 +27,7 @@ extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_1
 /* Static WiFi state — persists across Settings app open/close cycles */
 std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_scan_task{nullptr};
 EventGroupHandle_t PhoneAppSettings::_wifi_event_group = nullptr;
-bool PhoneAppSettings::_wifi_initialized = false;
+std::atomic<bool> PhoneAppSettings::_wifi_initialized{false};
 TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
 std::atomic<uint32_t> PhoneAppSettings::_wifi_reconnect_count{0};
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
@@ -207,7 +207,7 @@ void PhoneAppSettings::bootWifiAutoConnect(void)
     ESP_LOGI(TAG, "Boot WiFi: connecting to %s...", ssid);
 
     /* One-time netif + event loop + wifi driver init */
-    if (!_wifi_initialized) {
+    if (!_wifi_initialized.load(std::memory_order_acquire)) {
         ESP_ERROR_CHECK(esp_netif_init());
         ESP_ERROR_CHECK(esp_event_loop_create_default());
         esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
@@ -231,7 +231,7 @@ void PhoneAppSettings::bootWifiAutoConnect(void)
             IP_EVENT, IP_EVENT_STA_GOT_IP,
             wifiEventHandler, nullptr, &_ip_handler_inst));
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-        _wifi_initialized = true;
+        _wifi_initialized.store(true, std::memory_order_release);
     }
 
     /* Create event group for tracking connection state */
@@ -1021,7 +1021,7 @@ esp_err_t PhoneAppSettings::wifiInit(void)
     if (!_wifi_event_group) return ESP_ERR_NO_MEM;
 
     /* One-time init: netif + event loop + wifi driver */
-    if (!_wifi_initialized) {
+    if (!_wifi_initialized.load(std::memory_order_acquire)) {
         ESP_ERROR_CHECK(esp_netif_init());
         ESP_ERROR_CHECK(esp_event_loop_create_default());
         esp_netif_t *sta = esp_netif_create_default_wifi_sta();
@@ -1041,7 +1041,7 @@ esp_err_t PhoneAppSettings::wifiInit(void)
         ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, this, &_wifi_handler_inst));
         ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifiEventHandler, this, &_ip_handler_inst));
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-        _wifi_initialized = true;
+        _wifi_initialized.store(true, std::memory_order_release);
     }
 
     esp_wifi_start();

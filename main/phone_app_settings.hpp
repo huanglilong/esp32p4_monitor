@@ -141,7 +141,7 @@ private:
      * WiFi runs in background even when Settings app is closed. */
     static std::atomic<TaskHandle_t> _wifi_scan_task;
     static EventGroupHandle_t _wifi_event_group;
-    static bool              _wifi_initialized;  // one-time netif/wifi init done
+    static std::atomic<bool> _wifi_initialized;  // one-time netif/wifi init done
     static std::atomic<bool> _wifi_connecting;   // true while connect task is running (intentional disconnect, also guards against multiple connect tasks)
     static TimerHandle_t     _wifi_reconnect_timer;  // 10s periodic reconnect timer
     static std::atomic<uint32_t> _wifi_reconnect_count;  // consecutive reconnect attempts
