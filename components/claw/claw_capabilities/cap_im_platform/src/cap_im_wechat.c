@@ -14,6 +14,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <time.h>
 
 #include "cap_im_attachment.h"
 #include "cJSON.h"
@@ -64,6 +67,11 @@ static const char *TAG = "cap_im_wechat";
 #define CAP_IM_WECHAT_QR_START_TIMEOUT_MS 5000
 #define CAP_IM_WECHAT_QR_TTL_MS (5 * 60 * 1000)
 #define CAP_IM_WECHAT_QR_MAX_REFRESH 3
+/* Minimum wall-clock timestamp for a valid TLS handshake.
+ * ESP32 defaults to epoch 0 until SNTP syncs, causing certificate
+ * validation failure (MBEDTLS_ERR_SSL_FATAL_ALERT, -0x7200).
+ * 2026-01-01 00:00:00 UTC = 1767225600 */
+#define CAP_IM_WECHAT_TIME_SYNC_THRESHOLD 1767225600ULL
 
 typedef struct {
     char *buf;
@@ -1622,6 +1630,43 @@ static void cap_im_wechat_poll_task(void *arg)
     while (!s_wechat.stop_requested) {
         if (!s_wechat.configured) {
             vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+
+        /* Lightweight network readiness check before the expensive TLS attempt.
+         *
+         * 1. DNS resolution: if getaddrinfo() fails (no netif / no DNS server),
+         *    skip immediately — avoids verbose esp-tls ERROR logs like
+         *    "mbedtls_ssl_handshake returned -0x7200".
+         * 2. Wall-clock time: if SNTP hasn't synced yet, the system clock is at
+         *    epoch 0 and TLS certificate validation will fail.
+         *
+         * Both checks use only standard POSIX APIs — no esp_netif / esp_wifi
+         * dependency, future-proof for non-WiFi chips (Ethernet, PPPoS, etc.). */
+        const char *host_raw = s_wechat.base_url;
+        if (strncmp(host_raw, "https://", 8) == 0) {
+            host_raw += 8;
+        } else if (strncmp(host_raw, "http://", 7) == 0) {
+            host_raw += 7;
+        }
+        {
+            char host[128];
+            strlcpy(host, host_raw, sizeof(host));
+            char *colon = strchr(host, ':');
+            if (colon) {
+                *colon = '\0';
+            }
+            struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+            struct addrinfo *res = NULL;
+            if (getaddrinfo(host, NULL, &hints, &res) != 0) {
+                vTaskDelay(pdMS_TO_TICKS(CAP_IM_WECHAT_RETRY_DELAY_MS));
+                continue;
+            }
+            freeaddrinfo(res);
+        }
+
+        if ((uint64_t)time(NULL) < CAP_IM_WECHAT_TIME_SYNC_THRESHOLD) {
+            vTaskDelay(pdMS_TO_TICKS(CAP_IM_WECHAT_RETRY_DELAY_MS));
             continue;
         }
 
