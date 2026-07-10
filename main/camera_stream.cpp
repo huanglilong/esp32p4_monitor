@@ -145,6 +145,7 @@ CameraStream::CameraStream() :
     _capture_stack(nullptr), _capture_tcb(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
+    _start_stop_mutex(nullptr),
     _recording_enabled(false),
     _frame_pub(ORB_ADVERT_INVALID),
     _mdns_running(false)
@@ -152,6 +153,7 @@ CameraStream::CameraStream() :
     _detect_mutex = xSemaphoreCreateMutex();
     _shared_jpeg_mutex = xSemaphoreCreateMutex();
     _frame_ready_sem = xSemaphoreCreateCounting(2, 0);  /* Max 2 MJPEG clients */
+    _start_stop_mutex = xSemaphoreCreateMutex();  /* Serializes start()/stop() */
 
     /* Pre-allocate TCBs — reused across start/stop cycles.
      * ~340B internal SRAM each, avoids TCB use-after-free race with idle task. */
@@ -176,6 +178,10 @@ CameraStream::~CameraStream()
         vSemaphoreDelete(_detect_mutex);
         _detect_mutex = nullptr;
     }
+    if (_start_stop_mutex) {
+        vSemaphoreDelete(_start_stop_mutex);
+        _start_stop_mutex = nullptr;
+    }
     /* Defensive: stop() should have freed stacks, but ensure no leak */
     if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
     /* TCBs are pre-allocated at construction and never freed — ~340B each,
@@ -188,10 +194,27 @@ CameraStream::~CameraStream()
  *============================================================================*/
 bool CameraStream::start(void)
 {
+    /* Serialize with stop() — prevents race when a cam_stop task is still
+     * cleaning up (releasing CameraDriver, stopping httpd, freeing V4L2/PPA
+     * resources) while a new cam_start task begins re-initialization.
+     * Without this, start() can succeed its _running CAS (stop already set
+     * it false), claim the camera (re-entrant, same owner), then fail on
+     * EADDRINUSE (old httpd not stopped yet) — leading to double-free
+     * and the SPI DMA crash observed in the field.
+     * Timeout: 20s — stop() may wait up to 5s for capture task + 15s for
+     * model load task. If stop() hasn't finished in 20s, something is
+     * seriously wrong and we should fail rather than hang forever. */
+    if (!_start_stop_mutex) return false;
+    if (xSemaphoreTake(_start_stop_mutex, pdMS_TO_TICKS(20000)) != pdTRUE) {
+        ESP_LOGE(TAG, "start() timed out waiting for stop() to finish — giving up");
+        return false;
+    }
+
     /* Atomic compare-and-set: if already running, return immediately.
      * This prevents concurrent start() calls from double-initializing. */
     bool expected = false;
     if (!_running.compare_exchange_strong(expected, true)) {
+        xSemaphoreGive(_start_stop_mutex);
         return true;  // already running
     }
 
@@ -200,6 +223,7 @@ bool CameraStream::start(void)
     if (!CameraDriver::instance().claim("stream")) {
         ESP_LOGW(TAG, "Camera hardware in use, cannot start stream");
         _running = false;
+        xSemaphoreGive(_start_stop_mutex);
         return false;
     }
 
@@ -207,6 +231,7 @@ bool CameraStream::start(void)
         ESP_LOGE(TAG, "Video init failed");
         _running = false;
         CameraDriver::instance().release("stream");
+        xSemaphoreGive(_start_stop_mutex);
         return false;
     }
 
@@ -225,6 +250,7 @@ bool CameraStream::start(void)
         _deinit_video();
         _running = false;
         CameraDriver::instance().release("stream");
+        xSemaphoreGive(_start_stop_mutex);
         return false;
     }
 
@@ -240,6 +266,7 @@ bool CameraStream::start(void)
         _deinit_detection();
         _running = false;
         CameraDriver::instance().release("stream");
+        xSemaphoreGive(_start_stop_mutex);
         return false;
     }
     /* Pin to Core 0: in v0.0.3 the capture/encode loop ran inside the httpd
@@ -258,6 +285,7 @@ bool CameraStream::start(void)
         _deinit_detection();
         _running = false;
         CameraDriver::instance().release("stream");
+        xSemaphoreGive(_start_stop_mutex);
         return false;
     }
     _capture_task.store(task_handle, std::memory_order_release);
@@ -270,14 +298,23 @@ bool CameraStream::start(void)
             int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             ioctl(_video_fd, VIDIOC_STREAMOFF, &type);
         }
-        /* Wait for capture task to finish */
-        while (_capture_task.load(std::memory_order_acquire) != nullptr) {
+        /* Wait for capture task to finish (with timeout) */
+        int wait_ms = 0;
+        while (_capture_task.load(std::memory_order_acquire) != nullptr && wait_ms < 3000) {
             vTaskDelay(pdMS_TO_TICKS(10));
+            wait_ms += 10;
+        }
+        if (_capture_task.load(std::memory_order_acquire) != nullptr) {
+            ESP_LOGW(TAG, "Capture task did not exit after 3s in start() failure path, force-killing");
+            TaskHandle_t t = _capture_task.exchange(nullptr, std::memory_order_acq_rel);
+            if (t) vTaskDelete(t);
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
         _deinit_encoder();
         _deinit_video();
         _deinit_detection();
         CameraDriver::instance().release("stream");
+        xSemaphoreGive(_start_stop_mutex);
         return false;
     }
 
@@ -294,15 +331,25 @@ bool CameraStream::start(void)
     _recording_enabled.store(true, std::memory_order_release);
 
     ESP_LOGI(TAG, "Stream started → http://%s.local/stream (port 81)", shared_mdns_hostname());
+    xSemaphoreGive(_start_stop_mutex);
     return true;
 }
 
 void CameraStream::stop(void)
 {
+    /* Serialize with start() — prevents race when a cam_start task begins
+     * re-initialization while this stop() is still cleaning up resources.
+     * See start() header comment for the full race scenario. */
+    if (!_start_stop_mutex) return;
+    xSemaphoreTake(_start_stop_mutex, portMAX_DELAY);
+
     /* Use CAS to prevent double-cleanup — compare_exchange_strong ensures
      * only one caller transitions from running→stopped, matching start()'s pattern. */
     bool expected = true;
-    if (!_running.compare_exchange_strong(expected, false)) return;
+    if (!_running.compare_exchange_strong(expected, false)) {
+        xSemaphoreGive(_start_stop_mutex);
+        return;
+    }
 
     /* _running is now false — capture task loop will exit on next iteration.
      * stream_handler loop also exits via isRunning().
@@ -321,15 +368,27 @@ void CameraStream::stop(void)
         }
     }
 
-    /* Step 2: Wait for capture task to finish (now unblocked from DQBUF) */
+    /* Step 2: Wait for capture task to finish (now unblocked from DQBUF).
+     * Timeout after 5s — if VIDIOC_STREAMOFF failed, the capture task may
+     * be stuck in VIDIOC_DQBUF and never exit. Force-kill after timeout
+     * to prevent stop() from hanging forever (which would also block
+     * start() via _start_stop_mutex). */
     TaskHandle_t task = _capture_task.load(std::memory_order_acquire);
     if (task) {
         /* Give semaphore to unblock any waiting stream_handler clients */
         xSemaphoreGive(_frame_ready_sem);
         xSemaphoreGive(_frame_ready_sem);
-        /* Poll until capture task clears its handle */
-        while (_capture_task.load(std::memory_order_acquire) != nullptr) {
+        int wait_ms = 0;
+        while (_capture_task.load(std::memory_order_acquire) != nullptr && wait_ms < 5000) {
             vTaskDelay(pdMS_TO_TICKS(10));
+            wait_ms += 10;
+        }
+        if (_capture_task.load(std::memory_order_acquire) != nullptr) {
+            ESP_LOGW(TAG, "Capture task did not exit after 5s, force-killing (may corrupt heap)");
+            vTaskDelete(task);
+            _capture_task.store(nullptr, std::memory_order_release);
+            /* Yield to let idle task reclaim TCB before we free the stack */
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
 
@@ -363,6 +422,7 @@ void CameraStream::stop(void)
     _recording_enabled.store(false, std::memory_order_release);
 
     ESP_LOGI(TAG, "Stream stopped");
+    xSemaphoreGive(_start_stop_mutex);
 }
 
 /*============================================================================

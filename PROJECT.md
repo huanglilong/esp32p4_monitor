@@ -644,6 +644,9 @@ Camera Stream 通过 Settings App 的开关控制, 退出 Settings App 不会停
 - **独立 capture task 架构**: 帧采集/编码/uORB 发布从 stream_handler 分离到独立 `_capture_task` (FreeRTOS task)。即使无 HTTP 客户端连接, capture task 仍持续运行 → DQBUF → encode → publish (`fps_stats`, `camera_frame`) → store shared JPEG, 确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: 等待 `_frame_ready_sem` → 从 `_shared_jpeg_buf` 读取最新 JPEG → 发送 MJPEG part。
 - **内联人体检测**: CameraStream 在 capture task 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→BGR888 resize)，检测框直接绘制在 PPA BGR24 输出 buffer 上再编码为 JPEG。V4L2 buffer 在 PPA 处理后立即归还 (~1ms)，不再持有到编码完成。JPEG 编码器直接消费 PPA 输出 (300×300 BGR24)，编码时间从 ~200ms 降至 ~30ms。
 - **V4L2 QBUF 延迟 (JPEG sensor)**: JPEG sensor 路径中 `jpeg_data` 直接指向 V4L2 mmap buffer，QBUF 必须延迟至所有消费者 (`_publish_camera_frame`/`_store_shared_jpeg`) 完成后。PPA 路径 (PPA 输出独立) 和 CPU fallback 路径 (编码后 `jpeg_data` 指向 `_jpeg_out_buf`) 可安全提前 QBUF。
+- **start()/stop() 竞态条件**: Settings App 的 cam_start/cam_stop 在独立 FreeRTOS task 中运行。若 stop() 尚未完成清理 (释放 CameraDriver、停止 httpd、释放 V4L2/PPA/SPI 资源) 时 start() 被调用, start() 的 `_running` CAS 成功 (stop 已将其设 false), CameraDriver re-entrant claim 成功 (同 owner "stream"), 但 httpd 端口 80 仍被旧实例占用 → EADDRINUSE → start() 失败 → 部分清理与 stop() 的清理并发 → V4L2/PPA/SPI 资源 double-free → SPI DMA memcpy 空指针 → Guru Meditation (Load access fault)。修复: 添加 `_start_stop_mutex` 互斥锁, 确保 start()/stop() 串行执行。
+- **stop() 无限等待 capture task**: `VIDIOC_STREAMOFF` 失败时 capture task 卡在 `VIDIOC_DQBUF` 永不退出, stop() 的 `while (_capture_task != nullptr)` 无限轮询 → start() 阻塞在 `_start_stop_mutex` → 系统卡死。修复: stop() 等待 capture task 加 5s timeout + force-kill fallback; start() mutex take 加 20s timeout (防御层); start() HTTP 失败路径同样加 3s timeout。
+- **Settings App 孤儿任务泄漏**: 快速 toggle 开关产生多个 cam_start/cam_stop 任务, 每个占用 ~4KB 内部 SRAM 栈, 旧任务阻塞在 `_start_stop_mutex` 无法退出 → 内部 SRAM 逐步耗尽 (85%→87%)。修复: `_cam_start_stop_task` atomic handle 跟踪, 前一个任务未完成时跳过新 toggle 并恢复开关状态。
 
 ### 15. esp_hosted (WiFi over SDIO) 稳定性
 

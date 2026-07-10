@@ -169,6 +169,9 @@ private:
 
     /* State */
     std::atomic<bool>          _running;
+    SemaphoreHandle_t          _start_stop_mutex;  /* Prevents concurrent start()/stop() — avoids race when
+                                                    * cam_stop task hasn't finished cleanup and cam_start
+                                                    * task begins re-initialization (EADDRINUSE, double-free) */
 
     /* Camera frame recording to ULog */
     std::atomic<bool>          _recording_enabled;  /* True when camera frame recording is active */

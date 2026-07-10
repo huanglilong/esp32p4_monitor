@@ -38,6 +38,9 @@ std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_connect_task{nullptr};
 /* uORB subscriber for camera stream FPS stats — static, shared across instances */
 orb_sub_t PhoneAppSettings::s_fps_sub = -1;
 
+/* Track cam_start/cam_stop task to prevent orphaned tasks from rapid toggling */
+std::atomic<TaskHandle_t> PhoneAppSettings::_cam_start_stop_task{nullptr};
+
 /* Thread-safe WiFi state uORB publisher.
  * wifiEventHandler runs on the system event task and can fire concurrently
  * (e.g., rapid connect/disconnect). Use std::atomic to prevent double
@@ -812,6 +815,24 @@ void PhoneAppSettings::onCamStreamSwitchChanged(lv_event_t *e)
 
     bool on = lv_obj_has_state(app->_sw_cam_stream, LV_STATE_CHECKED);
 
+    /* Prevent orphaned cam_start/cam_stop tasks from rapid toggling.
+     * Each task uses ~4KB internal SRAM stack. If a previous task is still
+     * running (blocked on _start_stop_mutex inside CameraStream), skip
+     * creating a new one — the user can toggle again after it completes.
+     * The _start_stop_mutex ensures start()/stop() are serialized, so
+     * the previous task will complete in bounded time. */
+    TaskHandle_t prev = _cam_start_stop_task.load(std::memory_order_acquire);
+    if (prev != nullptr) {
+        ESP_LOGW(TAG, "Previous cam task still running, skipping toggle");
+        /* Revert switch to match actual state */
+        bool running = CameraStream::instance().isRunning();
+        if (running != on) {
+            if (running) lv_obj_add_state(app->_sw_cam_stream, LV_STATE_CHECKED);
+            else lv_obj_clear_state(app->_sw_cam_stream, LV_STATE_CHECKED);
+        }
+        return;
+    }
+
     if (on) {
         /* Check WiFi is connected before starting stream */
         if (!app->_wifi_event_group ||
@@ -824,6 +845,7 @@ void PhoneAppSettings::onCamStreamSwitchChanged(lv_event_t *e)
         /* CameraStream::start() does heavy hardware init (V4L2, JPEG encoder,
          * detection model load) that can take seconds — run in a separate task
          * to avoid blocking the LVGL task and freezing the UI. */
+        TaskHandle_t h = nullptr;
         xTaskCreatePinnedToCore([](void *arg) {
             PhoneAppSettings *a = (PhoneAppSettings *)arg;
             if (!CameraStream::instance().start()) {
@@ -835,16 +857,21 @@ void PhoneAppSettings::onCamStreamSwitchChanged(lv_event_t *e)
             } else {
                 ESP_LOGI(TAG, "Camera stream started — http://%s/stream", a->_wifi_ip);
             }
+            _cam_start_stop_task.store(nullptr, std::memory_order_release);
             vTaskDelete(NULL);
-        }, "cam_start", 4096, app, 3, nullptr, 1);  /* Core 1, low prio */
+        }, "cam_start", 4096, app, 3, &h, 1);  /* Core 1, low prio */
+        if (h) _cam_start_stop_task.store(h, std::memory_order_release);
     } else {
         ESP_LOGI(TAG, "Stopping camera stream...");
         /* stop() is relatively fast (signal task + wait), but run in separate
          * task anyway to keep UI responsive. */
+        TaskHandle_t h = nullptr;
         xTaskCreatePinnedToCore([](void *) {
             CameraStream::instance().stop();
+            _cam_start_stop_task.store(nullptr, std::memory_order_release);
             vTaskDelete(NULL);
-        }, "cam_stop", 3072, nullptr, 3, nullptr, 1);
+        }, "cam_stop", 3072, nullptr, 3, &h, 1);
+        if (h) _cam_start_stop_task.store(h, std::memory_order_release);
     }
 
     app->_cam_fps = 0;

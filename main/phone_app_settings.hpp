@@ -123,6 +123,7 @@ private:
     static orb_sub_t       s_fps_sub;
     uint32_t               _cam_fps;
     uint32_t               _cam_frame_count;
+    static std::atomic<TaskHandle_t> _cam_start_stop_task;  /* Tracks cam_start/cam_stop task to prevent orphans */
 
     /* LVGL objects - WiFi list screen */
     lv_obj_t              *_scr_wifi_list;
