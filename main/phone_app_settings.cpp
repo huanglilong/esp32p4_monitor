@@ -211,7 +211,10 @@ void PhoneAppSettings::bootWifiAutoConnect(void)
         ESP_ERROR_CHECK(esp_netif_init());
         ESP_ERROR_CHECK(esp_event_loop_create_default());
         esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-        assert(sta_netif);
+        if (!sta_netif) {
+            ESP_LOGE(TAG, "Failed to create default WiFi STA netif");
+            return;
+        }
 
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         if (esp_wifi_init(&cfg) != ESP_OK) {
@@ -1022,7 +1025,10 @@ esp_err_t PhoneAppSettings::wifiInit(void)
         ESP_ERROR_CHECK(esp_netif_init());
         ESP_ERROR_CHECK(esp_event_loop_create_default());
         esp_netif_t *sta = esp_netif_create_default_wifi_sta();
-        assert(sta);
+        if (!sta) {
+            ESP_LOGE(TAG, "Failed to create default WiFi STA netif");
+            return ESP_FAIL;
+        }
 
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         esp_err_t ret = esp_wifi_init(&cfg);
