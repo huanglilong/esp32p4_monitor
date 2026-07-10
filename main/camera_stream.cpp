@@ -1106,7 +1106,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     }
     httpd_resp_set_type(req, "application/json");
     esp_err_t ret = httpd_resp_sendstr(req, json_str);
-    free(json_str);
+    cJSON_free(json_str);
     return ret;
 }
     /** Detection info JSON handler — detection disabled */
