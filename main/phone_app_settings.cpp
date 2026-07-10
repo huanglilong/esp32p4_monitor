@@ -33,6 +33,7 @@ std::atomic<uint32_t> PhoneAppSettings::_wifi_reconnect_count{0};
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
 std::atomic<bool> PhoneAppSettings::_wifi_connecting{false};
+std::atomic<bool> PhoneAppSettings::_wifi_scan_exit{false};
 std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_connect_task{nullptr};
 
 /* uORB subscriber for camera stream FPS stats — static, shared across instances */
@@ -169,12 +170,18 @@ PhoneAppSettings::~PhoneAppSettings()
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
-    /* Atomically clear handle before vTaskDelete — prevents race where
-     * task self-deletes between load() and exchange() (S259). */
+    /* Signal scan task to self-delete and wait — avoids vTaskDelete while
+     * task may hold bsp_display_lock inside scanWifiAndUpdateUi(). */
+    _wifi_scan_exit.store(true, std::memory_order_release);
+    for (int i = 0; i < 20 && _wifi_scan_task.load(std::memory_order_acquire) != nullptr; i++) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
     TaskHandle_t scan_h = _wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel);
     if (scan_h != nullptr) {
+        ESP_LOGW(TAG, "Scan task did not exit in time, force deleting");
         vTaskDelete(scan_h);
     }
+    _wifi_scan_exit.store(false, std::memory_order_release);
     if (_wifi_event_group) {
         vEventGroupDelete(_wifi_event_group);
         _wifi_event_group = nullptr;
@@ -453,12 +460,18 @@ bool PhoneAppSettings::close(void)
             esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, _ip_handler_inst);
             _ip_handler_inst = nullptr;
         }
-        /* Atomically clear handle before vTaskDelete — prevents race where
-         * task self-deletes between load() and exchange() (S259). */
+        /* Signal scan task to self-delete and wait — avoids vTaskDelete while
+         * task may hold bsp_display_lock inside scanWifiAndUpdateUi(). */
+        _wifi_scan_exit.store(true, std::memory_order_release);
+        for (int i = 0; i < 20 && _wifi_scan_task.load(std::memory_order_acquire) != nullptr; i++) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
         TaskHandle_t scan_h = _wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel);
         if (scan_h != nullptr) {
+            ESP_LOGW(TAG, "Scan task did not exit in time, force deleting");
             vTaskDelete(scan_h);
         }
+        _wifi_scan_exit.store(false, std::memory_order_release);
         if (_wifi_event_group) {
             vEventGroupDelete(_wifi_event_group);
             _wifi_event_group = nullptr;
@@ -1080,7 +1093,7 @@ void PhoneAppSettings::wifiScanTaskHandler(void *arg)
     }
     xEventGroupSetBits(app->_wifi_event_group, WIFI_INIT_DONE_BIT);
     /* Run one WiFi scan on entering the list screen, then stop — no continuous scanning */
-    while (1) {
+    while (!_wifi_scan_exit.load(std::memory_order_acquire)) {
         if (app->_wifi_scanning && !app->_is_ui_del) {
             app->scanWifiAndUpdateUi();
             app->_wifi_scanning = false;  // Single scan, stop afterwards
@@ -1090,6 +1103,8 @@ void PhoneAppSettings::wifiScanTaskHandler(void *arg)
         }
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    app->_wifi_scan_task.store(nullptr, std::memory_order_release);
+    vTaskDelete(NULL);
 }
 
 void PhoneAppSettings::wifiConnectTaskHandler(void *arg)

@@ -148,6 +148,7 @@ private:
     static esp_event_handler_instance_t _wifi_handler_inst;  // WIFI_EVENT handler instance
     static esp_event_handler_instance_t _ip_handler_inst;    // IP_EVENT handler instance
     std::atomic<bool>       _wifi_scanning;
+    static std::atomic<bool> _wifi_scan_exit;     // Signal scan task to self-delete
     static std::atomic<TaskHandle_t> _wifi_connect_task;   // Handle for connect task (for cleanup)
 
     static constexpr int   WIFI_SCAN_MAX = 20;
