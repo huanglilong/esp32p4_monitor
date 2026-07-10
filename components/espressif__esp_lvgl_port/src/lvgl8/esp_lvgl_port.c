@@ -128,7 +128,10 @@ esp_err_t lvgl_port_deinit(void)
 
 bool lvgl_port_lock(uint32_t timeout_ms)
 {
-    assert(lvgl_port_ctx.lvgl_mux && "lvgl_port_init must be called first");
+    if (lvgl_port_ctx.lvgl_mux == NULL) {
+        ESP_LOGE(TAG, "lvgl_port_init must be called first");
+        return false;
+    }
 
     const TickType_t timeout_ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
     return xSemaphoreTakeRecursive(lvgl_port_ctx.lvgl_mux, timeout_ticks) == pdTRUE;
@@ -136,7 +139,10 @@ bool lvgl_port_lock(uint32_t timeout_ms)
 
 void lvgl_port_unlock(void)
 {
-    assert(lvgl_port_ctx.lvgl_mux && "lvgl_port_init must be called first");
+    if (lvgl_port_ctx.lvgl_mux == NULL) {
+        ESP_LOGE(TAG, "lvgl_port_init must be called first");
+        return;
+    }
     xSemaphoreGiveRecursive(lvgl_port_ctx.lvgl_mux);
 }
 
@@ -149,6 +155,10 @@ esp_err_t lvgl_port_task_wake(lvgl_port_event_type_t event, void *param)
 IRAM_ATTR bool lvgl_port_task_notify(uint32_t value)
 {
     BaseType_t need_yield = pdFALSE;
+
+    if (lvgl_port_ctx.lvgl_task == NULL) {
+        return false;
+    }
 
     // Notify LVGL task
     if (xPortInIsrContext() == pdTRUE) {
