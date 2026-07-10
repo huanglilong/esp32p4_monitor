@@ -1359,15 +1359,16 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
         }
     }
 
-    audio_unlock();  /* Release lock before blocking _stop_audio_task_if_running */
-    _stop_audio_task_if_running(); /* Stop audio task to release I2S RX */
-    audio_lock();
+    /* Stop audio task to release I2S RX before cleaning up resources.
+     * _stop_audio_task_if_running() blocks up to 500ms waiting for the
+     * audio task to exit — acceptable for an HTTP handler.
+     * Keep the lock held throughout: preventing a concurrent h_rec_start
+     * from creating a new recording between stopping and cleanup. */
+    _stop_audio_task_if_running();
     FILE *f = s_rec_file; s_rec_file = NULL;
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine, &wr); if(d&&wr>0&&f) fwrite(d,1,wr,f); shine_close(s_shine); s_shine=NULL; }
     if (f) fclose(f);
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
-    /* Copy s_rec_path and rec_bytes while still holding the lock — after
-     * audio_unlock(), a concurrent h_rec_start could overwrite s_rec_path. */
     char saved_path[128];
     strlcpy(saved_path, s_rec_path, sizeof(saved_path));
     uint32_t saved_bytes = s_rec_bytes.load(std::memory_order_relaxed);
