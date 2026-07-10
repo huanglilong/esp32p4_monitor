@@ -10,6 +10,8 @@
 #include "esp_video_ioctl.h"
 #include "esp_video_init.h"
 #include "esp_cam_sensor_xclk.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #if CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER
 #include "driver/jpeg_encode.h"
 #else
@@ -34,6 +36,7 @@ static const char *TAG = "example_encoder";
  */
 static jpeg_encoder_handle_t s_jpeg_hw_handle;
 static uint32_t s_jpeg_hw_ref_count;
+static SemaphoreHandle_t s_jpeg_hw_mutex;
 #endif
 
 /**
@@ -96,10 +99,24 @@ esp_err_t example_encoder_init(example_encoder_config_t *config, example_encoder
     }
 
     if (!s_jpeg_hw_handle) {
-        jpeg_encode_engine_cfg_t encode_eng_cfg = {
-            .timeout_ms = 5000,
-        };
-        ESP_RETURN_ON_ERROR(jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle), TAG, "failed to create jpeg encoder engine");
+        /* Lazy-create mutex on first entry */
+        if (!s_jpeg_hw_mutex) {
+            s_jpeg_hw_mutex = xSemaphoreCreateMutex();
+        }
+        if (s_jpeg_hw_mutex) {
+            xSemaphoreTake(s_jpeg_hw_mutex, portMAX_DELAY);
+        }
+        /* Double-check after acquiring mutex (another task may have created
+         * the encoder while we waited) */
+        if (!s_jpeg_hw_handle) {
+            jpeg_encode_engine_cfg_t encode_eng_cfg = {
+                .timeout_ms = 5000,
+            };
+            ESP_GOTO_ON_ERROR(jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle), fail_mutex, TAG, "failed to create jpeg encoder engine");
+        }
+        if (s_jpeg_hw_mutex) {
+            xSemaphoreGive(s_jpeg_hw_mutex);
+        }
     }
 #else
     jpeg_enc_config.quality = config->quality;
@@ -129,9 +146,19 @@ esp_err_t example_encoder_init(example_encoder_config_t *config, example_encoder
 
 #if CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER
     encoder->jpeg_enc_config = jpeg_enc_config;
+    if (s_jpeg_hw_mutex) {
+        xSemaphoreTake(s_jpeg_hw_mutex, portMAX_DELAY);
+    }
     if (!s_jpeg_hw_ref_count) {
         s_jpeg_hw_ref_count++;
         s_jpeg_hw_handle = jpeg_handle;
+    } else if (!s_jpeg_hw_handle && jpeg_handle) {
+        /* Another task created the engine while we waited — delete our duplicate */
+        jpeg_del_encoder_engine(jpeg_handle);
+        jpeg_handle = NULL;
+    }
+    if (s_jpeg_hw_mutex) {
+        xSemaphoreGive(s_jpeg_hw_mutex);
     }
 #else
     encoder->jpeg_handle = jpeg_handle;
@@ -143,6 +170,11 @@ esp_err_t example_encoder_init(example_encoder_config_t *config, example_encoder
 
     return ESP_OK;
 
+fail_mutex:
+    if (s_jpeg_hw_mutex) {
+        xSemaphoreGive(s_jpeg_hw_mutex);
+    }
+    return ret;
 fail0:
 #if CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER
     jpeg_del_encoder_engine(jpeg_handle);
@@ -223,7 +255,7 @@ esp_err_t example_encoder_free_output_buffer(example_encoder_handle_t handle, ui
     }
 
 #if CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER
-    free(buf);
+    heap_caps_free(buf);
 #else
     jpeg_free_align(buf);
 #endif
@@ -308,6 +340,9 @@ esp_err_t example_encoder_deinit(example_encoder_handle_t handle)
     }
 
 #if CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER
+    if (s_jpeg_hw_mutex) {
+        xSemaphoreTake(s_jpeg_hw_mutex, portMAX_DELAY);
+    }
     if (s_jpeg_hw_ref_count) {
         s_jpeg_hw_ref_count--;
         if (!s_jpeg_hw_ref_count) {
@@ -316,6 +351,9 @@ esp_err_t example_encoder_deinit(example_encoder_handle_t handle)
         }
     } else {
         ESP_LOGW(TAG, "jpeg hardware encoder ref count already 0, possible double deinit");
+    }
+    if (s_jpeg_hw_mutex) {
+        xSemaphoreGive(s_jpeg_hw_mutex);
     }
 #else
     jpeg_enc_close(encoder->jpeg_handle);
