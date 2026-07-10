@@ -2826,6 +2826,18 @@ static void cap_im_wechat_qr_task(void *arg)
             s_wechat.qr.refresh_count++;
             cap_im_wechat_unlock();
             err = cap_im_wechat_qr_fetch_code_locked();
+            if (err == ESP_ERR_NOT_FOUND) {
+                /* Network not ready — undo refresh count and retry. */
+                if (cap_im_wechat_lock() == ESP_OK) {
+                    if (s_wechat.qr.refresh_count > 0) {
+                        s_wechat.qr.refresh_count--;
+                    }
+                    cap_im_wechat_unlock();
+                }
+                ESP_LOGW(TAG, "QR fetch: network not ready, retrying in 2 s");
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                continue;
+            }
             if (err != ESP_OK) {
                 if (cap_im_wechat_lock() == ESP_OK) {
                     strlcpy(s_wechat.qr.status, "error", sizeof(s_wechat.qr.status));
@@ -2879,6 +2891,18 @@ static void cap_im_wechat_qr_task(void *arg)
 
         if (needs_refresh) {
             err = cap_im_wechat_qr_fetch_code_locked();
+            if (err == ESP_ERR_NOT_FOUND) {
+                /* Network not ready — undo refresh count and retry. */
+                if (cap_im_wechat_lock() == ESP_OK) {
+                    if (s_wechat.qr.refresh_count > 0) {
+                        s_wechat.qr.refresh_count--;
+                    }
+                    cap_im_wechat_unlock();
+                }
+                ESP_LOGW(TAG, "QR refresh: network not ready, retrying in 2 s");
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                continue;
+            }
             if (err != ESP_OK) {
                 if (cap_im_wechat_lock() == ESP_OK) {
                     strlcpy(s_wechat.qr.status, "error", sizeof(s_wechat.qr.status));

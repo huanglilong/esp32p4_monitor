@@ -317,6 +317,7 @@
 | S260 | **HTTP 错误响应缺失 (HIGH)** | h_llm_config_set/h_feishu_config/h_qq_config/h_tg_config 在 calloc/recv/cJSON_Parse 失败时 return ESP_FAIL/ESP_ERR_NO_MEM 未发送 HTTP 响应 → 客户端 TCP 连接保持但无响应，挂起直至超时。修复: 12 处早期返回前添加 httpd_resp_send_err | ✅ |
 | S261 | **s_task_handle 非原子 (MEDIUM)** | web_config_server 中 s_task_handle 为普通 TaskHandle_t，web_config_task (core 1) 写入，web_config_server_stop() (任意 core) 读取，无同步。修复: 改为 `std::atomic<TaskHandle_t>`，xTaskCreatePinnedToCore 改用临时变量后原子存储 | ✅ |
 | S262 | **Logger vsnprintf 未定义行为 (MEDIUM)** | ESP-IDF v6.x 将完全格式化日志行传给 vprintf hook (含时间戳/level/tag)，`vsnprintf` 将其作为格式字符串再格式化 → 若日志消息含 `%` 字符 (如 "CPU: 50%") 触发 UB。修复: 改用 `strlcpy` 直接复制，无需再格式化 | ✅ |
+| S263 | **QR fetch_code 网络未就绪误判为致命错误 (HIGH)** | `cap_im_wechat_qr_task` 中两处 `cap_im_wechat_qr_fetch_code_locked()` 调用 (TTL 过期刷新 + poll 超时刷新) 将 `ESP_ERR_NOT_FOUND` (DNS/SNTP 未就绪) 当作致命错误处理 — 停用 QR 并退出任务。而 poll 路径已正确处理 `ESP_ERR_NOT_FOUND` 为瞬态重试。修复: 两处 fetch_code 路径添加 `ESP_ERR_NOT_FOUND` 特殊处理 — 回退 `refresh_count++` (因刷新未实际完成) + 2s 延迟重试，匹配 poll 路径模式 | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -470,6 +471,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-10 | +S263 **QR fetch_code 网络未就绪误判为致命错误 (CR)**: `cap_im_wechat_qr_task` 两处 `cap_im_wechat_qr_fetch_code_locked()` 调用将 `ESP_ERR_NOT_FOUND` (DNS/SNTP 未就绪) 当致命错误处理。修复: 回退 refresh_count + 2s 重试，匹配 poll 路径模式 |
 | 2026-07-10 | **ESP-Claw AI Agent Phase 3 集成**: Web Agent Chat UI (/api/agent/chat POST → claw_event_router); Flutter Agent Chat 页面 (agent_chat_screen.dart + http_service getJson/postJson); LLM Vision 启用 (supports_vision=true) + camera.capture_vision MCP tool; 15个设备 MCP tools (新增 vision)。P3-4 ASR/TTS 待开发 (需外部服务) |
 | 2026-07-10 | +S253~S258 代码审查 Round 4 修复 (6 个 HIGH/MEDIUM): AudioDriver ESP_ERROR_CHECK I2S abort(S253), PhoneAppSettings assert(sta_netif)(S254), CameraStream _encoder_handle HTTP handler 竞态(S255), s_audio_inited/s_sntp_initialized 数据竞态(S256), CameraStream cJSON_Print free→cJSON_free(S257), PhoneAppSettings _wifi_initialized 数据竞态(S258) |
 | 2026-07-10 | +S259~S262 代码审查 Round 5 修复 (4 个 CRITICAL/HIGH/MEDIUM): **S259 (CRITICAL) vTaskDelete(nullptr) 竞态**: PhoneAppAudio/PhoneAppSettings 中 vTaskDelete(handle.exchange(nullptr)) 模式在任务自删后 exchange() 返回 nullptr 导致 vTaskDelete(nullptr) 删除调用者自身。修复: 先 exchange 捕获值再判空, 4 处全部修复。**S260 (HIGH) HTTP 错误响应缺失**: h_llm_config_set/h_feishu_config/h_qq_config/h_tg_config 在 calloc/recv/cJSON_Parse 失败时 return ESP_FAIL 未发送 HTTP 响应导致客户端挂起。修复: 12 处早期返回前添加 httpd_resp_send_err。**S261 (MEDIUM) s_task_handle 非原子**: web_config_server 中 s_task_handle 为普通 TaskHandle_t 跨核访问无同步。修复: 改为 std::atomic&lt;TaskHandle_t&gt; + xTaskCreatePinnedToCore 用临时变量。**S262 (MEDIUM) Logger vsnprintf 未定义行为**: ESP-IDF v6.x 传完全格式化日志行给 vprintf hook, vsnprintf 再格式化含 % 字符的消息导致 UB。修复: 改用 strlcpy |
