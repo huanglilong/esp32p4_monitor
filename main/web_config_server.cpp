@@ -3042,9 +3042,10 @@ static void web_config_task(void *arg)
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
     config.max_uri_handlers = 48;  /* 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 8 WeChat + 3 LLM + 2 Feishu + 2 QQ + 2 TG + 2 agent chat + 2 spare */
     config.max_open_sockets = 12;  /* Headroom for Web UI keep-alive connections; lru_purge keeps accept() always active */
-    config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
-                                      stack vars + ESP_LOGI → uart_write → recursive mutex
-                                      needs deep call chain; logger vprintf hook adds more */
+    config.stack_size = 16384;     /* default 4096 overflows: agent chat handler calls
+                                      claw_event_router_handle_event synchronously which runs the
+                                      full agent pipeline (LLM API call, JSON parse, tool exec)
+                                      in the httpd task context → needs deep stack */
     config.lru_purge_enable = true;
     config.core_id = 0;  /* Pin to Core 0 — Core 1 runs LVGL rendering */
     /* TCP keep-alive: detect dead connections quickly so sockets don't
@@ -3148,7 +3149,7 @@ static void web_config_task(void *arg)
             /* Large enough socket pool so the web UI's multiple keep-alive
              * connections don't exhaust it. */
             config.max_open_sockets = 12;
-            config.stack_size = 8192;
+            config.stack_size = 16384;  /* Agent chat handler runs full agent pipeline synchronously */
             /* CRITICAL: keep the listen socket always monitored so new
              * connections are accepted even when all slots look busy.
              * Without this, httpd stops calling accept() once max_open_sockets
