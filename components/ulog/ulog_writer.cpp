@@ -94,8 +94,8 @@ static const char *TAG = "ULog";
 typedef struct {
     uint8_t *buffer;
     size_t   size;
-    volatile size_t write_pos;
-    volatile size_t read_pos;
+    std::atomic<size_t> write_pos;
+    std::atomic<size_t> read_pos;
     SemaphoreHandle_t mutex;
 } ringbuf_t;
 
@@ -104,8 +104,8 @@ static bool ringbuf_init(ringbuf_t *rb, size_t size)
     rb->buffer = (uint8_t *)malloc(size);
     if (!rb->buffer) return false;
     rb->size = size;
-    rb->write_pos = 0;
-    rb->read_pos = 0;
+    rb->write_pos.store(0, std::memory_order_relaxed);
+    rb->read_pos.store(0, std::memory_order_relaxed);
     rb->mutex = xSemaphoreCreateMutex();
     return rb->mutex != NULL;
 }
@@ -114,13 +114,17 @@ static void ringbuf_deinit(ringbuf_t *rb)
 {
     if (rb->mutex) vSemaphoreDelete(rb->mutex);
     free(rb->buffer);
-    memset(rb, 0, sizeof(*rb));
+    rb->buffer = nullptr;
+    rb->size = 0;
+    rb->write_pos.store(0, std::memory_order_relaxed);
+    rb->read_pos.store(0, std::memory_order_relaxed);
+    rb->mutex = nullptr;
 }
 
 static size_t ringbuf_available(const ringbuf_t *rb)
 {
-    size_t w = rb->write_pos;
-    size_t r = rb->read_pos;
+    size_t w = rb->write_pos.load(std::memory_order_relaxed);
+    size_t r = rb->read_pos.load(std::memory_order_relaxed);
     if (w >= r) return w - r;
     return rb->size - (r - w);
 }
@@ -144,7 +148,7 @@ static bool ringbuf_write(ringbuf_t *rb, const uint8_t *data, size_t len)
         return false;
     }
 
-    size_t w = rb->write_pos;
+    size_t w = rb->write_pos.load(std::memory_order_relaxed);
     size_t end = w + len;
 
     if (end <= rb->size) {
@@ -155,8 +159,8 @@ static bool ringbuf_write(ringbuf_t *rb, const uint8_t *data, size_t len)
         memcpy(rb->buffer, data + first, len - first);
     }
 
-    /* Ensure write_pos is updated atomically (size_t is word-aligned on P4) */
-    rb->write_pos = end % rb->size;
+    /* Ensure write_pos is updated atomically */
+    rb->write_pos.store(end % rb->size, std::memory_order_release);
 
     xSemaphoreGive(rb->mutex);
     return true;
@@ -171,7 +175,7 @@ static size_t ringbuf_read(ringbuf_t *rb, uint8_t *dst, size_t max_len)
 
     xSemaphoreTake(rb->mutex, portMAX_DELAY);
 
-    size_t r = rb->read_pos;
+    size_t r = rb->read_pos.load(std::memory_order_relaxed);
     size_t end = r + to_read;
 
     if (end <= rb->size) {
@@ -182,7 +186,7 @@ static size_t ringbuf_read(ringbuf_t *rb, uint8_t *dst, size_t max_len)
         memcpy(dst + first, rb->buffer, to_read - first);
     }
 
-    rb->read_pos = end % rb->size;
+    rb->read_pos.store(end % rb->size, std::memory_order_release);
 
     xSemaphoreGive(rb->mutex);
     return to_read;
@@ -286,10 +290,13 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path,
 {
     if (!writer || !sd_mount_path || !config) return ESP_ERR_INVALID_ARG;
 
-    /* Zero-initialize POD fields (struct contains std::atomic members
-     * which cannot be memset'd).  task_should_run/task_exited use
-     * default member initializers ({false}). */
-    memset(&writer->ringbuf, 0, sizeof(writer->ringbuf));
+    /* Zero-initialize ringbuf (contains std::atomic members, cannot memset).
+     * Use explicit field initialization instead. */
+    writer->ringbuf.buffer = nullptr;
+    writer->ringbuf.size = 0;
+    writer->ringbuf.write_pos.store(0, std::memory_order_relaxed);
+    writer->ringbuf.read_pos.store(0, std::memory_order_relaxed);
+    writer->ringbuf.mutex = nullptr;
     memset(writer->topics, 0, sizeof(writer->topics));
     writer->num_topics = 0;
     writer->next_msg_id = 0;
@@ -564,7 +571,7 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
                 write(writer->fd, drain_buf, n);
                 writer->bytes_written += n;
             }
-            free(drain_buf);
+            heap_caps_free(drain_buf);
         }
     }
 
@@ -788,7 +795,7 @@ static void writer_task_func(void *arg)
     }
 
     /* Free heap-allocated data buffer before task exit */
-    free(data_buf);
+    heap_caps_free(data_buf);
 
     /* Task self-delete — set exited flag first for clean teardown */
     writer->task_exited.store(true, std::memory_order_release);
