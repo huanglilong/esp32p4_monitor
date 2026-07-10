@@ -2678,7 +2678,7 @@ static esp_err_t ensure_agent_started(void)
 
     /* Init event router */
     claw_event_router_config_t er_cfg = {};
-    er_cfg.event_queue_len = 16;
+    er_cfg.rules_path = "/sdcard/claw/router_rules/router_rules.json";
     er_cfg.task_stack_size = 8192;
     er_cfg.task_priority = 5;
     er_cfg.task_core = tskNO_AFFINITY;
