@@ -3,14 +3,11 @@
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "dl_detect_define.hpp"
 #include "uorb.h"
 #include "generated/camera_frame.h"
 #include <time.h>
-#include <list>
 #include <atomic>
 
-class COCODetect;  // Forward declaration
 class PPAPreprocessor;  // Forward declaration
 
 /**
@@ -99,44 +96,17 @@ public:
     std::atomic<orb_advert_t>  _fps_pub;           /* uORB publisher for fps_stats — atomic for lazy advertise CAS */
     static constexpr int   FPS_LOG_INTERVAL_S = 2;  /* Log FPS every 2s */
 
-    /* Detection — inline, no separate task/buffer needed */
-    std::atomic<COCODetect *>   _detector;          /* Cross-task: loader writes, handler reads */
-    uint8_t                      *_detect_in_buf;   /* Copy buffer for inference */
-    uint32_t                      _detect_in_size;
-    std::list<dl::detect::result_t> _detect_results;
-    SemaphoreHandle_t            _detect_mutex;     /* Protects _detect_results + _detect_available (write side) */
-    std::atomic<bool>            _detect_available;  /* Cross-task: loader writes, stream_handler/HTTP reads */
-    std::atomic<bool>            _model_ready;         /* Model loaded and ready for inference (cross-task: loader→handler) */
-    std::atomic<TaskHandle_t>    _model_load_task;     /* Background task that loads the model (cross-task atomic) */
-    std::atomic<bool>            _model_load_task_exited; /* Set by task before vTaskDelete, polled by deinit */
-    StackType_t                 *_model_load_stack;   /* PSRAM-allocated stack (8KB) */
-    StaticTask_t                *_model_load_tcb;     /* TCB buffer for static task */
-    PPAPreprocessor             *_ppa;                 /* PPA hardware preprocessor (resize + RGB565→BGR888) */
-    uint32_t                      _stream_enc_width;    /* JPEG encoder input width (PPA output or cam width) */
-    uint32_t                      _stream_enc_height;   /* JPEG encoder input height (PPA output or cam height) */
-    uint32_t                      _stream_enc_format;   /* JPEG encoder input pixel format */
-    static constexpr float       PERSON_SCORE_THRESHOLD = 0.35f;
-    static constexpr int         DETECT_INTERVAL_FRAMES = 3;
-    static constexpr int         BOX_LINE_WIDTH = 2;
-
-    /* Draw helpers */
-    void _draw_box_on_buffer(uint8_t *buffer, uint32_t width, uint32_t height,
-                             int x1, int y1, int x2, int y2, uint16_t color);
-    void _draw_box_on_bgr24(uint8_t *buffer, uint32_t width, uint32_t height,
-                            int x1, int y1, int x2, int y2,
-                            uint8_t b, uint8_t g, uint8_t r);
-
     /* Stream handler helpers */
-    void _draw_detection_boxes_on_ppa(void);      /* Draw boxes on PPA BGR24 output + cache msync */
-    void _draw_detection_boxes_on_rgb565(uint8_t *buf, uint32_t len);  /* Draw boxes on RGB565 buffer + cache msync */
     bool _send_mjpeg_part(httpd_req_t *req, uint8_t *jpeg_data, uint32_t jpeg_size,
                           char *part_buf, size_t part_buf_size);  /* Send MJPEG boundary+part, return false on error */
     void _update_fps_stats(uint32_t jpeg_size);   /* Update FPS counters and publish uORB */
     void _publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Publish camera_frame uORB topic for ULog recording */
     void _store_shared_jpeg(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Copy JPEG to shared buffer + signal _frame_ready_sem */
 
-    /* Run detection inference on given buffer (same task, no mutex needed) */
-    void _run_inference(uint8_t *buffer, uint32_t size);
+    /* PPA output dimensions — accessed by camera_info_handler */
+    uint32_t               _stream_enc_width;    /* JPEG encoder input width (PPA output or cam width) */
+    uint32_t               _stream_enc_height;   /* JPEG encoder input height (PPA output or cam height) */
+    uint32_t               _stream_enc_format;   /* JPEG encoder input pixel format */
 
 private:
     CameraStream();
@@ -152,10 +122,10 @@ private:
     void _init_mdns(void);
     void _deinit_mdns(void);
 
-    /* Detection: init/deinit */
-    bool _init_detection(void);
-    void _deinit_detection(void);
-    static void _model_load_task_fn(void *arg);  /* Background model loader */
+    /* PPA hardware preprocessor: resize camera frames for lower-bandwidth JPEG encoding */
+    bool _init_ppa(void);
+    void _deinit_ppa(void);
+    PPAPreprocessor             *_ppa;                 /* PPA hardware preprocessor (resize + RGB565→BGR888) */
 
     /* Capture task: independent frame capture/encode/publish loop */
     static void _capture_task_fn(void *arg);

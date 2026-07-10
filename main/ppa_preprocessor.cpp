@@ -66,8 +66,8 @@ bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint1
 
     /* Allocate PPA output buffer for the REQUESTED size (model input shape).
      * PPA writes actual_w×actual_h valid pixels; the remainder (right/bottom
-     * border) stays zero from calloc. COCODetect's letterbox will add correct
-     * padding if we pass actual_w×actual_h as img dimensions. */
+     * border) stays zero from calloc. Passing actual_w×actual_h as
+     * img dimensions ensures correct stride for downstream consumers. */
     size_t align = cache_hal_get_cache_line_size(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_DATA);
     _out_buf_size = align_up((size_t)dst_w * dst_h * 3, align);
     _out_buf = (uint8_t *)heap_caps_aligned_calloc(align, 1, _out_buf_size,
@@ -136,9 +136,8 @@ bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
 
     /* Output: RGB888 (actually BGR24 in memory per PPA spec).
      * Use actual_w/actual_h as the output picture dimensions so PPA writes
-     * contiguous data with the correct row stride. COCODetect needs contiguous
-     * pixel data — if we set pic_w=320, PPA writes 320-pixel stride rows,
-     * but COCODetect reads with 300-pixel stride, causing misalignment. */
+     * contiguous data with the correct row stride.
+     * E.g., 800→300: scale=0.375, actual=300. */
     srm_cfg.out.buffer = _out_buf;
     srm_cfg.out.buffer_size = _out_buf_size;
     srm_cfg.out.pic_w = _actual_w;
@@ -155,8 +154,7 @@ bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
     srm_cfg.mirror_y = false;
 
     /* No byte swap for RGB565LE input.
-     * No RGB swap on output — PPA outputs BGR24 which we label as BGR888
-     * for COCODetect, so the preprocessor handles the R↔B swap. */
+     * No RGB swap on output — PPA outputs BGR24 which we label as BGR888. */
     srm_cfg.rgb_swap = false;
     srm_cfg.byte_swap = false;
 

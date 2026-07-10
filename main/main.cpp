@@ -888,7 +888,6 @@ extern "C" void app_main(void)
         ulog_writer_set_git_info(ulog, &git);
 
         ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
-        ulog_writer_add_topic(ulog, ORB_ID(detection_result), 0); /* default 100ms */
         ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */
         ulog_writer_add_topic(ulog, ORB_ID(audio_level), 100);    /* same as UI refresh */
         ulog_writer_add_topic(ulog, ORB_ID(camera_state), 0);     /* default 100ms */

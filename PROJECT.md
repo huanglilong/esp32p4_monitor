@@ -79,7 +79,6 @@ esp32p4_monitor/
 │   └── ppa_preprocessor.cpp       # PPA SRM client: 缩放+格式转换, CPU 仅做量化
 ├── proto/                                    # uORB .msg 消息定义
 │   ├── fps_stats.msg
-│   ├── detection_result.msg
 │   ├── wifi_state.msg
 │   ├── audio_level.msg
 │   ├── camera_state.msg
@@ -159,7 +158,6 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 | Topic | 结构体 | 队列深度 | 发布者 | 订阅者 |
 |-------|--------|:-------:|--------|--------|
 | `fps_stats` | `fps_stats_s` | 3 | CameraStream (capture task) | CameraStream App UI |
-| `detection_result` | `detection_result_s` | 1 | NPU 检测 task | UI 绘图 timer |
 | `wifi_state` | `wifi_state_s` | 1 | Settings (wifi_scan) | Web Config, UI |
 | `audio_level` | `audio_level_s` | 1 | Audio task | UI 电平表 |
 | `camera_state` | `camera_state_s` | 1 | CameraDriver | PeripheralManager, CameraStream, PhoneAppCamera |
@@ -436,53 +434,33 @@ Sensor: stop stream → del_dev  →  SCCB: del_i2c_io  →  CSI: stop → disab
 - SCCB 链接: ESL 头文件需 `extern "C"` 包裹
 - 音量振荡: 移除 mic→speaker 回声功能
 
-### 7. PPA 硬件加速 + 人体检测 (CameraStream 专用)
+### 7. PPA 硬件加速 — JPEG 流分辨率优化 (CameraStream 专用)
 
-> **⚠️ 架构变更**: 人体检测已从 PhoneAppCamera (Camera App) 完全移除, Camera App 现在是纯预览应用。
-> 所有检测逻辑集中在 CameraStream, PPA 输出同时供 COCODetect 推理和 JPEG 编码, 避免重复处理。
+> PPA 将 camera frame resize + 格式转换从 CPU 卸载到硬件 (~1ms vs CPU ~30ms), 
+> 大幅减小 JPEG 体积和 WiFi 带宽。
 
 **PPA 硬件加速架构** (`PPAPreprocessor` 类, CameraStream 使用):
 ```
 V4L2 buffer RGB565 (800×800)
         ↓ PPA DMA 直接读取 (无需 memcpy)
    PPA SRM (hardware):
-        ├── resize: 800×800 → 300×300  (scale 0.375, 4-bit frac quantized from 0.4)
+        ├── resize: 800×800 → 300×300  (scale 0.375, 4-bit frac quantized from 0.375)
         └── format: RGB565LE → BGR888  (PPA outputs BGR24 in memory)
-        ↓ _out_buf (BGR888, 300×300 contiguous, allocated for 320×320)
-        ├──→ COCODetect internal (CPU):
-        │       ├── letterbox: 300×300 → 320×320 (10px gray border each side)
-        │       └── quantize: BGR888 → RGB888_QINT8  (R↔B swap + normalize)
-        │       ↓ model input tensor
-        │   YOLO11n inference (~560ms)
-        │       ↓ post-process
-        │   Rescale boxes: 300×300 → 800×800  (using actual_width/height)
-        │
+        ↓ _out_buf (BGR888, 300×300 contiguous)
         └──→ JPEG encoder (hardware):
                 ├── input: 300×300 BGR24 (= JPEG_ENCODE_IN_FORMAT_RGB888)
                 └── encode: ~30ms (vs ~200ms for 800×800 RGB565)
 ```
 - PPA 将 resize + 格式转换从 CPU 卸载到硬件 (~1ms vs CPU ~30ms)
-- PPA 4-bit frac 量化: 0.4 → 0.375, 实际输出 300×300 (非 320×320)
-- PPA `pic_w/pic_h` 必须设为 actual 300×300 (非 requested 320×320), 否则行步长不匹配导致 COCODetect 读取错位数据
-- PPA 输出 BGR24 内存布局, 传给 COCODetect 为 `BGR888`, 预处理自动 R↔B swap
-- COCODetect letterbox 自动将 300×300 填充为 320×320 (10px 灰边框)
-- **PPA 输出复用**: 同一个 BGR24 buffer 同时供 COCODetect (检测) 和 JPEG 编码器 (推流), 无需二次 PPA 调用
-- **JPEG 编码优化**: PPA 输出 BGR24 = `JPEG_ENCODE_IN_FORMAT_RGB888` (ESP-IDF 定义), 编码器直接消费 PPA 输出, 编码时间 ~200ms → ~30ms, JPEG 体积 ~30-50KB → ~5-8KB
-- **V4L2 buffer 直接 DMA**: PPA 直接从 V4L2 mmap buffer DMA 读取, 无需 memcpy 到中间缓冲区, V4L2 buffer 持有时间从 ~200ms 降至 ~1ms
-- 自动降级: PPA 初始化失败时回退到 CPU 全流程 (RGB565→resize_nn→QINT8), 此时才分配 `_detect_in_buf`
-
-**已知问题 (已修复)**:
-- ~~检测框不缩放 → 太小~~ (COCODetect 内部已缩放，手动 scale 会双重缩放导致过大)
-- ~~RGB565LE → PPA 不支持~~ (已通过直接调用 `ppa_do_scale_rotate_mirror` 绕过 ESP-DL `resize_ppa()` 限制)
-- ~~PPA 输出 320×320 但实际只有 300×300 有效像素~~ (已改用 `actual_width/height` 跟踪 PPA 实际输出, 传给 COCODetect 300×300 使 letterbox 正确计算 10px padding)
-- ~~PPA RGB888 输出实为 BGR24~~ (已改用 `DL_IMAGE_PIX_TYPE_BGR888`, COCODetect 预处理自动 R↔B swap)
-- ~~Rescale 用 800/320=2.5~~ (已改用 800/300=2.667 基于 actual_width)
-- ~~PPA pic_w=320 导致行步长错位~~ (PPA 输出 320 像素行步长但 COCODetect 按 300 像素行步长读取, 数据错位。已改为 `pic_w=actual_w=300` 使 PPA 输出连续紧凑数据)
+- PPA 4-bit frac 量化: 0.375, 实际输出 300×300
+- PPA `pic_w/pic_h` 设为 actual 300×300 确保行步长连续
+- **JPEG 编码优化**: PPA 输出 BGR24 = `JPEG_ENCODE_IN_FORMAT_RGB888`, 编码时间 ~200ms → ~30ms, JPEG 体积 ~30-50KB → ~5-8KB
+- **V4L2 buffer 直接 DMA**: PPA 直接从 V4L2 mmap buffer DMA 读取, 无需 memcpy
+- 自动降级: PPA 初始化失败时回退到 camera 原生分辨率编码
 
 **PhoneAppCamera (Camera App) — 纯预览模式**:
-- Camera App 不再运行任何检测, 仅做 V4L2 DQBUF → memcpy → canvas 显示
-- 移除了: COCODetect, PPAPreprocessor, _detect_in_buf (1.28MB PSRAM), _detect_mutex, _detect_task, _draw_box_on_canvas, uORB detection_result
-- 简化了: _frame_update_timer_cb 不再需要 mutex 同步和检测框绘制, 直接 memcpy + cache sync + invalidate
+- Camera App 不做任何预处理, 仅做 V4L2 DQBUF → memcpy → canvas 显示
+- 移除了: COCODetect, PPAPreprocessor, _detect_in_buf (1.28MB PSRAM)
 
 ### 8. Camera 红绿通道修正（Bayer + 字节序）
 
@@ -642,7 +620,7 @@ Camera Stream 通过 Settings App 的开关控制, 退出 Settings App 不会停
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器在 start() 时直接初始化 (capture task 需要立即使用, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护, 防止并发初始化。
 - **独立 capture task 架构**: 帧采集/编码/uORB 发布从 stream_handler 分离到独立 `_capture_task` (FreeRTOS task)。即使无 HTTP 客户端连接, capture task 仍持续运行 → DQBUF → encode → publish (`fps_stats`, `camera_frame`) → store shared JPEG, 确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: 等待 `_frame_ready_sem` → 从 `_shared_jpeg_buf` 读取最新 JPEG → 发送 MJPEG part。
-- **内联人体检测**: CameraStream 在 capture task 中每 3 帧运行一次 COCODetect 推理 (PPA 加速预处理: RGB565→BGR888 resize)，检测框直接绘制在 PPA BGR24 输出 buffer 上再编码为 JPEG。V4L2 buffer 在 PPA 处理后立即归还 (~1ms)，不再持有到编码完成。JPEG 编码器直接消费 PPA 输出 (300×300 BGR24)，编码时间从 ~200ms 降至 ~30ms。
+- **PPA 分辨率优化**: CameraStream 使用 PPA 硬件将 800×800 RGB565 resize 到 300×300 BGR24, JPEG 编码器直接消费 PPA 输出, 编码时间从 ~200ms 降至 ~30ms, JPEG 体积从 ~30-50KB 降至 ~5-8KB。V4L2 buffer 在 PPA 处理后立即归还 (~1ms), 不再持有到编码完成。
 - **V4L2 QBUF 延迟 (JPEG sensor)**: JPEG sensor 路径中 `jpeg_data` 直接指向 V4L2 mmap buffer，QBUF 必须延迟至所有消费者 (`_publish_camera_frame`/`_store_shared_jpeg`) 完成后。PPA 路径 (PPA 输出独立) 和 CPU fallback 路径 (编码后 `jpeg_data` 指向 `_jpeg_out_buf`) 可安全提前 QBUF。
 - **start()/stop() 竞态条件**: Settings App 的 cam_start/cam_stop 在独立 FreeRTOS task 中运行。若 stop() 尚未完成清理 (释放 CameraDriver、停止 httpd、释放 V4L2/PPA/SPI 资源) 时 start() 被调用, start() 的 `_running` CAS 成功 (stop 已将其设 false), CameraDriver re-entrant claim 成功 (同 owner "stream"), 但 httpd 端口 80 仍被旧实例占用 → EADDRINUSE → start() 失败 → 部分清理与 stop() 的清理并发 → V4L2/PPA/SPI 资源 double-free → SPI DMA memcpy 空指针 → Guru Meditation (Load access fault)。修复: 添加 `_start_stop_mutex` 互斥锁, 确保 start()/stop() 串行执行。
 - **stop() 无限等待 capture task**: `VIDIOC_STREAMOFF` 失败时 capture task 卡在 `VIDIOC_DQBUF` 永不退出, stop() 的 `while (_capture_task != nullptr)` 无限轮询 → start() 阻塞在 `_start_stop_mutex` → 系统卡死。修复: stop() 等待 capture task 加 5s timeout + force-kill fallback; start() mutex take 加 20s timeout (防御层); start() HTTP 失败路径同样加 3s timeout。

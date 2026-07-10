@@ -9,7 +9,6 @@
 #include "esp_heap_caps.h"
 #include "hal/cache_hal.h"
 #include "hal/cache_ll.h"
-#include "dl_image_define.hpp"
 #include <cstdint>
 
 /**
@@ -27,8 +26,6 @@
  * for correct coordinate rescaling and letterbox handling.
  *
  * Note: PPA_SRM_COLOR_MODE_RGB888 outputs BGR24 in memory (Byte0=B,G,R).
- * The output should be passed to COCODetect as DL_IMAGE_PIX_TYPE_BGR888
- * so the preprocessor swaps R↔B channels during quantization.
  *
  * Usage:
  *   PPAPreprocessor ppa;
@@ -56,8 +53,7 @@ public:
 
     /**
      * ACTUAL PPA output width. May be less than dst_width() due to
-     * 4-bit scale quantization. Use for img descriptor passed to COCODetect
-     * and for coordinate rescaling.
+     * 4-bit scale quantization. Use for img descriptor and coordinate rescaling.
      * E.g., 800→320: scale=0.375, actual_width=300 (not 320).
      */
     uint16_t actual_width() const { return _actual_w; }

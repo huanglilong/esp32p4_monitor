@@ -15,10 +15,6 @@ dependencies:
     version: '*'
   espressif/esp_hosted:
     version: "==2.12.7"   # v2.12.7 — verified stable on Waveshare P4 (#184, #197)
-  espressif/esp-dl:
-    version: ^3.3
-  espressif/coco_detect:
-    version: ^0.4
   espressif/esp_video:
     version: ^2.2
   espressif/esp_new_jpeg:

@@ -21,7 +21,7 @@
 |---|------|------|:----:|
 | R1 | **MIPI DSI 显示** | ST7703 720×720 LCD，LVGL v9.2.2 + ESP-Brookesia Phone UI | ✅ |
 | R2 | **MIPI CSI 摄像头** | OV5647 RAW8 800×800，ISP RAW8→RGB565 实时预览 (~10fps) | ✅ |
-| R3 | **Camera 人体检测** | ESP-DL + YOLO11n 320×320, ~1.8fps，绿色检测框 + 置信度标签 | ✅ |
+| R3 | ~~**Camera 人体检测**~~ | ESP-DL + YOLO11n 320×320, ~1.8fps — **已移除**: COCO detection 模型和 esp-dl 依赖已从项目中完全移除 | ❌→移除 |
 | R4 | **Camera V4L2 迁移** | 统一 esp_video 接口，与 Camera Stream 共享 | ✅ |
 | R5 | **Camera 红绿通道修正** | Bayer GBRG + byte_swap_en=1 修复颜色错误 | ✅ |
 | R6 | **Camera Stream WiFi 推流** | HW JPEG MJPEG 流 (port 81) + Web UI (port 80), mDNS 发现 | ✅ |
@@ -131,7 +131,7 @@
 | R18 | **Web File Manager** | web_config_server 新增 SD 卡文件管理器：递归浏览目录、Download 文件到浏览器、Delete 文件/空目录；与 Audio Recorder 互斥（模式切换），路径穿越防护 | ✅ |
 | R19 | **Flutter File Manager** | Flutter App Settings 页新增文件管理：目录浏览/导航、下载、删除，含确认弹窗 | ✅ |
 | R20 | ~~**CameraStream JPEG 快照**~~ | `/api/capture_image` 端点已移除，改为独立 capture task 架构 | ❌→移除 |
-| R21 | **CameraStream 内联人体检测** | capture task 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载 | ✅ |
+| R21 | ~~**CameraStream 内联人体检测**~~ | capture task 每 3 帧运行 COCODetect 推理，检测框绘制在 JPEG 帧上，模型后台 task 加载。**已移除**: coco_detect 依赖 + COCODetect/esp-dl + detection_result uORB topic + 模型 loader task 全部删除，PPA 继续用于 300×300 JPEG 编码 (无检测) | ❌→移除 |
 | R22 | **Camera Frame ULog 录制** | JPEG 帧通过 `camera_frame` uORB topic 写入 `.ulg` 文件 (PPA 300×300, 默认 quality 30 下典型 5-8KB/帧、实测最大 ~9210B；`jpeg_data` 缓冲 10240B 覆盖绝大多数帧)，2fps；**录制随 Camera Stream 启停自动控制** (start→recording on, stop→recording off)，不再有独立按键/API；ULog ring buffer 扩容 64KB，data_buf PSRAM 动态分配；`msg_gen.py` 自动计算 struct alignment padding（降序对齐重排 + tail `_padding`）；`orb_metadata.o_size_no_padding` (PX4 惯例) 使 ULog writer 不写尾部 padding 字节，修复 pyulog 兼容性；`tools/ulog_extract_frames.py` 提取 JPEG 帧 | ✅ |
 | R57 | **WiFi 始终启用** | 移除 `wifi_en` NVS 键和所有 UI 开关 (Settings App switch, Web checkbox, Flutter toggle)，WiFi 不可禁用；`bootWifiAutoConnect` 跳过 wifi_en 检查直接连接；断线自动重连无条件触发；`_nvs` struct 移除 `wifi_en` 字段 | ✅ |
 | S86 | **web h_rec_start audio_unlock 泄漏** | fopen 失败路径缺少 `audio_unlock()` 导致永久死锁 | ✅ |
@@ -482,6 +482,7 @@
 | 2026-07-03 | +S49 Driver 模块拆分: PeripheralManager→thin facade + AudioDriver + SDCardDriver + CameraDriver (claim/release API) |
 | 2026-07-03 | +S44~S48 Bug 修复 (gettimeofday overflow, Music _stop ASP 泄漏, SD LDO 检查, web task 干净退出) +PeripheralManager facade 模块化重构 (消除 extern 全局变量) |
 | 2026-07-03 | +S42 uORB 消息总线（FreeRTOS Queue 实现） +S43 .msg 自动生成 pipeline +P11 IPC 迁移计划 |
+| 2026-07-10 | -R21 -R3 人体检测移除: 删除 coco_detect 依赖 + COCODetect/esp-dl + detection_result uORB topic + 模型 loader task, PPA 继续用于 300×300 JPEG 编码 (无检测), _start_stop_mutex 修复 start/stop 竞态 |
 | 2026-07-07 | +S160~S169 代码优化与清理: PhoneAppCameraStream FPS no-op修复(S160), _detect_in_buf null-check(S161), Music冗余ASP清理(S162), SD路径常量统一(S163), VOLUME/BRIGHTNESS常量统一(S164), WIFI_CONNECTED_BIT共享(S165), Logger ring buffer memcpy优化(S166), SystemMonitor heap总大小缓存(S167), camera_stream.hpp extern "C"修复(S168), heap_caps_free一致性(S169) |
 | 2026-07-07 | +R22 Camera Frame ULog 录制: JPEG 帧通过 camera_frame uORB topic 写入 .ulg 文件, Web API /api/camera_record 控制, ULog ring buffer 64KB + PSRAM data_buf |
 | 2026-07-06 | +R20 CameraStream JPEG 快照 (`/api/capture_image`), +R21 CameraStream 内联人体检测 (每3帧 COCODetect, 检测框绘制在 JPEG 帧上) |

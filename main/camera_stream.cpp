@@ -17,8 +17,6 @@
 #include "cJSON.h"
 #include "lwip/apps/netbiosns.h"
 #include "driver/i2c_master.h"
-#include "coco_detect.hpp"
-#include "dl_image_define.hpp"
 #include "ppa_preprocessor.hpp"
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -130,17 +128,8 @@ CameraStream::CameraStream() :
     _fps_window_start{0, 0},
     _fps_total_bytes(0),
     _fps_pub(ORB_ADVERT_INVALID),
-    _detector(nullptr),
-    _detect_in_buf(nullptr), _detect_in_size(0),
-    _detect_results(),
-    _detect_mutex(nullptr),
-    _detect_available(false),
-    _model_ready(false),
-    _model_load_task(nullptr),
-    _model_load_task_exited(false),
-    _model_load_stack(nullptr), _model_load_tcb(nullptr),
-    _ppa(nullptr),
     _stream_enc_width(0), _stream_enc_height(0), _stream_enc_format(0),
+    _ppa(nullptr),
     _capture_task(nullptr),
     _capture_stack(nullptr), _capture_tcb(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
@@ -150,14 +139,12 @@ CameraStream::CameraStream() :
     _frame_pub(ORB_ADVERT_INVALID),
     _mdns_running(false)
 {
-    _detect_mutex = xSemaphoreCreateMutex();
     _shared_jpeg_mutex = xSemaphoreCreateMutex();
     _frame_ready_sem = xSemaphoreCreateCounting(2, 0);  /* Max 2 MJPEG clients */
     _start_stop_mutex = xSemaphoreCreateMutex();  /* Serializes start()/stop() */
 
-    /* Pre-allocate TCBs — reused across start/stop cycles.
-     * ~340B internal SRAM each, avoids TCB use-after-free race with idle task. */
-    _model_load_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    /* Pre-allocate TCB — reused across start/stop cycles.
+     * ~340B internal SRAM, avoids TCB use-after-free race with idle task. */
     _capture_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
@@ -173,10 +160,6 @@ CameraStream::~CameraStream()
     if (_frame_ready_sem) {
         vSemaphoreDelete(_frame_ready_sem);
         _frame_ready_sem = nullptr;
-    }
-    if (_detect_mutex) {
-        vSemaphoreDelete(_detect_mutex);
-        _detect_mutex = nullptr;
     }
     if (_start_stop_mutex) {
         vSemaphoreDelete(_start_stop_mutex);
@@ -201,9 +184,9 @@ bool CameraStream::start(void)
      * it false), claim the camera (re-entrant, same owner), then fail on
      * EADDRINUSE (old httpd not stopped yet) — leading to double-free
      * and the SPI DMA crash observed in the field.
-     * Timeout: 20s — stop() may wait up to 5s for capture task + 15s for
-     * model load task. If stop() hasn't finished in 20s, something is
-     * seriously wrong and we should fail rather than hang forever. */
+     * Timeout: 20s — stop() may wait up to 5s for capture task.
+     * If stop() hasn't finished in 20s, something is seriously wrong
+     * and we should fail rather than hang forever. */
     if (!_start_stop_mutex) return false;
     if (xSemaphoreTake(_start_stop_mutex, pdMS_TO_TICKS(20000)) != pdTRUE) {
         ESP_LOGE(TAG, "start() timed out waiting for stop() to finish — giving up");
@@ -235,18 +218,16 @@ bool CameraStream::start(void)
         return false;
     }
 
-    /* Init detection first — PPA is initialized here, and the JPEG encoder
-     * needs to know whether PPA is active to determine encoding dimensions
-     * (PPA active → 300×300 BGR24, no PPA → 800×800 RGB565). */
-    if (!_init_detection()) {
-        ESP_LOGW(TAG, "Detection init failed, continuing without detection");
+    /* Init PPA hardware preprocessor for 300×300 stream resolution */
+    if (!_init_ppa()) {
+        ESP_LOGW(TAG, "PPA init failed, encoding at camera resolution");
     }
 
-    /* Init JPEG encoder — must be after _init_detection() because encoder
+    /* Init JPEG encoder — must be after _init_ppa() because encoder
      * dimensions depend on PPA state. For JPEG sensors, this is a no-op. */
     if (!_init_encoder()) {
         ESP_LOGE(TAG, "JPEG encoder init failed");
-        _deinit_detection();
+        _deinit_ppa();
         _deinit_video();
         _running = false;
         CameraDriver::instance().release("stream");
@@ -263,7 +244,7 @@ bool CameraStream::start(void)
         if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
         _deinit_encoder();
         _deinit_video();
-        _deinit_detection();
+        _deinit_ppa();
         _running = false;
         CameraDriver::instance().release("stream");
         xSemaphoreGive(_start_stop_mutex);
@@ -282,7 +263,7 @@ bool CameraStream::start(void)
         heap_caps_free(_capture_stack); _capture_stack = nullptr;
         _deinit_encoder();
         _deinit_video();
-        _deinit_detection();
+        _deinit_ppa();
         _running = false;
         CameraDriver::instance().release("stream");
         xSemaphoreGive(_start_stop_mutex);
@@ -312,7 +293,7 @@ bool CameraStream::start(void)
         }
         _deinit_encoder();
         _deinit_video();
-        _deinit_detection();
+        _deinit_ppa();
         CameraDriver::instance().release("stream");
         xSemaphoreGive(_start_stop_mutex);
         return false;
@@ -396,7 +377,7 @@ void CameraStream::stop(void)
     CameraDriver::instance().release("stream");
     _stop_http_server();
     _deinit_mdns();
-    _deinit_detection();
+    _deinit_ppa();
     _deinit_video();
 
     /* Free capture task PSRAM stack.
@@ -626,9 +607,7 @@ bool CameraStream::_init_encoder(void)
      * (300×300 BGR24) instead of full 800×800 RGB565. This reduces:
      *   - JPEG encode time: ~200ms → ~30ms
      *   - JPEG size: ~30-50KB → ~5-8KB
-     *   - WiFi bandwidth: ~80% reduction
-     * PPA outputs BGR24 (PPA_SRM_COLOR_MODE_RGB888 = ESP_COLOR_FOURCC_BGR24),
-     * and JPEG encoder accepts JPEG_ENCODE_IN_FORMAT_RGB888 = BGR24 — perfect match. */
+     *   - WiFi bandwidth: ~80% reduction */
 #if CONFIG_SOC_PPA_SUPPORTED
     if (_ppa && _ppa->is_initialized()) {
         _stream_enc_width = _ppa->actual_width();
@@ -730,404 +709,40 @@ void CameraStream::_deinit_encoder(void)
 }
 
 /*============================================================================
- * Detection Subsystem — inline (no separate task, no extra buffer overhead)
+ * PPA Preprocessor — hardware-accelerated resize 800×800 → 300×300
+ * Reduces JPEG encode time (~200ms→30ms), size (~30-50KB→5-8KB),
+ * and WiFi bandwidth (~80% reduction).
  *============================================================================*/
 
-/*============================================================================
- * Detection: Background Model Loader
- *============================================================================*/
-void CameraStream::_model_load_task_fn(void *arg)
+bool CameraStream::_init_ppa(void)
 {
-    CameraStream *cs = static_cast<CameraStream *>(arg);
-
-    ESP_LOGI(TAG, "Model load task starting...");
-
-    /* Create COCODetect instance (YOLO11n 320x320 for P4, lazy load) */
-    COCODetect *det = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V1, true);
-    cs->_detector.store(det, std::memory_order_release);
-    if (!det) {
-        ESP_LOGE(TAG, "Failed to create COCODetect instance");
-        cs->_model_load_task_exited.store(true, std::memory_order_release);
-        cs->_model_load_task.store(nullptr, std::memory_order_release);
-        vTaskDelete(NULL);
-        return;
-    }
-    det->set_score_thr(cs->PERSON_SCORE_THRESHOLD);
-
-    /* Warm-up inference: trigger model loading now so the stream loop
-     * isn't blocked later. PPA output buffer (all zeros) is used as
-     * dummy input — COCODetect just needs any valid img to trigger load.
-     * Without PPA, allocate a small dummy buffer temporarily. */
-    ESP_LOGI(TAG, "Loading model (warmup inference)...");
-    {
-        dl::image::img_t img = {};
-        uint8_t *dummy_buf = nullptr;
-#if CONFIG_SOC_PPA_SUPPORTED
-        if (cs->_ppa && cs->_ppa->is_initialized()) {
-            img = {
-                .data = cs->_ppa->out_buf(),
-                .width = cs->_ppa->actual_width(),
-                .height = cs->_ppa->actual_height(),
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_BGR888,
-            };
-        } else
-#endif
-        {
-            dummy_buf = (uint8_t *)heap_caps_calloc(1, cs->_cam_width * cs->_cam_height * 2,
-                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!dummy_buf) {
-                ESP_LOGE(TAG, "Failed to allocate dummy_buf for warmup inference");
-                cs->_model_load_task_exited.store(true, std::memory_order_release);
-                cs->_model_load_task.store(nullptr, std::memory_order_release);
-                vTaskDelete(NULL);
-                return;
-            }
-            img = {
-                .data = dummy_buf,
-                .width = (uint16_t)cs->_cam_width,
-                .height = (uint16_t)cs->_cam_height,
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
-            };
-        }
-        det->run(img);  /* First call loads model (~11s) */
-        if (dummy_buf) heap_caps_free(dummy_buf);
-    }
-    cs->_model_ready = true;
-    cs->_detect_available.store(false, std::memory_order_release);
-
-    ESP_LOGI(TAG, "Model loaded and ready for inference");
-    cs->_model_load_task_exited.store(true, std::memory_order_release);
-    cs->_model_load_task.store(nullptr, std::memory_order_release);  /* Clear handle before self-deleting */
-    vTaskDelete(NULL);
-}
-
-bool CameraStream::_init_detection(void)
-{
-    /* With PPA active: V4L2 mmap buffer is passed directly to PPA (DMA read),
-     * so no separate copy buffer is needed. PPA output (BGR24) is used for
-     * both COCODetect and JPEG encoding.
-     * Without PPA: allocate _detect_in_buf for CPU fallback path. */
 #if CONFIG_SOC_PPA_SUPPORTED
     _ppa = new (std::nothrow) PPAPreprocessor();
     if (_ppa) {
-        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 320, 320)) {
-            ESP_LOGW(TAG, "PPA init failed, falling back to CPU preprocessing");
+        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 300, 300)) {
+            ESP_LOGW(TAG, "PPA init failed for %" PRIu32 "x%" PRIu32 " → 300x300", _cam_width, _cam_height);
             delete _ppa;
             _ppa = nullptr;
-        } else {
-            ESP_LOGI(TAG, "PPA preprocessing enabled: %d×%d RGB565 → %d×%d BGR888",
-                     _cam_width, _cam_height, _ppa->actual_width(), _ppa->actual_height());
-        }
-    } else {
-        ESP_LOGW(TAG, "PPA alloc failed, falling back to CPU preprocessing");
-    }
-
-    if (!_ppa)
-#endif
-    {
-        _detect_in_size = _cam_width * _cam_height * 2;  // RGB565
-        _detect_in_buf = (uint8_t *)heap_caps_aligned_alloc(128, _detect_in_size,
-                                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!_detect_in_buf) {
-            ESP_LOGE(TAG, "Failed to allocate detect buffer (%" PRIu32 " bytes)", _detect_in_size);
             return false;
         }
+        ESP_LOGI(TAG, "PPA enabled: %" PRIu32 "×%" PRIu32 " RGB565 → %d×%d BGR888",
+                 _cam_width, _cam_height, _ppa->actual_width(), _ppa->actual_height());
+        return true;
     }
-
-    _model_ready = false;
-
-    /* Start background task to load model asynchronously.
-     * This keeps CameraStream::start() fast and the stream loop unblocked.
-     * Use static allocation to place the 8KB stack in PSRAM. */
-    const uint32_t load_stack_words = 8 * 1024 / sizeof(StackType_t);
-    _model_load_stack = (StackType_t *)heap_caps_malloc(8 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!_model_load_stack || !_model_load_tcb) {
-        ESP_LOGE(TAG, "Failed to allocate model_load task stack in PSRAM or TCB is null");
-        if (_model_load_stack) { heap_caps_free(_model_load_stack); _model_load_stack = nullptr; }
-        if (_detect_in_buf) { heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr; }
-        return false;
-    }
-    _model_load_task_exited.store(false, std::memory_order_release);
-    _model_load_task.store(xTaskCreateStatic(
-        _model_load_task_fn, "model_load", load_stack_words, this, 1, _model_load_stack, _model_load_tcb),
-        std::memory_order_release);
-    if (_model_load_task.load(std::memory_order_relaxed) == nullptr) {
-        ESP_LOGE(TAG, "Failed to create model load task");
-        heap_caps_free(_model_load_stack); _model_load_stack = nullptr;
-#if CONFIG_SOC_PPA_SUPPORTED
-        if (_ppa) { delete _ppa; _ppa = nullptr; }
+    ESP_LOGW(TAG, "PPA alloc failed");
 #endif
-        if (_detect_in_buf) { heap_caps_free(_detect_in_buf); _detect_in_buf = nullptr; }
-        return false;
-    }
-
-    ESP_LOGI(TAG, "Detection init done — model loading in background (PPA=%s)", _ppa ? "ON" : "OFF");
-    return true;
+    return false;
 }
 
-void CameraStream::_deinit_detection(void)
+void CameraStream::_deinit_ppa(void)
 {
-    /* Stop background model-loading task if still running.
-     * The task self-deletes and clears _model_load_task on completion.
-     * Use atomic exchange to safely read-and-nullify the handle.
-     * Wait for the task to exit on its own (up to 15s — model load takes ~11s)
-     * before force-killing, to avoid heap corruption if the task is
-     * mid-allocation (new/malloc) or holding internal mutexes. */
-    TaskHandle_t t = _model_load_task.exchange(nullptr, std::memory_order_acq_rel);
-    if (t) {
-        int poll = 0;
-        while (!_model_load_task_exited.load(std::memory_order_acquire) && poll < 150) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            poll++;
-        }
-        if (!_model_load_task_exited.load(std::memory_order_acquire)) {
-            ESP_LOGW(TAG, "Model load task did not exit after 15s, force-killing (may corrupt heap)");
-            vTaskDelete(t);
-        }
-        /* Yield to let idle task reclaim TCB before we free the stack */
-        vTaskDelay(pdMS_TO_TICKS(10));
-    } else {
-        /* Handle already cleared by the task — yield to let any in-flight
-         * vTaskDelete(NULL) complete before freeing the stack below. */
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    /* Free PSRAM-allocated stack (xTaskCreateStatic does not free it).
-     * TCB is pre-allocated and reused — not freed here.
-     * Stack is safe to free immediately: FreeRTOS doesn't reference it
-     * after the task exits (idle task only reclaims the TCB). */
-    if (_model_load_stack) {
-        heap_caps_free(_model_load_stack);
-        _model_load_stack = nullptr;
-    }
-
 #if CONFIG_SOC_PPA_SUPPORTED
     if (_ppa) {
         delete _ppa;
         _ppa = nullptr;
+        ESP_LOGI(TAG, "PPA deinitialized");
     }
 #endif
-
-    if (_detector) {
-        /* Atomically nullify before delete — prevents concurrent reader from
-         * seeing a dangling pointer between delete and nullptr assignment. */
-        COCODetect *det = _detector.exchange(nullptr, std::memory_order_acq_rel);
-        delete det;
-    }
-    if (_detect_in_buf) {
-        heap_caps_free(_detect_in_buf);
-        _detect_in_buf = nullptr;
-    }
-    _detect_in_size = 0;
-    _detect_available.store(false, std::memory_order_release);
-    _model_ready = false;
-    {
-        /* Hold mutex for consistency with locking discipline — all other
-         * _detect_results accesses hold _detect_mutex. Safe without it
-         * here because stop() already waited for tasks to finish, but
-         * mutex prevents future regressions if ordering changes. */
-        xSemaphoreTake(_detect_mutex, portMAX_DELAY);
-        _detect_results.clear();
-        xSemaphoreGive(_detect_mutex);
-    }
-    ESP_LOGI(TAG, "Detection deinitialized");
-}
-
-void CameraStream::_run_inference(uint8_t *buffer, uint32_t size)
-{
-    if (!_detector || !_model_ready) return;
-
-    dl::image::img_t img = {};
-    bool ppa_ok = false;
-
-#if CONFIG_SOC_PPA_SUPPORTED
-    /* PPA path: PPA was already called by stream_handler on the V4L2 buffer.
-     * Re-use PPA output directly — no need to re-process. */
-    if (_ppa && _ppa->is_initialized()) {
-        img = {
-            .data = _ppa->out_buf(),
-            .width = _ppa->actual_width(),
-            .height = _ppa->actual_height(),
-            .pix_type = dl::image::DL_IMAGE_PIX_TYPE_BGR888,
-        };
-        ppa_ok = true;
-    }
-#endif
-
-    /* CPU fallback: pass RGB565 directly, COCODetect does full preprocess.
-     * If buffer is NULL, _detect_in_buf was already populated by the caller
-     * (e.g. capture task copied V4L2 data before calling us). */
-    if (!ppa_ok) {
-        if (!_detect_in_buf) return;
-        if (buffer) {
-            uint32_t copy_sz = (size < _detect_in_size) ? size : _detect_in_size;
-            memcpy(_detect_in_buf, buffer, copy_sz);
-        }
-        img = {
-            .data = _detect_in_buf,
-            .width = (uint16_t)_cam_width,
-            .height = (uint16_t)_cam_height,
-            .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
-        };
-    }
-
-    /* Run detection. First call loads model (~11s), subsequent ~560ms.
-     * Filter for person class (COCO class 0). */
-    std::list<dl::detect::result_t> &results = _detector.load()->run(img);
-
-#if CONFIG_SOC_PPA_SUPPORTED
-    /* With PPA path, COCODetect sees actual_w×actual_h input (e.g. 300×300),
-     * so result coordinates are in that space. Rescale to camera resolution. */
-    const bool need_rescale = ppa_ok;
-    const float rescale_x = need_rescale ? (float)_cam_width / (float)_ppa->actual_width() : 1.0f;
-    const float rescale_y = need_rescale ? (float)_cam_height / (float)_ppa->actual_height() : 1.0f;
-#endif
-
-    if (_detect_mutex &&
-        xSemaphoreTake(_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        _detect_results.clear();
-        for (auto &r : results) {
-            if (r.category == 0 && r.score >= PERSON_SCORE_THRESHOLD) {
-#if CONFIG_SOC_PPA_SUPPORTED
-                if (need_rescale) {
-                    dl::detect::result_t scaled_r = r;
-                    scaled_r.box[0] = (int)(r.box[0] * rescale_x);
-                    scaled_r.box[1] = (int)(r.box[1] * rescale_y);
-                    scaled_r.box[2] = (int)(r.box[2] * rescale_x);
-                    scaled_r.box[3] = (int)(r.box[3] * rescale_y);
-                    _detect_results.push_back(scaled_r);
-                } else
-#endif
-                {
-                    _detect_results.push_back(r);
-                }
-            }
-        }
-        _detect_available.store(true, std::memory_order_release);
-        xSemaphoreGive(_detect_mutex);
-    }
-}
-
-/*============================================================================
- * Draw helper: hollow rectangle directly on pixel buffer (RGB565)
- *============================================================================*/
-
-void CameraStream::_draw_box_on_buffer(uint8_t *buffer, uint32_t width, uint32_t height,
-                                       int x1, int y1, int x2, int y2, uint16_t color)
-{
-    /* Clamp to buffer bounds */
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 >= (int)width) x2 = (int)width - 1;
-    if (y2 >= (int)height) y2 = (int)height - 1;
-    if (x1 > x2 || y1 > y2) return;
-
-    uint16_t *buf = (uint16_t *)buffer;
-    int stride = (int)width;
-
-    /* Top and bottom horizontal lines */
-    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
-        int row_top = y1 + w;
-        int row_bot = y2 - w;
-        for (int x = x1; x <= x2; x++) {
-            buf[row_top * stride + x] = color;
-            buf[row_bot * stride + x] = color;
-        }
-    }
-
-    /* Left and right vertical lines (between top/bottom borders) */
-    int y_start = y1 + BOX_LINE_WIDTH;
-    int y_end = y2 - BOX_LINE_WIDTH;
-    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
-        int col_l = x1 + w;
-        int col_r = x2 - w;
-        for (int y = y_start; y <= y_end; y++) {
-            buf[y * stride + col_l] = color;
-            buf[y * stride + col_r] = color;
-        }
-    }
-}
-
-/*============================================================================
- * Draw helper: hollow rectangle directly on pixel buffer (BGR24 / RGB888)
- *============================================================================*/
-
-void CameraStream::_draw_box_on_bgr24(uint8_t *buffer, uint32_t width, uint32_t height,
-                                       int x1, int y1, int x2, int y2,
-                                       uint8_t b, uint8_t g, uint8_t r)
-{
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 >= (int)width) x2 = (int)width - 1;
-    if (y2 >= (int)height) y2 = (int)height - 1;
-    if (x1 > x2 || y1 > y2) return;
-
-    int stride = (int)width * 3;  /* 3 bytes per pixel (BGR24) */
-
-    /* Top and bottom horizontal lines */
-    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
-        int row_top = y1 + w;
-        int row_bot = y2 - w;
-        for (int x = x1; x <= x2; x++) {
-            uint8_t *px_top = buffer + row_top * stride + x * 3;
-            px_top[0] = b; px_top[1] = g; px_top[2] = r;
-            uint8_t *px_bot = buffer + row_bot * stride + x * 3;
-            px_bot[0] = b; px_bot[1] = g; px_bot[2] = r;
-        }
-    }
-
-    /* Left and right vertical lines */
-    int y_start = y1 + BOX_LINE_WIDTH;
-    int y_end = y2 - BOX_LINE_WIDTH;
-    for (int w = 0; w < BOX_LINE_WIDTH; w++) {
-        int col_l = x1 + w;
-        int col_r = x2 - w;
-        for (int y = y_start; y <= y_end; y++) {
-            uint8_t *px_l = buffer + y * stride + col_l * 3;
-            px_l[0] = b; px_l[1] = g; px_l[2] = r;
-            uint8_t *px_r = buffer + y * stride + col_r * 3;
-            px_r[0] = b; px_r[1] = g; px_r[2] = r;
-        }
-    }
-}
-
-/*============================================================================
- * Stream handler helpers — extracted from stream_handler for readability
- *============================================================================*/
-
-/* Draw detection boxes on PPA BGR24 output buffer + cache msync */
-void CameraStream::_draw_detection_boxes_on_ppa(void)
-{
-    if (!_ppa || !_ppa->is_initialized()) return;
-    if (!_detect_available.load(std::memory_order_acquire) || !_detect_mutex ||
-        xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
-    if (!_detect_results.empty()) {
-        for (auto &r : _detect_results) {
-            int bx1 = (int)(r.box[0] * (float)_ppa->actual_width() / (float)_cam_width);
-            int by1 = (int)(r.box[1] * (float)_ppa->actual_height() / (float)_cam_height);
-            int bx2 = (int)(r.box[2] * (float)_ppa->actual_width() / (float)_cam_width);
-            int by2 = (int)(r.box[3] * (float)_ppa->actual_height() / (float)_cam_height);
-            _draw_box_on_bgr24(_ppa->out_buf(), _ppa->actual_width(), _ppa->actual_height(),
-                               bx1, by1, bx2, by2, 0, 255, 0);
-        }
-        esp_cache_msync(_ppa->out_buf(), _ppa->out_buf_size(), ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    }
-    xSemaphoreGive(_detect_mutex);
-}
-
-/* Draw detection boxes on RGB565 V4L2 buffer + cache msync */
-void CameraStream::_draw_detection_boxes_on_rgb565(uint8_t *buf, uint32_t len)
-{
-    if (!_detect_in_buf || !_detect_available.load(std::memory_order_acquire) || !_detect_mutex ||
-        xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
-    if (!_detect_results.empty()) {
-        for (auto &r : _detect_results) {
-            _draw_box_on_buffer(buf, _cam_width, _cam_height,
-                                r.box[0], r.box[1], r.box[2], r.box[3], 0x07E0);
-        }
-        esp_cache_msync(buf, len, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    }
-    xSemaphoreGive(_detect_mutex);
 }
 
 /* Send MJPEG boundary + part header + JPEG data.
@@ -1318,196 +933,86 @@ void CameraStream::_capture_task_fn(void *arg)
         esp_cache_msync(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index],
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Track whether V4L2 buffer has been returned to the driver.
-         * For JPEG sensors, the buffer must stay held until all consumers
-         * (publish, store) finish using it. For non-JPEG paths, we return
-         * the buffer early (after PPA/copy/encode detaches data). */
         bool buf_returned = false;
 
-        /*--- PPA + Detection (every N frames) ---*/
-        bool detection_run_this_frame = false;
-        if (cs->_detector && cs->_model_ready
-            && cs->_frame_count % cs->DETECT_INTERVAL_FRAMES == 0) {
-
-            bool ppa_ok = false;
+        /*--- PPA resize: 800×800 RGB565 → 300×300 BGR24 ---*/
+        bool ppa_ok = false;
 #if CONFIG_SOC_PPA_SUPPORTED
-            if (cs->_ppa && cs->_ppa->is_initialized()) {
-                ppa_ok = cs->_ppa->process(cs->_v4l2_bufs[buf.index]);
-            }
+        if (cs->_ppa && cs->_ppa->is_initialized()) {
+            ppa_ok = cs->_ppa->process(cs->_v4l2_bufs[buf.index]);
+        }
 #endif
-            if (!ppa_ok && cs->_detect_in_buf) {
-                uint32_t copy_sz = buf.bytesused;
-                if (copy_sz > cs->_detect_in_size) copy_sz = cs->_detect_in_size;
-                memcpy(cs->_detect_in_buf, cs->_v4l2_bufs[buf.index], copy_sz);
+
+        /* Encode JPEG */
+        uint32_t jpeg_size = 0;
+        uint8_t *jpeg_data = nullptr;
+        bool encoder_held = false;
+
+        if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+            /* JPEG sensor: use V4L2 buffer directly (no software encoder) */
+            jpeg_data = cs->_v4l2_bufs[buf.index];
+            jpeg_size = buf.bytesused;
+        } else if (ppa_ok) {
+            /* PPA output → encode at 300×300 BGR24 */
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            buf_returned = true;
+            if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+                goto capture_done;
             }
-
-            /* Determine JPEG source before returning V4L2 buffer */
-            uint8_t *jpeg_src = nullptr;
-            uint32_t jpeg_src_size = 0;
-            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-                jpeg_src = cs->_v4l2_bufs[buf.index];
-                jpeg_src_size = buf.bytesused;
-            }
-
-            /* Return V4L2 buffer early for non-JPEG (PPA/copy detached data) */
-            if (cs->_cam_pixel_format != V4L2_PIX_FMT_JPEG) {
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                buf_returned = true;
-            }
-
-            /* Encode JPEG */
-            uint32_t jpeg_size = 0;
-            uint8_t *jpeg_data = nullptr;
-            bool encoder_held = false;
-
-            if (jpeg_src) {
-                jpeg_data = jpeg_src;
-                jpeg_size = jpeg_src_size;
-            } else if (ppa_ok) {
-                cs->_draw_detection_boxes_on_ppa();
-                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                    goto detect_done;
-                }
-                encoder_held = true;
-                esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                                         cs->_ppa->out_buf(),
-                                                         cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
-                                                         cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
-                if (ret != ESP_OK) {
-                    xSemaphoreGive(cs->_encoder_sem);
-                    encoder_held = false;
-                    goto detect_done;
-                }
-                jpeg_data = cs->_jpeg_out_buf;
-            } else {
-                if (!cs->_detect_in_buf) goto detect_done;
-                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                    goto detect_done;
-                }
-                encoder_held = true;
-                uint32_t copy_sz = cs->_detect_in_size;
-                esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                                         cs->_detect_in_buf, copy_sz,
-                                                         cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
-                if (ret != ESP_OK) {
-                    xSemaphoreGive(cs->_encoder_sem);
-                    encoder_held = false;
-                    goto detect_done;
-                }
-                jpeg_data = cs->_jpeg_out_buf;
-            }
-
-            /* Publish & store */
-            if (jpeg_data && jpeg_size > 0) {
-                cs->_publish_camera_frame(jpeg_data, jpeg_size);
-                cs->_store_shared_jpeg(jpeg_data, jpeg_size);
-            }
-
-            /* Release encoder semaphore */
-            if (encoder_held && cs->_encoder_sem) {
+            encoder_held = true;
+            esp_err_t ret = example_encoder_process(cs->_encoder_handle,
+                                                     cs->_ppa->out_buf(),
+                                                     cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
+                                                     cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
+            if (ret != ESP_OK) {
                 xSemaphoreGive(cs->_encoder_sem);
                 encoder_held = false;
+                goto capture_done;
             }
-            /* JPEG sensor: return V4L2 buffer after all consumers done */
-            if (!buf_returned && cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                buf_returned = true;
+            jpeg_data = cs->_jpeg_out_buf;
+        } else {
+            /* No PPA: encode at camera resolution */
+            if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
+                goto capture_done;
             }
-
-            cs->_run_inference(nullptr, 0);
-            cs->_update_fps_stats(jpeg_size);
-            detection_run_this_frame = true;
-detect_done:
-            /* Ensure V4L2 buffer is returned on any error/early-exit path */
-            if (!buf_returned) {
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                buf_returned = true;
-            }
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-
-        if (!detection_run_this_frame) {
-            /*--- Non-detection frame: PPA → encode → publish → store ---*/
-            uint32_t jpeg_size = 0;
-            uint8_t *jpeg_data = nullptr;
-            bool encoder_held = false;
-
-            if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-                jpeg_data = cs->_v4l2_bufs[buf.index];
-                jpeg_size = buf.bytesused;
-            }
-#if CONFIG_SOC_PPA_SUPPORTED
-            else if (cs->_ppa && cs->_ppa->is_initialized()) {
-                if (cs->_ppa->process(cs->_v4l2_bufs[buf.index])) {
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                    buf_returned = true;
-                    cs->_draw_detection_boxes_on_ppa();
-                    if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                        goto non_detect_done;
-                    }
-                    encoder_held = true;
-                    esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                                             cs->_ppa->out_buf(),
-                                                             cs->_ppa->actual_width() * cs->_ppa->actual_height() * 3,
-                                                             cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
-                    if (ret != ESP_OK) {
-                        xSemaphoreGive(cs->_encoder_sem);
-                        encoder_held = false;
-                        goto non_detect_done;
-                    }
-                    jpeg_data = cs->_jpeg_out_buf;
-                } else {
-                    ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                    buf_returned = true;
-                    goto non_detect_done;
-                }
-            }
-#endif
-            else {
-                cs->_draw_detection_boxes_on_rgb565(cs->_v4l2_bufs[buf.index], cs->_v4l2_buf_len[buf.index]);
-                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
-                    goto non_detect_done;
-                }
-                encoder_held = true;
-                esp_err_t ret = example_encoder_process(cs->_encoder_handle,
-                                                         cs->_v4l2_bufs[buf.index], buf.bytesused,
-                                                         cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
-                if (ret != ESP_OK) {
-                    xSemaphoreGive(cs->_encoder_sem);
-                    encoder_held = false;
-                    goto non_detect_done;
-                }
-                jpeg_data = cs->_jpeg_out_buf;
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                buf_returned = true;
-            }
-
-            /* Publish & store */
-            if (jpeg_data && jpeg_size > 0) {
-                cs->_publish_camera_frame(jpeg_data, jpeg_size);
-                cs->_store_shared_jpeg(jpeg_data, jpeg_size);
-            }
-
-            /* Release encoder semaphore */
-            if (encoder_held && cs->_encoder_sem) {
+            encoder_held = true;
+            esp_err_t ret = example_encoder_process(cs->_encoder_handle,
+                                                     cs->_v4l2_bufs[buf.index], buf.bytesused,
+                                                     cs->_jpeg_out_buf, cs->_jpeg_out_size, &jpeg_size);
+            if (ret != ESP_OK) {
                 xSemaphoreGive(cs->_encoder_sem);
                 encoder_held = false;
+                goto capture_done;
             }
-            /* JPEG sensor: return V4L2 buffer after all consumers done */
-            if (!buf_returned && cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                buf_returned = true;
-            }
-
-            cs->_update_fps_stats(jpeg_size);
-non_detect_done:
-            /* Ensure V4L2 buffer is returned on any error/early-exit path */
-            if (!buf_returned) {
-                ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
-                buf_returned = true;
-            }
-            vTaskDelay(pdMS_TO_TICKS(50));
+            jpeg_data = cs->_jpeg_out_buf;
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            buf_returned = true;
         }
+
+        /* Publish & store */
+        if (jpeg_data && jpeg_size > 0) {
+            cs->_publish_camera_frame(jpeg_data, jpeg_size);
+            cs->_store_shared_jpeg(jpeg_data, jpeg_size);
+        }
+
+        /* Release encoder semaphore */
+        if (encoder_held && cs->_encoder_sem) {
+            xSemaphoreGive(cs->_encoder_sem);
+            encoder_held = false;
+        }
+        /* JPEG sensor: return V4L2 buffer after all consumers done */
+        if (!buf_returned && cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) {
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+            buf_returned = true;
+        }
+
+        cs->_update_fps_stats(jpeg_size);
+capture_done:
+        /* Ensure V4L2 buffer is returned on any error/early-exit path */
+        if (!buf_returned) {
+            ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     /* Task is exiting — clear handle so stop() knows we're done */
@@ -1604,48 +1109,13 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     free(json_str);
     return ret;
 }
-
-
-    /** Detection info JSON handler — person count + max confidence */
+    /** Detection info JSON handler — detection disabled */
 static esp_err_t detection_info_handler(httpd_req_t *req)
 {
-    CameraStream *cs = (CameraStream *)req->user_ctx;
-
-    cJSON *root = cJSON_CreateObject();
-    if (!root) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    cJSON_AddBoolToObject(root, "detection_enabled", cs->_detector != nullptr);
-    cJSON_AddBoolToObject(root, "model_ready", cs->_model_ready);
-
-    float max_conf = 0.0f;
-    size_t person_count = 0;
-    bool detect_avail = false;
-    if (cs->_detect_mutex &&
-        xSemaphoreTake(cs->_detect_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        for (auto &r : cs->_detect_results) {
-            if (r.score > max_conf) max_conf = r.score;
-        }
-        person_count = cs->_detect_results.size();
-        detect_avail = cs->_detect_available.load(std::memory_order_relaxed);
-        xSemaphoreGive(cs->_detect_mutex);
-    }
-    cJSON_AddNumberToObject(root, "person_count", person_count);
-    cJSON_AddNumberToObject(root, "max_confidence", detect_avail ? max_conf : 0.0);
-
-    char *json_str = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-
-    if (!json_str) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    esp_err_t ret = httpd_resp_sendstr(req, json_str);
-    free(json_str);
-    return ret;
+    httpd_resp_sendstr(req, "{\"detection_enabled\":false}");
+    return ESP_OK;
 }
 
 /** GET /api/set_quality?value=30 */
@@ -1745,8 +1215,6 @@ static esp_err_t index_handler(httpd_req_t *req)
         "<span class='stat'>Frames: <b id='fr'>0</b></span>"
         "<label>Quality: <b id='ql'>30</b></label>"
         "<input type='range' id='qs' min='1' max='100' value='30' oninput=\"setQ(this.value)\">"
-        "<span class='stat'>People: <b id='ppl'>--</b></span>"
-        "<span class='stat'>Conf: <b id='conf'>--</b></span>"
         "</div><script>"
         "document.getElementById('settings-link').href='http://'+window.location.hostname+':8080/';"
         "var stream_url='http://'+window.location.hostname+':81/stream';"
@@ -1757,11 +1225,7 @@ static esp_err_t index_handler(httpd_req_t *req)
         "document.getElementById('fps').textContent=d.frame_rate;"
         "document.getElementById('fr').textContent=d.total_frames;"
         "document.getElementById('ql').textContent=d.jpeg_quality;"
-        "document.getElementById('qs').value=d.jpeg_quality}).catch(function(){})"
-        ";fetch('/api/get_detection_info').then(r=>r.json()).then(d=>{"
-        "document.getElementById('ppl').textContent=d.person_count;"
-        "document.getElementById('conf').textContent=d.detection_enabled?d.max_confidence.toFixed(3):'N/A'"
-        "}).catch(function(){})}"
+        "document.getElementById('qs').value=d.jpeg_quality}).catch(function(){})}"
         "setInterval(upd,3000);upd()</script></body></html>";
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, strlen(html));

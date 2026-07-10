@@ -99,8 +99,8 @@
 
 ### Software Features
 - **MIPI DSI** 720×720 LCD + GT911 Touch (ESP-Brookesia Phone UI, LVGL v9.2.2)
-- **MIPI CSI** OV5647 camera (V4L2, ~5fps, HW JPEG, PPA-accelerated preprocessing; Camera App is preview-only, detection runs in Camera Stream)
-- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, inline detection, independent capture task, TCP keep-alive; toggle in Settings App)
+- **MIPI CSI** OV5647 camera (V4L2, ~2fps, HW JPEG, PPA-accelerated preprocessing; Camera App is preview-only, Camera Stream PPA resizes to 300×300 for efficient MJPEG encoding)
+- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, PPA-accelerated 300×300 JPEG encoding, independent capture task, TCP keep-alive; toggle in Settings App)
 - **Audio** Dual mic monitoring + MP3 recording (Shine encoder, SD card) + Music playback (ESP-GMF)
 - **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording, WiFi recovery httpd restart)
 - **Settings App** Volume/brightness sliders + WiFi + Camera Stream enable/disable (stream persists across app close/open)
