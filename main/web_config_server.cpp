@@ -2631,8 +2631,8 @@ static esp_err_t ensure_agent_started(void)
     }
 
     /* Init cap framework if needed */
-    static bool s_caps_initialized = false;
-    if (!s_caps_initialized) {
+    static std::atomic<bool> s_caps_initialized{false};
+    if (!s_caps_initialized.load(std::memory_order_acquire)) {
         claw_cap_init();
         cap_system_register_group();
         cap_files_register_group();
@@ -2642,28 +2642,27 @@ static esp_err_t ensure_agent_started(void)
         cap_lua_add_package_path_dir("/sdcard/claw/lua");
         cap_web_search_register_group();
         cap_llm_config_register_group();
-        cap_session_mgr_register_group();
-        cap_session_mgr_set_session_root_dir("/sdcard/claw/sessions");
-        cap_scheduler_register_group();
-        cap_agent_mgr_register_group();
-        cap_router_mgr_register_group();
-        cap_skill_mgr_register_group("/sdcard/claw/skills");
-        s_caps_initialized = true;
-    }
 
-    /* Init memory/skill if needed */
-    if (!claw_paths_get(CLAW_PATH_DATA)) {
+        /* Memory/skill init (must precede session manager registration) */
         claw_memory_config_t mem_cfg = {};
         mem_cfg.session_root_dir = "/sdcard/claw/sessions";
         mem_cfg.memory_root_dir = "/sdcard/claw/memory";
         mem_cfg.max_message_chars = 4096;
         claw_memory_init(&mem_cfg);
-    }
-    {
+
         claw_skill_config_t skill_cfg = {};
         skill_cfg.session_state_root_dir = "/sdcard/claw/skills";
         skill_cfg.max_file_bytes = 32768;
         claw_skill_init(&skill_cfg);
+
+        cap_session_mgr_set_session_root_dir("/sdcard/claw/sessions");
+        cap_session_mgr_register_group();
+
+        cap_scheduler_register_group();
+        cap_agent_mgr_register_group();
+        cap_router_mgr_register_group();
+        cap_skill_mgr_register_group("/sdcard/claw/skills");
+        s_caps_initialized.store(true, std::memory_order_release);
     }
 
     /* Init event router */
@@ -3030,7 +3029,7 @@ static void web_config_task(void *arg)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_CONFIG_PORT;
     config.ctrl_port   = WEB_CONFIG_PORT + 1;  /* 8081 — avoid collision with CameraStream ctrl=32768 */
-    config.max_uri_handlers = 42;  /* 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 8 WeChat + 3 LLM + 2 TG + 2 spare */
+    config.max_uri_handlers = 48;  /* 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 8 WeChat + 3 LLM + 2 Feishu + 2 QQ + 2 TG + 2 agent chat + 2 spare */
     config.max_open_sockets = 12;  /* Headroom for Web UI keep-alive connections; lru_purge keeps accept() always active */
     config.stack_size = 8192;      /* default 4096 overflows: file download handler has ~1.4KB
                                       stack vars + ESP_LOGI → uart_write → recursive mutex
@@ -3124,7 +3123,7 @@ static void web_config_task(void *arg)
             httpd_config_t config = HTTPD_DEFAULT_CONFIG();
             config.server_port = WEB_CONFIG_PORT;
             config.ctrl_port   = WEB_CONFIG_PORT + 1;
-            config.max_uri_handlers = 42;  /* must match initial start value */
+            config.max_uri_handlers = 48;  /* must match initial start value */
             /* Large enough socket pool so the web UI's multiple keep-alive
              * connections don't exhaust it. */
             config.max_open_sockets = 12;

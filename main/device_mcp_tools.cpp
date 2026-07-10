@@ -219,7 +219,12 @@ static esp_mcp_value_t tool_brightness_set(const esp_mcp_property_list_t *props)
 
     nvs_handle_t nvs_h;
     if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READWRITE, &nvs_h) == ESP_OK) {
-        nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, val);
+        esp_err_t set_err = nvs_set_i32(nvs_h, NVS_KEY_BRIGHTNESS, val);
+        if (set_err == ESP_OK) {
+            nvs_commit(nvs_h);
+        } else {
+            ESP_LOGW(TAG, "brightness.set: NVS write failed: %s", esp_err_to_name(set_err));
+        }
         nvs_close(nvs_h);
     }
     char buf[64];
