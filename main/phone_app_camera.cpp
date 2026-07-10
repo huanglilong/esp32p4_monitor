@@ -162,9 +162,9 @@ bool PhoneAppCamera::_init_camera(void)
     }
     _video_initialized = true;  /* Mark immediately so _cleanup_camera_init() deinitializes it on failure */
 
-    /* Reduce sensor frame rate from ~50fps → ~2fps (VTS: 984→24600).
-     * ISP DMA: ~32 MB/s → ~2.6 MB/s. */
-    ov5647_set_vts_2fps();
+    /* Reduce sensor frame rate from ~50fps → ~10fps (VTS: 984→4920).
+     * ISP DMA: ~32 MB/s → ~12 MB/s. */
+    ov5647_set_vts_10fps();
 
     /* Open V4L2 device */
     _video_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);

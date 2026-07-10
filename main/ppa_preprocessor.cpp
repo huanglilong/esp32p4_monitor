@@ -138,7 +138,7 @@ bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
     /* Output: RGB565 (same format as input, resize only).
      * Use actual_w/actual_h as the output picture dimensions so PPA writes
      * contiguous data with the correct row stride.
-     * E.g., 800→300: scale=0.375, actual=300. */
+     * E.g., 800→400: scale=0.5, actual=400 (exact). */
     srm_cfg.out.buffer = _out_buf;
     srm_cfg.out.buffer_size = _out_buf_size;
     srm_cfg.out.pic_w = _actual_w;

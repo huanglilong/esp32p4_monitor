@@ -32,9 +32,9 @@
 static const char *TAG = "CameraStream";
 
 /*============================================================================
- * OV5647 VTS helper: reduce sensor frame rate from ~50fps to ~2fps
+ * OV5647 VTS helper: set sensor frame rate to ~10fps
  *============================================================================*/
-void ov5647_set_vts_2fps(void)
+void ov5647_set_vts_10fps(void)
 {
     i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
     if (!i2c_handle) {
@@ -55,7 +55,7 @@ void ov5647_set_vts_2fps(void)
         return;
     }
 
-    const uint16_t NEW_VTS = 24600;  /* 25x original 984 → ~2fps */
+    const uint16_t NEW_VTS = 4920;  /* 5x original 984 → ~10fps */
     uint8_t data[3];
 
     /* Write VTS high byte (register 0x380E) */
@@ -86,7 +86,7 @@ void ov5647_set_vts_2fps(void)
         ret = i2c_master_transmit_receive(dev_handle, rd_cmd, 2, rd_val, 1, 100);
         if (ret == ESP_OK) {
             uint16_t vts = (vts_high << 8) | rd_val[0];
-            ESP_LOGI(TAG, "OV5647 VTS: 984→%u (target ~2 fps)", vts);
+            ESP_LOGI(TAG, "OV5647 VTS: 984→%u (target ~10 fps)", vts);
         }
     }
 
@@ -218,7 +218,7 @@ bool CameraStream::start(void)
         return false;
     }
 
-    /* Init PPA hardware preprocessor for 300×300 stream resolution */
+    /* Init PPA hardware preprocessor for 400×400 stream resolution */
     if (!_init_ppa()) {
         ESP_LOGW(TAG, "PPA init failed, encoding at camera resolution");
     }
@@ -422,8 +422,8 @@ bool CameraStream::_init_video(void)
         return false;
     }
 
-    /* Step 1b: Reduce sensor frame rate from ~50fps → ~2fps by increasing VTS. */
-    ov5647_set_vts_2fps();
+    /* Step 1b: Set sensor frame rate to ~10fps by increasing VTS. */
+    ov5647_set_vts_10fps();
 
     bool ok = false;
     do {
@@ -440,14 +440,14 @@ bool CameraStream::_init_video(void)
         if (ioctl(_video_fd, VIDIOC_G_PARM, &sparm) == 0) {
             struct v4l2_fract *tpf = &sparm.parm.capture.timeperframe;
             uint32_t fps = (tpf->denominator && tpf->numerator) ? tpf->denominator / tpf->numerator : 0;
-            ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~2 fps from VTS=24600)", fps);
+            ESP_LOGI(TAG, "V4L2 frame rate: %" PRIu32 " fps (driver cached, actual ~10 fps from VTS=4920)", fps);
         } else {
             ESP_LOGW(TAG, "VIDIOC_G_PARM failed, frame rate unknown");
         }
 
         /* Step 4: REQBUFS */
         req = {};
-        req.count = 2;  // Double buffer: at 2fps, processing (~80ms) completes well before next frame (500ms)
+        req.count = 2;  // Double buffer: at 10fps, processing (~63ms) completes well before next frame (100ms)
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_MMAP;
         ESP_LOGI(TAG, "V4L2 REQBUFS: count=%" PRIu32, req.count);
@@ -604,7 +604,7 @@ bool CameraStream::_init_encoder(void)
     }
 
     /* Determine encoder input: if PPA is active, encode from PPA output
-     * (300×300 RGB565) instead of full 800×800 RGB565. This reduces:
+     * (400×400 RGB565) instead of full 800×800 RGB565. This reduces:
      *   - JPEG encode time: ~200ms → ~30ms
      *   - JPEG size: ~30-50KB → ~5-8KB
      *   - WiFi bandwidth: ~80% reduction */
@@ -709,7 +709,7 @@ void CameraStream::_deinit_encoder(void)
 }
 
 /*============================================================================
- * PPA Preprocessor — hardware-accelerated resize 800×800 → 300×300
+ * PPA Preprocessor — hardware-accelerated resize 800×800 → 400×400
  * Reduces JPEG encode time (~200ms→30ms), size (~30-50KB→5-8KB),
  * and WiFi bandwidth (~80% reduction).
  *============================================================================*/
@@ -719,8 +719,8 @@ bool CameraStream::_init_ppa(void)
 #if CONFIG_SOC_PPA_SUPPORTED
     _ppa = new (std::nothrow) PPAPreprocessor();
     if (_ppa) {
-        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 300, 300)) {
-            ESP_LOGW(TAG, "PPA init failed for %" PRIu32 "x%" PRIu32 " → 300x300", _cam_width, _cam_height);
+        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 400, 400)) {
+            ESP_LOGW(TAG, "PPA init failed for %" PRIu32 "x%" PRIu32 " → 400x400", _cam_width, _cam_height);
             delete _ppa;
             _ppa = nullptr;
             return false;
@@ -842,7 +842,7 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     if (!_recording_enabled.load(std::memory_order_acquire)) return;
     if (!jpeg_data || jpeg_size == 0) return;
 
-    /* JPEG size must fit in camera_frame_s.jpeg_data[10240] */
+    /* JPEG size must fit in camera_frame_s.jpeg_data[16384] */
     if (jpeg_size > sizeof(((camera_frame_s *)0)->jpeg_data)) {
         ESP_LOGW(TAG, "JPEG frame too large for ULog (%u > %u), skipping",
                  (unsigned)jpeg_size, (unsigned)sizeof(((camera_frame_s *)0)->jpeg_data));
@@ -935,7 +935,7 @@ void CameraStream::_capture_task_fn(void *arg)
 
         bool buf_returned = false;
 
-        /*--- PPA resize: 800×800 RGB565 → 300×300 RGB565 ---*/
+        /*--- PPA resize: 800×800 RGB565 → 400×400 RGB565 ---*/
         bool ppa_ok = false;
 #if CONFIG_SOC_PPA_SUPPORTED
         if (cs->_ppa && cs->_ppa->is_initialized()) {
@@ -953,7 +953,7 @@ void CameraStream::_capture_task_fn(void *arg)
             jpeg_data = cs->_v4l2_bufs[buf.index];
             jpeg_size = buf.bytesused;
         } else if (ppa_ok) {
-            /* PPA output → encode at 300×300 RGB565 */
+            /* PPA output → encode at 400×400 RGB565 */
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
             buf_returned = true;
             if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(500)) != pdPASS) {
@@ -1012,7 +1012,7 @@ capture_done:
         if (!buf_returned) {
             ioctl(cs->_video_fd, VIDIOC_QBUF, &buf);
         }
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     /* Task is exiting — clear handle so stop() knows we're done */
@@ -1089,7 +1089,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "sensor_width", cs->_cam_width);
     cJSON_AddNumberToObject(root, "sensor_height", cs->_cam_height);
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality.load());
-    cJSON_AddNumberToObject(root, "frame_rate", 2);   /* ~2fps from VTS=24600 */
+    cJSON_AddNumberToObject(root, "frame_rate", 10);   /* ~10fps from VTS=4920 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
 
     const char *fmt_str = "UNKNOWN";

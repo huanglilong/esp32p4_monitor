@@ -11,14 +11,15 @@
 class PPAPreprocessor;  // Forward declaration
 
 /**
- * @brief Write OV5647 VTS registers via I2C to reduce frame rate from ~50fps to ~2fps.
+ * @brief Write OV5647 VTS registers via I2C to set sensor frame rate.
  *
  * VTS (Vertical Total Size) is the number of lines per frame including blanking.
- * Increasing VTS from 984 → 24600 (25x) proportionally reduces frame rate:
- *   Frame Rate = PCLK / (HTS × VTS) ≈ 50fps / 25 = ~2fps
+ * Frame Rate = PCLK / (HTS × VTS)
+ *   Default VTS=984 → ~50fps
+ *   VTS=4920 → ~10fps (5x)
  *
- * Benefits:
- *   - ISP DMA bandwidth: ~32 MB/s → ~2.6 MB/s
+ * Benefits of reduced frame rate:
+ *   - ISP DMA bandwidth reduced proportionally
  *   - MIPI CSI bandwidth usage is reduced (more idle time between frames)
  *   - JPEG encoder CPU load is reduced
  *
@@ -27,7 +28,7 @@ class PPAPreprocessor;  // Forward declaration
 #ifdef __cplusplus
 extern "C"
 #endif
-void ov5647_set_vts_2fps(void);
+void ov5647_set_vts_10fps(void);
 
 /**
  * @brief Camera stream over WiFi — V4L2 camera → JPEG encoding → HTTP MJPEG → mDNS

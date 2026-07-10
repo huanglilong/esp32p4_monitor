@@ -27,7 +27,7 @@
  *
  * Usage:
  *   PPAPreprocessor ppa;
- *   ppa.init(800, 800, 300, 300);
+ *   ppa.init(800, 800, 400, 400);
  *   ppa.process(rgb565_buf);
  *   // Use actual_width()/actual_height() for img descriptor and rescale
  *   ppa.deinit();
