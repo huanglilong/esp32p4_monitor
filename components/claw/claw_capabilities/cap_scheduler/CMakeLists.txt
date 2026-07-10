@@ -9,6 +9,6 @@ idf_component_register(
     REQUIRES
         claw_cap
         claw_event_router
+        claw_kv_backend
         console
-        nvs_flash
 )

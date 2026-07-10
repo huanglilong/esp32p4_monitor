@@ -14,17 +14,16 @@
 #include <unistd.h>
 
 #include "cap_scheduler_internal.h"
+#include "claw_kv_backend.h"
 #include "esp_log.h"
-#include "nvs.h"
 
 static const char *TAG = "cap_scheduler";
-static const char *CAP_SCHEDULER_NVS_NAMESPACE = "cap_sched";
 
-static void cap_scheduler_log_nvs_failure(const char *operation, const char *path, esp_err_t err)
+static void cap_scheduler_log_store_failure(const char *operation, const char *path, esp_err_t err)
 {
     ESP_LOGW(TAG,
              "%s failed path=%s err=%s",
-             operation ? operation : "file operation",
+             operation ? operation : "store operation",
              path ? path : "(null)",
              esp_err_to_name(err));
 }
@@ -56,7 +55,7 @@ static uint64_t cap_scheduler_hash_path(const char *path)
     return hash;
 }
 
-static esp_err_t cap_scheduler_build_nvs_key(const char *path, char *key, size_t key_size)
+static esp_err_t cap_scheduler_build_store_key(const char *path, char *key, size_t key_size)
 {
     int written;
 
@@ -72,25 +71,18 @@ static esp_err_t cap_scheduler_build_nvs_key(const char *path, char *key, size_t
     return ESP_OK;
 }
 
-static esp_err_t cap_scheduler_open_nvs(nvs_open_mode_t mode, nvs_handle_t *out_handle)
+static claw_kv_backend_t *cap_scheduler_get_backend(void)
 {
-    esp_err_t err;
-
-    if (!out_handle) {
-        return ESP_ERR_INVALID_ARG;
+    if (!s_cap_scheduler.initialized || !s_cap_scheduler.config.kv_backend) {
+        return NULL;
     }
-
-    err = nvs_open(CAP_SCHEDULER_NVS_NAMESPACE, mode, out_handle);
-    if (err != ESP_OK) {
-        cap_scheduler_log_nvs_failure("nvs_open", CAP_SCHEDULER_NVS_NAMESPACE, err);
-    }
-    return err;
+    return s_cap_scheduler.config.kv_backend;
 }
 
 static esp_err_t cap_scheduler_read_blob(const char *path, void **out_buf, size_t *out_len)
 {
-    nvs_handle_t handle = 0;
-    char key[NVS_KEY_NAME_MAX_SIZE] = {0};
+    claw_kv_backend_t *backend;
+    char key[16] = {0};
     void *buf = NULL;
     size_t len = 0;
     esp_err_t err;
@@ -99,42 +91,27 @@ static esp_err_t cap_scheduler_read_blob(const char *path, void **out_buf, size_
         return ESP_ERR_INVALID_ARG;
     }
 
-    err = cap_scheduler_build_nvs_key(path, key, sizeof(key));
+    backend = cap_scheduler_get_backend();
+    if (!backend) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    *out_buf = NULL;
+    *out_len = 0;
+
+    err = cap_scheduler_build_store_key(path, key, sizeof(key));
     if (err != ESP_OK) {
         return err;
     }
 
-    err = cap_scheduler_open_nvs(NVS_READWRITE, &handle);
+    err = backend->get_blob(backend->ctx, key, &buf, &len);
     if (err != ESP_OK) {
-        return err == ESP_ERR_NVS_NOT_FOUND ? ESP_ERR_NOT_FOUND : err;
-    }
-
-    err = nvs_get_blob(handle, key, NULL, &len);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        nvs_close(handle);
-        return ESP_ERR_NOT_FOUND;
-    }
-    if (err != ESP_OK) {
-        cap_scheduler_log_nvs_failure("nvs_get_blob(size)", path, err);
-        nvs_close(handle);
+        if (err != ESP_ERR_NOT_FOUND) {
+            cap_scheduler_log_store_failure("get_blob", path, err);
+        }
         return err;
     }
 
-    buf = calloc(1, len ? len : 1);
-    if (!buf) {
-        nvs_close(handle);
-        return ESP_ERR_NO_MEM;
-    }
-
-    err = nvs_get_blob(handle, key, buf, &len);
-    if (err != ESP_OK) {
-        cap_scheduler_log_nvs_failure("nvs_get_blob", path, err);
-        free(buf);
-        nvs_close(handle);
-        return err;
-    }
-
-    nvs_close(handle);
     *out_buf = buf;
     *out_len = len;
     return ESP_OK;
@@ -142,75 +119,60 @@ static esp_err_t cap_scheduler_read_blob(const char *path, void **out_buf, size_
 
 static esp_err_t cap_scheduler_write_state_blob(const char *path, const void *content, size_t content_len)
 {
-    nvs_handle_t handle = 0;
-    char key[NVS_KEY_NAME_MAX_SIZE] = {0};
+    claw_kv_backend_t *backend;
+    char key[16] = {0};
     esp_err_t err;
 
     if (!path || !content) {
         return ESP_ERR_INVALID_ARG;
     }
-    err = cap_scheduler_build_nvs_key(path, key, sizeof(key));
+
+    backend = cap_scheduler_get_backend();
+    if (!backend) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = cap_scheduler_build_store_key(path, key, sizeof(key));
     if (err != ESP_OK) {
         return err;
     }
 
-    err = cap_scheduler_open_nvs(NVS_READWRITE, &handle);
+    err = backend->set_blob(backend->ctx, key, content, content_len);
     if (err != ESP_OK) {
+        cap_scheduler_log_store_failure("set_blob", path, err);
         return err;
     }
 
-    err = nvs_set_blob(handle, key, content, content_len);
-    if (err != ESP_OK) {
-        cap_scheduler_log_nvs_failure("nvs_set_blob", path, err);
-        nvs_close(handle);
-        return err;
-    }
-
-    err = nvs_commit(handle);
-    if (err != ESP_OK) {
-        cap_scheduler_log_nvs_failure("nvs_commit", path, err);
-    }
-    nvs_close(handle);
-    return err;
+    return ESP_OK;
 }
 
 static esp_err_t cap_scheduler_erase_state_blob(const char *path)
 {
-    nvs_handle_t handle = 0;
-    char key[NVS_KEY_NAME_MAX_SIZE] = {0};
+    claw_kv_backend_t *backend;
+    char key[16] = {0};
     esp_err_t err;
 
     if (!path) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    err = cap_scheduler_build_nvs_key(path, key, sizeof(key));
+    backend = cap_scheduler_get_backend();
+    if (!backend) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = cap_scheduler_build_store_key(path, key, sizeof(key));
     if (err != ESP_OK) {
         return err;
     }
 
-    err = cap_scheduler_open_nvs(NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
+    err = backend->erase_key(backend->ctx, key);
+    if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+        cap_scheduler_log_store_failure("erase_key", path, err);
         return err;
     }
 
-    err = nvs_erase_key(handle, key);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        nvs_close(handle);
-        return ESP_OK;
-    }
-    if (err != ESP_OK) {
-        cap_scheduler_log_nvs_failure("nvs_erase_key", path, err);
-        nvs_close(handle);
-        return err;
-    }
-
-    err = nvs_commit(handle);
-    if (err != ESP_OK) {
-        cap_scheduler_log_nvs_failure("nvs_commit(erase)", path, err);
-    }
-    nvs_close(handle);
-    return err;
+    return ESP_OK;
 }
 
 static esp_err_t cap_scheduler_read_file(const char *path, char **out_buf)

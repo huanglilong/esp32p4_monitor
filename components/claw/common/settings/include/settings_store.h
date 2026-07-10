@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "claw_kv_backend.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -16,6 +17,7 @@ extern "C" {
 
 typedef struct {
     const char *namespace_name;
+    claw_kv_backend_t *backend; /**< Storage backend; must outlive settings_store */
 } settings_store_config_t;
 
 esp_err_t settings_store_init(const settings_store_config_t *config);
@@ -26,6 +28,10 @@ esp_err_t settings_store_get_string(const char *key,
 esp_err_t settings_store_has_key(const char *key, bool *exists);
 esp_err_t settings_store_set_string(const char *key, const char *value);
 esp_err_t settings_store_erase_key(const char *key);
+esp_err_t settings_store_get_blob(const char *key,
+                                  void **buf, size_t *len);
+esp_err_t settings_store_set_blob(const char *key,
+                                  const void *data, size_t len);
 esp_err_t settings_store_commit(void);
 
 #ifdef __cplusplus

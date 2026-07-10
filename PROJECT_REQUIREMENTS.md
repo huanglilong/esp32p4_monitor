@@ -332,6 +332,7 @@
 | S275 | **esp_lvgl_port assert→null checks + task_notify NULL guard** | `lvgl_port_lock/unlock` 用 `assert(lvgl_mux)` 检查，release 构建被移除导致 NULL mutex 解引用。`lvgl_port_task_notify` 未检查 `lvgl_task` 为 NULL，deinit 后 ISR 调用崩溃。修复: assert→null 检查 + ESP_LOGE + early return；task_notify 添加 NULL guard | ✅ |
 | S276 | **esp_lvgl_port_disp assert→null checks + free→heap_caps_free** | `io_handle`/`ppa_handle` 用 `assert()` 检查，release 构建被移除。`draw_buffs`/`oled_buffer`/`disp_ctx` 用 `heap_caps_malloc`/`heap_caps_aligned_alloc` 分配但 `free()` 释放。修复: assert→null 检查 + error return/goto；`free()`→`heap_caps_free()` | ✅ |
 | S277 | **lcd_ppa assert→null checks + free→heap_caps_free** | `cfg`/`buffer`/`ppa_ctx`/`rotate_cfg` 用 `assert()` 检查，release 构建被移除。`ppa_ctx->buffer` 用 `heap_caps_aligned_calloc` 分配但 `free()` 释放。修复: assert→null 检查 + ESP_LOGE + early return/ESP_ERR_INVALID_ARG；`free()`→`heap_caps_free()` | ✅ |
+| S278 | **WeChat session timeout 后重启仍需重新扫码** | WeChat iLink 服务器 `getupdates` 返回 `errcode:-14, "session timeout"` 后，bot_token 服务端失效。虽然 token 已持久化到 NVS 并在重启时加载，但服务端不再接受该 token，导致每次重启后 poll 循环反复报错重试。修复: ① `cap_im_wechat_poll_once()` 检测 errcode=-14，标记 `configured=false` 停止轮询，清除 NVS 中过期 token；② poll_task 对 `ESP_ERR_INVALID_STATE` (session expired) 不重试；③ Web UI 添加 `checkWxSession()` 周期性检查 `configured` 状态，session 过期时显示 "⚠️ Session expired — re-scan QR"；④ `h_wx_login_status` 响应中添加 `configured` 字段 | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -485,6 +486,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-11 | +S279 **claw 组件 NVS 依赖解耦**: `components/claw/` 内 3 处直接依赖 `nvs_flash` (settings_store/cap_scheduler/cap_im_wechat)，违反组件应独立于外部存储的设计原则。参考 esp-claw 上游依赖反转模式修复: ① 新增 `claw_kv_backend` 纯接口组件 (函数指针表: init/get_str/set_str/has_key/erase_key/get_blob/set_blob/commit/deinit) ② 新增 `claw_kv_nvs` — 唯一依赖 nvs_flash 的 NVS 实现 ③ settings_store 重构为 backend 驱动 + 新增 blob API ④ cap_scheduler_store 替换 nvs_get_blob/set_blob/erase_key 为 backend 调用 ⑤ cap_im_wechat 替换 nvs_open/erase_key 为 backend 调用 (s_wechat_kv_backend) ⑥ main.cpp 创建 claw_kv_nvs 实例并注入各组件。二次修复: NVS handle 从共享 ctx 移至每操作局部变量，消除双核并发竞态；init() 返回值检查。构建通过，nvs_flash 依赖仅限 claw_kv_nvs 单一组件 |
 | 2026-07-10 | +S263 **QR fetch_code 网络未就绪误判为致命错误 (CR)**: `cap_im_wechat_qr_task` 两处 `cap_im_wechat_qr_fetch_code_locked()` 调用将 `ESP_ERR_NOT_FOUND` (DNS/SNTP 未就绪) 当致命错误处理。修复: 回退 refresh_count + 2s 重试，匹配 poll 路径模式 |
 | 2026-07-10 | **ESP-Claw AI Agent Phase 3 集成**: Web Agent Chat UI (/api/agent/chat POST → claw_event_router); Flutter Agent Chat 页面 (agent_chat_screen.dart + http_service getJson/postJson); LLM Vision 启用 (supports_vision=true) + camera.capture_vision MCP tool; 15个设备 MCP tools (新增 vision)。P3-4 ASR/TTS 待开发 (需外部服务) |
 | 2026-07-10 | +S253~S258 代码审查 Round 4 修复 (6 个 HIGH/MEDIUM): AudioDriver ESP_ERROR_CHECK I2S abort(S253), PhoneAppSettings assert(sta_netif)(S254), CameraStream _encoder_handle HTTP handler 竞态(S255), s_audio_inited/s_sntp_initialized 数据竞态(S256), CameraStream cJSON_Print free→cJSON_free(S257), PhoneAppSettings _wifi_initialized 数据竞态(S258) |

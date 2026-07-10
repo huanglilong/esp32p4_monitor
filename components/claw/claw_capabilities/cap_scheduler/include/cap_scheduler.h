@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "claw_event_publisher.h"
+#include "claw_kv_backend.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 
@@ -84,6 +85,7 @@ typedef struct {
     BaseType_t task_core;
     claw_event_publish_fn publish_event;
     bool persist_after_fire;
+    claw_kv_backend_t *kv_backend; /**< Storage backend for state persistence */
 } cap_scheduler_config_t;
 
 esp_err_t cap_scheduler_register_group(void);

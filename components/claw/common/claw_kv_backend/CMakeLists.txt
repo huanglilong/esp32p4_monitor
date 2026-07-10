@@ -1,8 +1,6 @@
 idf_component_register(
-    SRCS
-        "settings_store.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
-        claw_kv_backend
+        esp_common
 )

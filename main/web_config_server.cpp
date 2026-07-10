@@ -598,7 +598,7 @@ static const char *WEB_UI_HTML =
 "document.getElementById('rec_stat').textContent='Recording '+('0'+m).slice(-2)+':'+('0'+s).slice(-2)+' | '+Math.round(j.bytes/1024)+'KB'}"
 "else document.getElementById('rec_stat').textContent=''}"
 "catch(e){}}"
-"async function pollLive(){loadUlogStatus();refreshRec();}"
+"async function pollLive(){loadUlogStatus();refreshRec();checkWxSession();}"
 "async function playFile(name){"
 "showStatus('Playing: '+name,'info');"
 "try{var r=await fetch('/api/audio/play?file='+encodeURIComponent(name));"
@@ -771,6 +771,19 @@ static const char *WEB_UI_HTML =
 "document.getElementById('wx_status').textContent='Cancelled';"
 "document.getElementById('btn_wx_login').disabled=false;"
 "document.getElementById('btn_wx_cancel').style.display='none'}"
+"let wxLastConfigured=true;"
+"async function checkWxSession(){"
+"try{let r=await fetch('/api/wechat/login/status');let j=await r.json();"
+"if(!j.configured&&wxLastConfigured){"
+"document.getElementById('wx_status').textContent='⚠️ Session expired — re-scan QR to login';"
+"document.getElementById('wx_status').style.color='#ff9800';"
+"document.getElementById('btn_wx_login').disabled=false;"
+"document.getElementById('btn_wx_cancel').style.display='none'}"
+"else if(j.configured&&!wxLastConfigured){"
+"document.getElementById('wx_status').textContent='WeChat connected ✅';"
+"document.getElementById('wx_status').style.color='#4caf50'}"
+"wxLastConfigured=j.configured}"
+"catch(e){}}"
 #endif
 "async function loadLlmConfig(){"
 "try{let r=await fetch('/api/llm/config');let j=await r.json();"
@@ -2205,6 +2218,7 @@ static esp_err_t h_wx_login_status(httpd_req_t *req)
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp, "ok", true);
     cJSON_AddBoolToObject(resp, "active", st.active);
+    cJSON_AddBoolToObject(resp, "configured", st.configured);
     cJSON_AddBoolToObject(resp, "completed", st.completed);
     cJSON_AddBoolToObject(resp, "persisted", st.persisted);
     cJSON_AddStringToObject(resp, "status", st.status);

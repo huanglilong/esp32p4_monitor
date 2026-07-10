@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "claw_kv_backend.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -58,6 +59,14 @@ esp_err_t cap_im_wechat_qr_login_start(const char *account_id, bool force);
 esp_err_t cap_im_wechat_qr_login_get_status(cap_im_wechat_qr_login_status_t *out_status);
 esp_err_t cap_im_wechat_qr_login_cancel(void);
 esp_err_t cap_im_wechat_qr_login_mark_persisted(void);
+
+/**
+ * @brief Set the KV storage backend for persisting WeChat tokens.
+ *
+ * Must be called before cap_im_wechat_start(). The backend should
+ * be initialized with the "claw_im" namespace.
+ */
+esp_err_t cap_im_wechat_set_kv_backend(claw_kv_backend_t *backend);
 
 #ifdef __cplusplus
 }

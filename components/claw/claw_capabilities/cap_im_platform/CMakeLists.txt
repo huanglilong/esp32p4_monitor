@@ -48,4 +48,5 @@ idf_component_register(
         freertos
         mbedtls
         console
+        claw_kv_backend
 )

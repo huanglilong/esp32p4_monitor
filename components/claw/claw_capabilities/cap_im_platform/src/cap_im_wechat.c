@@ -30,6 +30,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_check.h"
+#include "claw_kv_backend.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/semphr.h"
@@ -151,6 +152,7 @@ static void cap_im_wechat_qr_task(void *arg);
 
 static cap_im_wechat_state_t *s_wechat_state = NULL;
 #define s_wechat (*s_wechat_state)
+static claw_kv_backend_t *s_wechat_kv_backend;
 
 static void cap_im_wechat_init_defaults(cap_im_wechat_state_t *state)
 {
@@ -1620,13 +1622,31 @@ static esp_err_t cap_im_wechat_poll_once(void)
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    int errcode = cap_im_wechat_int_value(cJSON_GetObjectItemCaseSensitive(root, "errcode"), 0);
     if (cap_im_wechat_int_value(cJSON_GetObjectItemCaseSensitive(root, "ret"), 0) != 0 ||
-            cap_im_wechat_int_value(cJSON_GetObjectItemCaseSensitive(root, "errcode"), 0) != 0) {
+            errcode != 0) {
         /* cJSON_PrintUnformatted returns a heap string; free it after logging
          * (it was previously leaked on every error poll cycle). */
         char *err_body = cJSON_PrintUnformatted(root);
         ESP_LOGW(TAG, "wechat getupdates error: %s", err_body ? err_body : "(null)");
         cJSON_free(err_body);
+
+        /* errcode -14: server-side session timeout — the bot_token is no
+         * longer valid.  Mark the gateway as unconfigured so the poll task
+         * stops retrying, erase the stale token from NVS, and surface the
+         * need to re-scan via the web UI. */
+        if (errcode == -14) {
+            ESP_LOGW(TAG, "WeChat session expired (errcode -14), token invalidated — re-scan required");
+            s_wechat.configured = false;
+            /* Erase stale token so next boot doesn't try to use it */
+            if (s_wechat_kv_backend) {
+                s_wechat_kv_backend->erase_key(s_wechat_kv_backend->ctx, "wx_token");
+                s_wechat_kv_backend->erase_key(s_wechat_kv_backend->ctx, "wx_base_url");
+            }
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_STATE;
+        }
+
         cJSON_Delete(root);
         return ESP_FAIL;
     }
@@ -1681,7 +1701,14 @@ static void cap_im_wechat_poll_task(void *arg)
             continue;
         }
 
-        if (cap_im_wechat_poll_once() != ESP_OK) {
+        esp_err_t poll_err = cap_im_wechat_poll_once();
+        if (poll_err == ESP_ERR_INVALID_STATE) {
+            /* Session expired — configured was cleared by poll_once().
+             * Stop retrying; user must re-scan QR via web UI. */
+            ESP_LOGW(TAG, "WeChat session expired, polling stopped — re-scan QR to resume");
+            continue;
+        }
+        if (poll_err != ESP_OK) {
             ESP_LOGW(TAG, "WeChat polling failed, retrying");
             vTaskDelay(pdMS_TO_TICKS(CAP_IM_WECHAT_RETRY_DELAY_MS));
         }
@@ -2361,6 +2388,15 @@ esp_err_t cap_im_wechat_register_group(void)
     }
 
     return claw_cap_register_group(&s_wechat_group);
+}
+
+esp_err_t cap_im_wechat_set_kv_backend(claw_kv_backend_t *backend)
+{
+    if (!backend) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_wechat_kv_backend = backend;
+    return ESP_OK;
 }
 
 esp_err_t cap_im_wechat_set_client_config(const cap_im_wechat_client_config_t *config)

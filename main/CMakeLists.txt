@@ -154,6 +154,7 @@ if(CONFIG_APP_CLAW_CAP_IM_WECHAT OR CONFIG_APP_CLAW_CAP_IM_FEISHU OR
         idf::cap_agent_mgr
         idf::cap_router_mgr
         idf::cap_skill_mgr
+        idf::claw_kv_nvs
     )
     # Device-specific MCP tools (depends on claw + peripheral drivers)
     target_sources(${COMPONENT_LIB} PRIVATE "device_mcp_tools.cpp")

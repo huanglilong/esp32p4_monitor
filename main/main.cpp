@@ -77,6 +77,8 @@
 #include "cap_agent_mgr.h"
 #include "cap_router_mgr.h"
 #include "cap_skill_mgr.h"
+// KV Backend
+#include "claw_kv_nvs.h"
 #endif
 
 static const char *TAG = "monitor";
@@ -556,6 +558,17 @@ extern "C" void app_main(void)
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
     defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
     {
+        /* Create KV backend instances for claw components.
+         * claw_kv_nvs is the only component that depends on nvs_flash;
+         * claw components use the backend abstraction. */
+        claw_kv_backend_t *im_backend = claw_kv_nvs_create();
+
+#ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
+        if (im_backend && im_backend->init(&im_backend->ctx, "claw_im") == ESP_OK) {
+            cap_im_wechat_set_kv_backend(im_backend);
+        }
+#endif
+
         ESP_LOGI(TAG, "Initializing ESP-Claw IM platform...");
         esp_err_t cap_err = claw_cap_init();
         if (cap_err != ESP_OK) {
