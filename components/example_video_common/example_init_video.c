@@ -10,6 +10,8 @@
 #include "example_video_common.h"
 #include "esp_cam_sensor_xclk.h"
 #include "esp_video_device.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 /* Forward-declare BSP I2C handle getter (provided by Waveshare BSP component).
  * We avoid including bsp/esp-bsp.h here to keep the component self-contained. */
@@ -56,13 +58,23 @@ static esp_cam_sensor_xclk_handle_t s_xclk_handle;
 #endif
 
 static bool s_is_init = false;
+static SemaphoreHandle_t s_init_mutex = NULL;
 static const char *TAG = "example_init_video";
 
 esp_err_t example_video_init(void)
 {
     esp_err_t ret;
 
+    /* Lazy-create mutex on first call */
+    if (!s_init_mutex) {
+        s_init_mutex = xSemaphoreCreateMutex();
+    }
+    if (s_init_mutex) {
+        xSemaphoreTake(s_init_mutex, portMAX_DELAY);
+    }
+
     if (s_is_init) {
+        if (s_init_mutex) xSemaphoreGive(s_init_mutex);
         return ESP_OK;
     }
 
@@ -111,6 +123,7 @@ esp_err_t example_video_init(void)
     ESP_GOTO_ON_ERROR(esp_video_init(cam_config_ptr), failed_2, TAG, "failed to initialize video");
 
     s_is_init = true;
+    if (s_init_mutex) xSemaphoreGive(s_init_mutex);
     return ESP_OK;
 
 failed_2:
@@ -154,6 +167,7 @@ failed_2:
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "esp_video_init retry succeeded after VFS cleanup");
         s_is_init = true;
+        if (s_init_mutex) xSemaphoreGive(s_init_mutex);
         return ESP_OK;
     }
     ESP_LOGE(TAG, "esp_video_init retry also failed (0x%x)", ret);
@@ -164,6 +178,7 @@ failed_1:
     s_xclk_handle = NULL;
 failed_0:
 #endif
+    if (s_init_mutex) xSemaphoreGive(s_init_mutex);
     return ret;
 }
 
@@ -171,8 +186,13 @@ esp_err_t example_video_deinit(void)
 {
     esp_err_t ret = ESP_OK;
 
+    if (s_init_mutex) {
+        xSemaphoreTake(s_init_mutex, portMAX_DELAY);
+    }
+
     if (!s_is_init) {
         ESP_LOGW(TAG, "example_video_deinit: not initialized, skipping");
+        if (s_init_mutex) xSemaphoreGive(s_init_mutex);
         return ESP_OK;
     }
 
@@ -206,5 +226,6 @@ esp_err_t example_video_deinit(void)
      * subsequent calls from being silently skipped. */
     s_is_init = false;
 
+    if (s_init_mutex) xSemaphoreGive(s_init_mutex);
     return ret;
 }
