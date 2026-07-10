@@ -169,8 +169,11 @@ PhoneAppSettings::~PhoneAppSettings()
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
-    if (_wifi_scan_task.load(std::memory_order_acquire)) {
-        vTaskDelete(_wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel));
+    /* Atomically clear handle before vTaskDelete — prevents race where
+     * task self-deletes between load() and exchange() (S259). */
+    TaskHandle_t scan_h = _wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel);
+    if (scan_h != nullptr) {
+        vTaskDelete(scan_h);
     }
     if (_wifi_event_group) {
         vEventGroupDelete(_wifi_event_group);
@@ -450,8 +453,11 @@ bool PhoneAppSettings::close(void)
             esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, _ip_handler_inst);
             _ip_handler_inst = nullptr;
         }
-        if (_wifi_scan_task.load(std::memory_order_acquire)) {
-            vTaskDelete(_wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel));
+        /* Atomically clear handle before vTaskDelete — prevents race where
+         * task self-deletes between load() and exchange() (S259). */
+        TaskHandle_t scan_h = _wifi_scan_task.exchange(nullptr, std::memory_order_acq_rel);
+        if (scan_h != nullptr) {
+            vTaskDelete(scan_h);
         }
         if (_wifi_event_group) {
             vEventGroupDelete(_wifi_event_group);

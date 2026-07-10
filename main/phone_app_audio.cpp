@@ -67,9 +67,13 @@ PhoneAppAudio::~PhoneAppAudio()
             vTaskDelay(pdMS_TO_TICKS(100));
             timeout++;
         }
-        if (_task_handle.load(std::memory_order_acquire)) {
+        /* Atomically clear handle before vTaskDelete — prevents race where
+         * task self-deletes between load() and exchange(), which would pass
+         * nullptr to vTaskDelete and kill the calling task (S259). */
+        TaskHandle_t h = _task_handle.exchange(nullptr, std::memory_order_acq_rel);
+        if (h != nullptr) {
             ESP_LOGW(TAG, "Audio task did not exit within 2s, force-killing");
-            vTaskDelete(_task_handle.exchange(nullptr, std::memory_order_acq_rel));
+            vTaskDelete(h);
         }
     }
     /* Free PSRAM-allocated stack (xTaskCreateStatic does not free them).
@@ -230,9 +234,13 @@ bool PhoneAppAudio::close(void)
         vTaskDelay(pdMS_TO_TICKS(100));
         timeout++;
     }
-    if (_task_handle.load(std::memory_order_acquire)) {
+    /* Atomically clear handle before vTaskDelete — prevents race where
+     * task self-deletes between load() and exchange(), which would pass
+     * nullptr to vTaskDelete and kill the calling task (S259). */
+    TaskHandle_t h = _task_handle.exchange(nullptr, std::memory_order_acq_rel);
+    if (h != nullptr) {
         ESP_LOGW(TAG, "Audio task did not exit within 2s, force-killing");
-        vTaskDelete(_task_handle.exchange(nullptr, std::memory_order_acq_rel));
+        vTaskDelete(h);
     }
 
     /* Free PSRAM-allocated stack (xTaskCreateStatic does not free it).
