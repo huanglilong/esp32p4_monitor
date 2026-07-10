@@ -53,13 +53,13 @@ public:
     void stop(void);
 
     /** @return true if stream is currently active */
-    bool isRunning(void) const { return _running; }
+    bool isRunning(void) const { return _running.load(std::memory_order_acquire); }
 
     /** Enable/disable camera frame recording to ULog.
      *  Frames are published as camera_frame uORB topic when recording is enabled.
      *  ULogWriter must be configured to subscribe to camera_frame for this to take effect. */
     void set_recording(bool enabled);
-    bool is_recording(void) const { return _recording_enabled; }
+    bool is_recording(void) const { return _recording_enabled.load(std::memory_order_acquire); }
 
     /* Public members accessed by HTTP handler functions (C-style callbacks) */
     int                    _video_fd;
