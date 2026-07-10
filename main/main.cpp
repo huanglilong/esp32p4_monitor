@@ -765,7 +765,7 @@ extern "C" void app_main(void)
             core_cfg.max_tokens = 4096;
             core_cfg.timeout_ms = 30000;
             core_cfg.supports_tools = true;
-            core_cfg.supports_vision = false;
+            core_cfg.supports_vision = true;
 
             claw_agent_mgr_config_t mgr_cfg = {
                 .core_config = &core_cfg,

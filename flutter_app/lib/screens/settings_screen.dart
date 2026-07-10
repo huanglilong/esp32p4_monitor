@@ -8,6 +8,7 @@ import '../main.dart';
 import '../providers/app_state.dart';
 import '../services/http_service.dart';
 import 'ulog_viewer_screen.dart';
+import 'agent_chat_screen.dart';
 
 /// Settings + Audio: device config (WiFi/volume/camera stream) + audio recording/playback.
 class SettingsScreen extends StatefulWidget {
@@ -471,7 +472,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final tt = Theme.of(context).textTheme;
     return SelectionArea(
       child: Scaffold(
-        appBar: AppBar(title: const Text('Settings'), backgroundColor: Theme.of(context).colorScheme.primaryContainer),
+        appBar: AppBar(
+          title: const Text('Settings'),
+          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.smart_toy),
+              tooltip: 'AI Agent Chat',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AgentChatScreen()),
+              ),
+            ),
+          ],
+        ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),

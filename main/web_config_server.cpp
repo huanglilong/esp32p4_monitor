@@ -70,6 +70,27 @@
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
     defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
 #include "cap_im_platform.h"
+#include "claw_event_router.h"
+#include "claw_event.h"
+#include "claw_agent_mgr.h"
+#include "claw_cap.h"
+#include "claw_memory.h"
+#include "claw_skill.h"
+#include "claw_paths.h"
+#include "cap_system.h"
+#include "cap_files.h"
+#include "cap_http_request.h"
+#include "cap_lua.h"
+#include "cap_web_search.h"
+#include "cap_llm_config.h"
+#include "cap_session_mgr.h"
+#include "cap_scheduler.h"
+#include "cap_agent_mgr.h"
+#include "cap_router_mgr.h"
+#include "cap_skill_mgr.h"
+#include "cap_mcp_server.h"
+#include "cap_mcp_client.h"
+#include "mcp_mdns.h"
 #endif
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
@@ -477,6 +498,24 @@ static const char *WEB_UI_HTML =
 "<button onclick=\"saveLlmConfig()\">Save LLM Config</button>"
 "<div id=\"llm_status\" style=\"font-size:12px;color:#a0a0b0;margin-top:8px;min-height:16px\"></div>"
 "</div>"
+
+/* ── Agent Chat Card ── */
+"<div class=\"card\" id=\"chat_card\">"
+"<h2>Agent Chat</h2>"
+"<div id=\"chat_log\" style=\"height:260px;overflow-y:auto;background:#0a0a1a;border-radius:8px;"
+"padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px\"></div>"
+"<div style=\"display:flex;gap:8px;align-items:center\">"
+"<input type=\"text\" id=\"chat_input\" placeholder=\"Ask the AI agent...\" "
+"style=\"flex:1;width:auto;padding:10px 12px;border-radius:8px;border:1px solid #0f3460;"
+"background:#0f3460;color:#e0e0e0;font-size:14px;outline:none;margin-bottom:0\" "
+"onkeydown=\"if(event.key==='Enter')sendChat()\">"
+"<button onclick=\"sendChat()\" style=\"width:auto;padding:10px 16px;border-radius:8px;"
+"background:linear-gradient(135deg,#00d4ff,#0078d4);color:#fff;border:none;"
+"font-size:14px;cursor:pointer;white-space:nowrap\">Send</button>"
+"</div>"
+"<div id=\"chat_status\" style=\"font-size:11px;color:#a0a0b0;margin-top:6px;min-height:14px\"></div>"
+"</div>"
+
 "<button onclick=\"saveSettings()\">Save Settings</button>"
 "<div id=\"status\"></div>"
 "<div style=\"margin-top:24px;padding-top:16px;border-top:1px solid #0f3460\">"
@@ -755,6 +794,33 @@ static const char *WEB_UI_HTML =
 "document.getElementById('llm_key').placeholder='(saved)';"
 "document.getElementById('llm_key').value=''}"
 "catch(e){document.getElementById('llm_status').textContent='Network error'}}"
+
+/* ── Agent Chat Functions ── */
+"function appendChat(role,text){"
+"let log=document.getElementById('chat_log');"
+"let d=document.createElement('div');"
+"d.style.marginBottom='8px';"
+"if(role==='user'){d.innerHTML='<span style=\"color:#00d4ff;font-weight:bold\">You:</span> '+text}"
+"else if(role==='tool'){d.innerHTML='<span style=\"color:#ffa500;font-weight:bold\">Tool:</span> '+text}"
+"else{d.innerHTML='<span style=\"color:#4caf50;font-weight:bold\">Agent:</span> '+text}"
+"log.appendChild(d);log.scrollTop=log.scrollHeight}"
+"async function sendChat(){"
+"let input=document.getElementById('chat_input');"
+"let msg=input.value.trim();if(!msg)return;"
+"input.value='';"
+"appendChat('user',msg);"
+"document.getElementById('chat_status').textContent='Thinking...';"
+"try{"
+"let r=await fetch('/api/agent/chat',{method:'POST',"
+"headers:{'Content-Type':'application/json'},"
+"body:JSON.stringify({message:msg})});"
+"let j=await r.json();"
+"if(j.reply)appendChat('agent',j.reply.replace(/</g,'&lt;'));"
+"if(j.tool_calls&&j.tool_calls.length>0){"
+"j.tool_calls.forEach(t=>appendChat('tool',t.name+' → '+t.result.replace(/</g,'&lt;')))}"
+"document.getElementById('chat_status').textContent=j.ok?'':'Error: '+(j.error||'unknown')}"
+"catch(e){document.getElementById('chat_status').textContent='Network error'}}"
+
 "</script></body></html>";
 
 /*============================================================================
@@ -2499,6 +2565,235 @@ static esp_err_t h_tg_config(httpd_req_t *req)
     return ESP_OK;
 }
 #endif
+
+/* ── Agent Chat API ── */
+#if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+
+/* Try to lazily initialize the agent if LLM is configured but agent wasn't started at boot.
+ * Returns ESP_OK if agent is ready, or an error if it can't be started. */
+static esp_err_t ensure_agent_started(void)
+{
+    /* Fast path: try event router first */
+    claw_event_router_result_t result = {};
+    claw_event_t probe = {};
+    strlcpy(probe.event_type, "ping", sizeof(probe.event_type));
+    if (claw_event_router_handle_event(&probe, &result) == ESP_OK) {
+        return ESP_OK;
+    }
+
+    /* Router not up — try direct agent mgr */
+    if (claw_agent_mgr_submit_root_text("ping", NULL, 0, 100, NULL) == ESP_OK ||
+        claw_agent_mgr_get_root_core() != NULL) {
+        return ESP_OK;
+    }
+
+    /* Agent mgr not up — check if LLM is configured in NVS and try to init */
+    nvs_handle_t nvs_h;
+    char api_key[320] = {0};
+    size_t len = sizeof(api_key);
+    if (nvs_open("claw_llm", NVS_READONLY, &nvs_h) != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (nvs_get_str(nvs_h, "api_key", api_key, &len) != ESP_OK || len <= 1) {
+        nvs_close(nvs_h);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Agent chat: LLM configured but agent not started — hot-initializing...");
+
+    /* Load full LLM config */
+    cap_llm_config_t llm_cfg = {};
+    strlcpy(llm_cfg.api_key, api_key, sizeof(llm_cfg.api_key));
+
+    char buf[320] = {0};
+    len = sizeof(buf);
+    if (nvs_get_str(nvs_h, "provider", buf, &len) == ESP_OK) {
+        if (strcmp(buf, "openai") == 0) strlcpy(llm_cfg.backend_type, "openai_compatible", sizeof(llm_cfg.backend_type));
+        else if (strcmp(buf, "anthropic") == 0) strlcpy(llm_cfg.backend_type, "anthropic", sizeof(llm_cfg.backend_type));
+        else strlcpy(llm_cfg.backend_type, "openai_compatible", sizeof(llm_cfg.backend_type));
+    } else {
+        strlcpy(llm_cfg.backend_type, "openai_compatible", sizeof(llm_cfg.backend_type));
+    }
+    len = sizeof(buf);
+    if (nvs_get_str(nvs_h, "model", buf, &len) == ESP_OK) strlcpy(llm_cfg.model, buf, sizeof(llm_cfg.model));
+    else strlcpy(llm_cfg.model, "deepseek-chat", sizeof(llm_cfg.model));
+    len = sizeof(buf);
+    if (nvs_get_str(nvs_h, "base_url", buf, &len) == ESP_OK) strlcpy(llm_cfg.base_url, buf, sizeof(llm_cfg.base_url));
+    strlcpy(llm_cfg.auth_type, "bearer", sizeof(llm_cfg.auth_type));
+    strlcpy(llm_cfg.max_tokens, "4096", sizeof(llm_cfg.max_tokens));
+    nvs_close(nvs_h);
+
+    /* Set claw_paths if not already set */
+    if (!claw_paths_get(CLAW_PATH_DATA)) {
+        claw_paths_set(CLAW_PATH_DATA, "/sdcard/claw");
+        claw_paths_set(CLAW_PATH_SYSTEM, "/sdcard");
+    }
+
+    /* Init cap framework if needed */
+    static bool s_caps_initialized = false;
+    if (!s_caps_initialized) {
+        claw_cap_init();
+        cap_system_register_group();
+        cap_files_register_group();
+        cap_http_request_register_group();
+        cap_http_request_set_allowlist("api.openweathermap.org,api.weatherapi.com,wttr.in");
+        cap_lua_register_group();
+        cap_lua_add_package_path_dir("/sdcard/claw/lua");
+        cap_web_search_register_group();
+        cap_llm_config_register_group();
+        cap_session_mgr_register_group();
+        cap_session_mgr_set_session_root_dir("/sdcard/claw/sessions");
+        cap_scheduler_register_group();
+        cap_agent_mgr_register_group();
+        cap_router_mgr_register_group();
+        cap_skill_mgr_register_group("/sdcard/claw/skills");
+        s_caps_initialized = true;
+    }
+
+    /* Init memory/skill if needed */
+    if (!claw_paths_get(CLAW_PATH_DATA)) {
+        claw_memory_config_t mem_cfg = {};
+        mem_cfg.session_root_dir = "/sdcard/claw/sessions";
+        mem_cfg.memory_root_dir = "/sdcard/claw/memory";
+        mem_cfg.max_message_chars = 4096;
+        claw_memory_init(&mem_cfg);
+    }
+    {
+        claw_skill_config_t skill_cfg = {};
+        skill_cfg.session_state_root_dir = "/sdcard/claw/skills";
+        skill_cfg.max_file_bytes = 32768;
+        claw_skill_init(&skill_cfg);
+    }
+
+    /* Init event router */
+    claw_event_router_config_t er_cfg = {};
+    er_cfg.event_queue_len = 16;
+    er_cfg.task_stack_size = 8192;
+    er_cfg.task_priority = 5;
+    er_cfg.task_core = tskNO_AFFINITY;
+    er_cfg.default_route_messages_to_agent = true;
+    esp_err_t err = claw_event_router_init(&er_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Hot-init: event router init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* Init agent manager and create root agent */
+    claw_core_config_t core_cfg = {};
+    core_cfg.api_key = llm_cfg.api_key;
+    core_cfg.backend_type = llm_cfg.backend_type;
+    core_cfg.model = llm_cfg.model;
+    core_cfg.base_url = llm_cfg.base_url[0] ? llm_cfg.base_url : NULL;
+    core_cfg.auth_type = llm_cfg.auth_type;
+    core_cfg.max_tokens = 4096;
+    core_cfg.timeout_ms = 30000;
+    core_cfg.supports_tools = true;
+    core_cfg.supports_vision = true;
+
+    claw_agent_mgr_config_t mgr_cfg = { .core_config = &core_cfg };
+    err = claw_agent_mgr_init(&mgr_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Hot-init: agent mgr init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    const char *root_id = NULL;
+    err = claw_agent_mgr_create_root_agent(&root_id);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Hot-init: create root agent failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* Start services */
+    claw_event_router_start();
+    claw_cap_start_all();
+
+    /* Bind outbound channels */
+    claw_event_router_register_outbound_binding("wechat", "cap_im_wechat");
+    claw_event_router_register_outbound_binding("telegram", "cap_im_tg");
+    claw_event_router_register_outbound_binding("feishu", "cap_im_feishu");
+    claw_event_router_register_outbound_binding("qq", "cap_im_qq");
+
+    ESP_LOGI(TAG, "Hot-init: agent started successfully (model: %s)", llm_cfg.model);
+    return ESP_OK;
+}
+
+static esp_err_t h_agent_chat(httpd_req_t *req)
+{
+    const size_t kMaxBody = 4096;
+    if (req->content_len > kMaxBody) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request too large");
+        return ESP_FAIL;
+    }
+    char *buf = (char *)calloc(req->content_len + 1, 1);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    int ret = httpd_req_recv(req, buf, req->content_len);
+    if (ret <= 0) { free(buf); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Read failed"); return ESP_FAIL; }
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *msg_j = cJSON_GetObjectItemCaseSensitive(root, "message");
+    if (!msg_j || !cJSON_IsString(msg_j) || !msg_j->valuestring[0]) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "message field required");
+        return ESP_FAIL;
+    }
+
+    /* Ensure agent is running (lazy hot-init if needed) */
+    esp_err_t err = ensure_agent_started();
+
+    if (err == ESP_OK) {
+        /* Submit via event router for full IM→Agent pipeline */
+        claw_event_t event = {};
+        strlcpy(event.event_type, "message", sizeof(event.event_type));
+        strlcpy(event.source_channel, "web_chat", sizeof(event.source_channel));
+        strlcpy(event.content_type, "text/plain", sizeof(event.content_type));
+        event.text = msg_j->valuestring;
+
+        claw_event_router_result_t result = {};
+        err = claw_event_router_handle_event(&event, &result);
+    }
+
+    cJSON_Delete(root);
+
+    /* Build response */
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    bool ok = (err == ESP_OK);
+    cJSON_AddBoolToObject(resp, "ok", ok);
+    if (ok) {
+        cJSON_AddStringToObject(resp, "reply", "Message submitted to agent. Check IM channel for response.");
+    } else {
+        const char *hint = (err == ESP_ERR_INVALID_STATE)
+            ? "LLM not configured. Save API key in the AI Agent card first."
+            : esp_err_to_name(err);
+        cJSON_AddStringToObject(resp, "error", hint);
+    }
+
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
+    return ESP_OK;
+}
+#endif /* IM channels */
+
 static void _register_web_config_uris(httpd_handle_t hd)
 {
     /* Core */
@@ -2608,6 +2903,13 @@ static void _register_web_config_uris(httpd_handle_t hd)
 #ifdef CONFIG_APP_CLAW_CAP_IM_TG
     { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_POST, .handler = h_tg_config }; httpd_register_uri_handler(hd, &u); }
     { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+#endif
+
+    /* ── Agent Chat API ── */
+#if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+    { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_POST, .handler = h_agent_chat }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
 #endif
 }
 

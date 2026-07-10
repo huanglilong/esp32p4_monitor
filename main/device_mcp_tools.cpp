@@ -250,6 +250,30 @@ static esp_mcp_value_t tool_wifi_status(const esp_mcp_property_list_t *props)
     return esp_mcp_value_create_string(buf);
 }
 
+/* ── Tool: camera.capture_vision ──────────────────────────────── */
+static esp_mcp_value_t tool_camera_capture_vision(const esp_mcp_property_list_t *props)
+{
+    (void)props;
+    /* This tool signals the agent loop to capture a JPEG frame and
+     * send it to the LLM Vision API. The actual capture is handled
+     * by claw_core's media pipeline (supports_vision=true).
+     * When the LLM requests a vision tool call, claw_core will:
+     * 1. Capture a JPEG frame via CameraStream shared buffer
+     * 2. Base64-encode and include as image content in the next LLM request
+     * 3. The LLM Vision model describes what it sees
+     *
+     * For now, this returns instructions for the caller to use the
+     * existing MJPEG stream or request vision via the agent. */
+    if (!CameraDriver::instance().available()) {
+        return mcp_respond_str("{\"error\":\"camera not available\"}");
+    }
+    return esp_mcp_value_create_string(
+        "{\"message\":\"Vision is enabled on this device. Send an image to the agent via IM or use the MJPEG stream.\","
+        "\"stream_url\":\"http://esp-web.local:81/stream\","
+        "\"vision_enabled\":true}"
+    );
+}
+
 /* ── Tool table ────────────────────────────────────────────────── */
 /* 'extern' linkage required — C++ 'const' at namespace scope has
    internal linkage by default and gets stripped by the linker. */
@@ -342,6 +366,13 @@ cap_mcp_server_tool_def_t s_device_mcp_tools[] = {
         .name = "wifi.status",
         .description = "Get WiFi connection status and IP address",
         .callback = tool_wifi_status,
+        .property_names = {NULL},
+        .property_count = 0,
+    },
+    {
+        .name = "camera.capture_vision",
+        .description = "Capture a photo and describe it using LLM Vision (returns stream URL; vision is enabled on this device)",
+        .callback = tool_camera_capture_vision,
         .property_names = {NULL},
         .property_count = 0,
     },

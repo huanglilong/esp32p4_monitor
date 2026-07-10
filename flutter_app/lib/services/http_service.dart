@@ -282,6 +282,49 @@ class Esp32HttpService {
     }
   }
 
+  /// Generic GET JSON helper (port 8080).
+  Future<Map<String, dynamic>?> getJson(String path) async {
+    if (_connectedDevice == null) return null;
+    final c = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5)
+      ..findProxy = (url) => 'DIRECT';
+    try {
+      final r = await c.getUrl(
+        Uri.parse('http://${_connectedDevice!.host}:8080$path'),
+      );
+      final resp = await r.close();
+      final body = await resp.transform(utf8.decoder).join();
+      return jsonDecode(body) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    } finally {
+      c.close();
+    }
+  }
+
+  /// Generic POST JSON helper (port 8080).
+  Future<Map<String, dynamic>?> postJson(String path, Map<String, dynamic> data) async {
+    if (_connectedDevice == null) return null;
+    final c = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10)
+      ..findProxy = (url) => 'DIRECT';
+    try {
+      final body = jsonEncode(data);
+      final r = await c.postUrl(
+        Uri.parse('http://${_connectedDevice!.host}:8080$path'),
+      );
+      r.headers.contentType = ContentType.json;
+      r.write(body);
+      final resp = await r.close();
+      final respBody = await resp.transform(utf8.decoder).join();
+      return jsonDecode(respBody) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    } finally {
+      c.close();
+    }
+  }
+
   /// Set camera JPEG quality (1-100) via raw socket.
   Future<void> setQuality(int quality) async {
     final q = quality.clamp(1, 100);
