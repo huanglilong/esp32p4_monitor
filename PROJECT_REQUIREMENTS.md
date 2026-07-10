@@ -337,6 +337,11 @@
 | P0 | **Camera Stream + Music 播放卡顿** (S247) | Camera Stream 运行时 Music 播放卡顿。git bisect 定位根因为 commit 65c36ad: 独立 `cam_capture` 任务错误绑定 Core 1 (priority 5)，抢占 Core 1 上 priority 3 的 Music GMF/ASP 任务导致 I2S DMA 欠载。修复: `cam_capture` 改绑 Core 0 (恢复 v0.0.3 httpd 上下文核亲和性)。构建通过，待硬件验证 | ✅ (待硬件验证) |
 | P1 | **720×720 自定义样式表** | 当前使用默认回退方案，UI 一致性不佳 | 需设计 ESP-Brookesia 样式 |
 | P2 | **WIFI6 无屏配网** | 首次启动 NVS 为空时需要配网方案 | esp-hosted SDIO 不支持稳定 SoftAP (#197) |
+| PA | **ESP-Claw AI Agent 端到端验证** | Phase 1-2 代码已完成: cap_system/files/http_request/MCP server/client/lua/web_search/agent_mgr/router_mgr/skill_mgr 链接+注册; 14个设备专属 MCP tools (system.info/stats, volume.get/set, camera.status/stream_start, sdcard.status, audio.record_start/play, brightness.get/set, wifi.status, device.restart)。待硬件验证完整链路: IM→Agent→LLM→tool_call→执行→回复 | 需硬件+LLM API key |
+| PB | **Flutter AI Agent UI** | LLM配置/IM配置/Agent对话/MCP工具状态页面 | 需 Flutter 开发 |
+| PC | **Web Agent 对话界面** | Web chat UI + tool 调用日志 + MCP 连接管理 | 需前端开发 |
+| PD | **Camera Vision 多模态** | JPEG帧→LLM Vision API→文字描述 (core_cfg.supports_vision=true) | 需 Vision API + claw_core media pipeline |
+| PE | **Audio Speech ASR/TTS** | 语音交互: 录音→ASR→LLM→TTS→播放 | 需 ASR/TTS 服务
 
 ### 3.2 中优先级
 
@@ -455,6 +460,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-10 | **ESP-Claw AI Agent Phase 1-2 集成**: 对比 esp-claw 上游项目 (https://github.com/espressif/esp-claw)，识别并完成跑通 AI Agent 全链路所需的代码集成。Phase 1: 链接 cap_system/cap_files/cap_http_request + cap_mcp_server/client + mcp_mdns; 新增 device_mcp_tools.cpp (14个设备专属 MCP tools); 配置 claw_paths + mDNS + MCP server 启动。Phase 2: 链接 cap_lua/cap_web_search/cap_agent_mgr/cap_router_mgr/cap_skill_mgr + 注册; 扩展 MCP tools (audio/brightness/wifi)。待硬件验证: PA (端到端链路), PB (Flutter UI), PC (Web UI), PD (Vision), PE (ASR/TTS) |
 | 2026-07-09 | **文档整合**: 合并 `project_design.md` 至 PROJECT.md (FreeRTOS 任务调度表 + 模块管道图) 并删除；消除三份文档间的架构/修复记录冗余。分工明确: README=硬件, PROJECT=软件/架构/实现, PROJECT_REQUIREMENTS=需求/修复登记/变更记录。P0 新增 Camera Stream + Music 卡顿 (S235) |
 | 2026-07-08 | +S219~S232 代码审查 Round 2 修复 (14 个 CRITICAL/HIGH/MEDIUM): CameraStream model load 早期退出信号(S219), s_sntp_synced volatile→atomic(S220), s_audio_task TaskHandle→atomic(S221), _wifi_scan_task TaskHandle→atomic(S222), PhoneAppAudio _task_handle→atomic(S223), AudioDriver gpio_config 返回值检查(S224), Logger vTaskDelete 过期句柄(S225), g_has_lcd volatile→atomic(S226), _wifi_connect_task TaskHandle→atomic(S227), PeripheralManager _has_lcd→atomic(S228), s_rec_pub orb_advert_t→atomic(S229), h_play __audio_init 锁顺序(S230), h_rec_stop s_rec_path 竞态(S231), ULog writer task PSRAM 栈(S232) |
 | 2026-07-09 | +S235~S240 代码审查 Round 3 修复 (6 个 HIGH/MEDIUM): LLM API key 明文暴露(S235), IM/LLM handler Content-Length 无验证(S236), CameraStream _detector atomic UAF(S237), WeChat/LLM handler cJSON NULL + token 暴露(S238), PhoneAppCamera _v4l2_buf_count 未截断(S239), PhoneAppAudio _stop_recording UAF(S240) |

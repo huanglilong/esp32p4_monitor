@@ -59,9 +59,24 @@
 #include "claw_session_mgr.h"
 #include "claw_memory.h"
 #include "claw_skill.h"
+#include "claw_paths.h"
 #include "cap_llm_config.h"
 #include "cap_session_mgr.h"
 #include "cap_scheduler.h"
+// Phase 1: Tool capabilities
+#include "cap_system.h"
+#include "cap_files.h"
+#include "cap_http_request.h"
+// Phase 1: MCP server/client + mDNS discovery
+#include "cap_mcp_server.h"
+#include "cap_mcp_client.h"
+#include "mcp_mdns.h"
+// Phase 2: Extended capabilities
+#include "cap_lua.h"
+#include "cap_web_search.h"
+#include "cap_agent_mgr.h"
+#include "cap_router_mgr.h"
+#include "cap_skill_mgr.h"
 #endif
 
 static const char *TAG = "monitor";
@@ -700,6 +715,46 @@ extern "C" void app_main(void)
             cap_session_mgr_register_group();
             cap_scheduler_register_group();
 
+            /* ── Phase 1: Set claw_paths (required by cap_files sandbox) ── */
+            claw_paths_set(CLAW_PATH_DATA, "/sdcard/claw");
+            claw_paths_set(CLAW_PATH_SYSTEM, "/sdcard");
+
+            /* ── Phase 1: Register tool capabilities ── */
+            cap_system_register_group();
+            cap_files_register_group();
+            cap_http_request_register_group();
+            /* Allow HTTP requests to common LLM-related and weather APIs */
+            cap_http_request_set_allowlist(
+                "api.openweathermap.org,"
+                "api.weatherapi.com,"
+                "wttr.in"
+            );
+
+            /* ── Phase 2: Extended tool capabilities ── */
+            cap_lua_register_group();
+            cap_lua_add_package_path_dir("/sdcard/claw/lua");
+            cap_web_search_register_group();
+            cap_agent_mgr_register_group();
+            cap_router_mgr_register_group();
+            cap_skill_mgr_register_group("/sdcard/claw/skills");
+
+            /* ── Phase 1: MCP Server — expose device tools via MCP ── */
+            {
+                esp_err_t mcp_err = cap_mcp_server_init();
+                if (mcp_err == ESP_OK) {
+                    /* Register device-specific MCP tools (defined in device_mcp_tools.cpp) */
+                    extern cap_mcp_server_tool_def_t s_device_mcp_tools[];
+                    extern uint16_t s_device_mcp_tool_count;
+                    cap_mcp_server_add_tool(s_device_mcp_tools, s_device_mcp_tool_count);
+                    ESP_LOGI(TAG, "MCP server: %u device tools registered", s_device_mcp_tool_count);
+                } else {
+                    ESP_LOGE(TAG, "cap_mcp_server_init failed: %s", esp_err_to_name(mcp_err));
+                }
+            }
+
+            /* ── Phase 1: MCP Client — discover/call remote MCP tools ── */
+            cap_mcp_client_register_group();
+
             /* Create Agent with LLM config */
             claw_core_config_t core_cfg = {};
             core_cfg.api_key = llm_cfg.api_key;
@@ -722,6 +777,27 @@ extern "C" void app_main(void)
             /* Start services */
             claw_event_router_start();
             claw_cap_start_all();
+
+            /* ── Phase 1: Start MCP server + mDNS advertisement ── */
+            {
+                /* Configure mDNS for MCP (reuse existing mDNS instance) */
+                mcp_mdns_config_t mdns_cfg = {
+                    .hostname = "esp-claw",
+                    .instance_name = "ESP32-P4 Monitor",
+                    .endpoint = "mcp",
+                    .server_port = 18791,
+                    .ctrl_port = 18792,
+                    .started = false,
+                };
+                mcp_mdns_set_config(&mdns_cfg);
+
+                esp_err_t mcp_err = cap_mcp_server_start();
+                if (mcp_err == ESP_OK) {
+                    ESP_LOGI(TAG, "MCP server started on port 18791");
+                } else {
+                    ESP_LOGE(TAG, "MCP server start failed: %s", esp_err_to_name(mcp_err));
+                }
+            }
 
             /* Bind outbound channels */
             claw_event_router_register_outbound_binding("wechat", "cap_im_wechat");

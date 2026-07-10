@@ -141,7 +141,23 @@ if(CONFIG_APP_CLAW_CAP_IM_WECHAT OR CONFIG_APP_CLAW_CAP_IM_FEISHU OR
         idf::cap_llm_config
         idf::cap_session_mgr
         idf::cap_scheduler
+        # Phase 1: Tool capabilities
+        idf::cap_system
+        idf::cap_files
+        idf::cap_http_request
+        # Phase 1: MCP server/client + mDNS discovery
+        idf::cap_mcp_server
+        idf::cap_mcp_client
+        idf::mcp_mdns
+        # Phase 2: Extended capabilities
+        idf::cap_lua
+        idf::cap_web_search
+        idf::cap_agent_mgr
+        idf::cap_router_mgr
+        idf::cap_skill_mgr
     )
+    # Device-specific MCP tools (depends on claw + peripheral drivers)
+    target_sources(${COMPONENT_LIB} PRIVATE "device_mcp_tools.cpp")
 endif()
 
 # Get LVGL component library to suppress warnings
