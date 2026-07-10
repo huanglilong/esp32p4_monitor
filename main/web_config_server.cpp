@@ -147,10 +147,10 @@ static std::atomic<bool>  s_audio_running{false};
 static std::atomic<bool>  s_is_recording{false};
 static shine_t        s_shine = NULL;
 static int16_t       *s_pcm_buf = NULL;
-static int            s_pcm_count = 0;
+static std::atomic<int>  s_pcm_count{0};
 static FILE          *s_rec_file = NULL;
 static std::atomic<uint32_t> s_rec_bytes{0};
-static uint32_t       s_rec_start_ms = 0;
+static std::atomic<uint32_t> s_rec_start_ms{0};
 static char           s_rec_path[128];
 
 /* Playback */
@@ -211,7 +211,7 @@ static void _stop_audio_task_if_running(void)
 static void audio_task(void *arg)
 {
     (void)arg;
-    int16_t *buf = (int16_t *)calloc(1, REC_BUF_BYTES);
+    int16_t *buf = (int16_t *)heap_caps_calloc(1, REC_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) { s_audio_running = false; s_audio_task.store(nullptr, std::memory_order_release); vTaskDelete(NULL); return; }
     while (s_audio_running) {
         /* Guard: if audio driver was deinitialized (e.g., by PhoneAppAudio::close()),
@@ -226,22 +226,19 @@ static void audio_task(void *arg)
         int32_t spc = n / (2 * sizeof(int16_t));
         if (s_is_recording && s_pcm_buf && s_shine) {
             for (int32_t i = 0; i < spc; i++) {
-                s_pcm_buf[s_pcm_count * 2]     = buf[i * 2];
-                s_pcm_buf[s_pcm_count * 2 + 1] = buf[i * 2 + 1];
-                if (++s_pcm_count >= ENC_SAMPLES_PER_CH) {
+                int idx = s_pcm_count.load(std::memory_order_relaxed);
+                s_pcm_buf[idx * 2]     = buf[i * 2];
+                s_pcm_buf[idx * 2 + 1] = buf[i * 2 + 1];
+                if (s_pcm_count.fetch_add(1, std::memory_order_relaxed) + 1 >= ENC_SAMPLES_PER_CH) {
                     int wr = 0;
                     unsigned char *mp3 = shine_encode_buffer_interleaved(s_shine, s_pcm_buf, &wr);
                     if (mp3 && wr > 0 && s_rec_file) s_rec_bytes.fetch_add(fwrite(mp3, 1, wr, s_rec_file), std::memory_order_relaxed);
-                    s_pcm_count = 0;
+                    s_pcm_count.store(0, std::memory_order_relaxed);
                 }
             }
         }
     }
-    free(buf);
-    /* Memory barrier before clearing task handle: ensures all prior writes
-     * (buffers, file handles, etc.) are visible before the stop function
-     * sees s_audio_task == nullptr and proceeds to cleanup. */
-    __sync_synchronize();
+    heap_caps_free(buf);
     s_audio_task.store(nullptr, std::memory_order_release);
     vTaskDelete(NULL);
 }
@@ -1333,7 +1330,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
     }
-    s_pcm_count = 0;
+    s_pcm_count.store(0, std::memory_order_relaxed);
     shine_config_t c; shine_set_config_mpeg_defaults(&c.mpeg);
     c.wave.channels = PCM_STEREO; c.wave.samplerate = 48000; c.mpeg.mode = STEREO; c.mpeg.bitr = 128;
     s_shine = shine_initialise(&c);
@@ -1360,7 +1357,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; heap_caps_free(s_pcm_buf); s_pcm_buf = NULL;
         _stop_audio_task_if_running(); audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
-    s_rec_bytes = 0; s_rec_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    s_rec_bytes = 0; s_rec_start_ms.store((uint32_t)(esp_timer_get_time() / 1000), std::memory_order_relaxed);
     s_is_recording = true;
 
     /* Stop any active web playback — recording and playback share I2S hardware.
@@ -1420,7 +1417,7 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
             rs.timestamp = esp_timer_get_time();
             rs.active = false;
             rs.bytes_written = s_rec_bytes.load(std::memory_order_relaxed);
-            rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms));
+            rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - s_rec_start_ms.load(std::memory_order_relaxed)));
             orb_publish(ORB_ID(recording_state), pub, &rs);
         }
     }
@@ -1454,7 +1451,7 @@ static esp_err_t h_rec_status(httpd_req_t *req) {
          * and read here from the httpd task — atomic ensures no data race. */
         audio_lock();
         uint32_t bytes = s_rec_bytes.load(std::memory_order_relaxed);
-        uint32_t start_ms = s_rec_start_ms;
+        uint32_t start_ms = s_rec_start_ms.load(std::memory_order_relaxed);
         audio_unlock();
         uint32_t e = (uint32_t)((esp_timer_get_time() / 1000 - start_ms) / 1000);
         snprintf(r,sizeof(r),"{\"recording\":1,\"seconds\":%lu,\"bytes\":%lu}",(unsigned long)e,(unsigned long)bytes);
