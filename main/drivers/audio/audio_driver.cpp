@@ -95,7 +95,16 @@ void AudioDriver::init(void)
     /* I2S channel init (duplex, STD, 48kHz stereo) */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &_tx_handle, &_rx_handle));
+    ret = i2s_new_channel(&chan_cfg, &_tx_handle, &_rx_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create I2S channel: %s", esp_err_to_name(ret));
+        _tx_handle = nullptr;
+        _rx_handle = nullptr;
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
+        ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
+    }
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(EXAMPLE_AUDIO_SAMPLE_RATE),
@@ -109,10 +118,46 @@ void AudioDriver::init(void)
         },
     };
     std_cfg.clk_cfg.mclk_multiple = EXAMPLE_AUDIO_MCLK_MULTIPLE;
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(_tx_handle, &std_cfg));
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(_rx_handle, &std_cfg));
-    ESP_ERROR_CHECK(i2s_channel_enable(_tx_handle));
-    ESP_ERROR_CHECK(i2s_channel_enable(_rx_handle));
+    ret = i2s_channel_init_std_mode(_tx_handle, &std_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init I2S TX std mode: %s", esp_err_to_name(ret));
+        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
+        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
+        ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
+    }
+    ret = i2s_channel_init_std_mode(_rx_handle, &std_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init I2S RX std mode: %s", esp_err_to_name(ret));
+        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
+        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
+        ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
+    }
+    ret = i2s_channel_enable(_tx_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable I2S TX: %s", esp_err_to_name(ret));
+        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
+        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
+        ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
+    }
+    ret = i2s_channel_enable(_rx_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable I2S RX: %s", esp_err_to_name(ret));
+        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
+        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
+        ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
+    }
 
     i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
     const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
