@@ -29,7 +29,7 @@ std::atomic<TaskHandle_t> PhoneAppSettings::_wifi_scan_task{nullptr};
 EventGroupHandle_t PhoneAppSettings::_wifi_event_group = nullptr;
 bool PhoneAppSettings::_wifi_initialized = false;
 TimerHandle_t PhoneAppSettings::_wifi_reconnect_timer = nullptr;
-uint32_t PhoneAppSettings::_wifi_reconnect_count = 0;
+std::atomic<uint32_t> PhoneAppSettings::_wifi_reconnect_count{0};
 esp_event_handler_instance_t PhoneAppSettings::_wifi_handler_inst = nullptr;
 esp_event_handler_instance_t PhoneAppSettings::_ip_handler_inst = nullptr;
 std::atomic<bool> PhoneAppSettings::_wifi_connecting{false};
@@ -1158,15 +1158,16 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
             xTimerDelete(_wifi_reconnect_timer, 0);
             _wifi_reconnect_timer = nullptr;
         }
-        _wifi_reconnect_count = 0;
+        _wifi_reconnect_count.store(0, std::memory_order_relaxed);
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         xEventGroupSetBits(_wifi_event_group, WIFI_CONNECTED_BIT);
         wifi_event_sta_connected_t *evt = (wifi_event_sta_connected_t *)event_data;
         publish_wifi_state(true, false, 0, (const char *)evt->ssid);
         if (_wifi_reconnect_timer) {
-            ESP_LOGI(TAG, "WiFi reconnected to %s after %lu attempt(s)", evt->ssid, _wifi_reconnect_count);
-            _wifi_reconnect_count = 0;
+            ESP_LOGI(TAG, "WiFi reconnected to %s after %lu attempt(s)", evt->ssid,
+                     (unsigned long)_wifi_reconnect_count.load(std::memory_order_relaxed));
+            _wifi_reconnect_count.store(0, std::memory_order_relaxed);
             xTimerStop(_wifi_reconnect_timer, 0);
             xTimerDelete(_wifi_reconnect_timer, 0);
             _wifi_reconnect_timer = nullptr;
@@ -1210,13 +1211,13 @@ void PhoneAppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, 
 
 void PhoneAppSettings::wifiReconnectTimerCallback(TimerHandle_t xTimer)
 {
-    _wifi_reconnect_count++;
-    if (_wifi_reconnect_count > 20) {
-        ESP_LOGW(TAG, "WiFi auto-reconnect stopped after %lu failed attempts", _wifi_reconnect_count);
-        xTimerStop(_wifi_reconnect_timer, 0);
+    uint32_t count = _wifi_reconnect_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count > 20) {
+        ESP_LOGW(TAG, "WiFi auto-reconnect stopped after %lu failed attempts", (unsigned long)count);
+        xTimerStop(xTimer, 0);
         return;
     }
-    ESP_LOGI(TAG, "WiFi auto-reconnect [%lu]: calling esp_wifi_connect()", _wifi_reconnect_count);
+    ESP_LOGI(TAG, "WiFi auto-reconnect [%lu]: calling esp_wifi_connect()", (unsigned long)count);
     esp_wifi_connect();
 }
 
