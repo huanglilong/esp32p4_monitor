@@ -115,7 +115,7 @@ This must pass before committing Flutter app changes.
 1. **Every commit must be approved by user**
 2. **git push is forbidden** — never push without explicit request
 3. **One issue, one commit** — each commit addresses exactly ONE issue/feature/bugfix
-4. **Commit messages**: clear, concise, in English
+4. **Commit messages**: clear, concise, in English, with **root cause and summary of what was done and why**
 5. **Before committing**: verify build passes (`idf.py build` for firmware, `cd flutter_app && flutter build macos` for Flutter app)
 
 ---
