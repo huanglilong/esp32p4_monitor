@@ -1038,6 +1038,7 @@ void CameraStream::_draw_box_on_bgr24(uint8_t *buffer, uint32_t width, uint32_t 
 /* Draw detection boxes on PPA BGR24 output buffer + cache msync */
 void CameraStream::_draw_detection_boxes_on_ppa(void)
 {
+    if (!_ppa || !_ppa->is_initialized()) return;
     if (!_detect_available.load(std::memory_order_acquire) || !_detect_mutex ||
         xSemaphoreTake(_detect_mutex, 0) != pdTRUE) return;
     if (!_detect_results.empty()) {
