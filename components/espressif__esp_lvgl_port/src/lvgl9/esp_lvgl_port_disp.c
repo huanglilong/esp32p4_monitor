@@ -117,7 +117,10 @@ lv_display_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *disp_cfg)
         /* Set display type */
         disp_ctx->disp_type = LVGL_PORT_DISP_TYPE_OTHER;
 
-        assert(disp_cfg->io_handle != NULL);
+        if (disp_cfg->io_handle == NULL) {
+            ESP_LOGE(TAG, "io_handle is NULL");
+            return NULL;
+        }
 
 #if LVGL_PORT_HANDLE_FLUSH_READY
         const esp_lcd_panel_io_callbacks_t cbs = {
@@ -236,19 +239,19 @@ esp_err_t lvgl_port_remove_disp(lv_display_t *disp)
     lvgl_port_unlock();
 
     if (disp_ctx->draw_buffs[0]) {
-        free(disp_ctx->draw_buffs[0]);
+        heap_caps_free(disp_ctx->draw_buffs[0]);
     }
 
     if (disp_ctx->draw_buffs[1]) {
-        free(disp_ctx->draw_buffs[1]);
+        heap_caps_free(disp_ctx->draw_buffs[1]);
     }
 
     if (disp_ctx->draw_buffs[2]) {
-        free(disp_ctx->draw_buffs[2]);
+        heap_caps_free(disp_ctx->draw_buffs[2]);
     }
 
     if (disp_ctx->oled_buffer) {
-        free(disp_ctx->oled_buffer);
+        heap_caps_free(disp_ctx->oled_buffer);
     }
 
     if (disp_ctx->trans_sem) {
@@ -260,7 +263,7 @@ esp_err_t lvgl_port_remove_disp(lv_display_t *disp)
     }
 #endif //LVGL_PORT_PPA
 
-    free(disp_ctx);
+    heap_caps_free(disp_ctx);
 
     return ESP_OK;
 }
@@ -462,7 +465,11 @@ static lv_display_t *lvgl_port_add_disp_priv(const lvgl_port_display_cfg_t *disp
             }
         };
         disp_ctx->ppa_handle = lvgl_port_ppa_create(&ppa_cfg);
-        assert(disp_ctx->ppa_handle != NULL);
+        if (disp_ctx->ppa_handle == NULL) {
+            ESP_LOGE(TAG, "Failed to create PPA handle");
+            ret = ESP_ERR_NO_MEM;
+            goto err;
+        }
 #else
         disp_ctx->draw_buffs[2] = heap_caps_malloc(buffer_size * color_bytes, buff_caps);
         ESP_GOTO_ON_FALSE(disp_ctx->draw_buffs[2], ESP_ERR_NO_MEM, err, TAG,
@@ -475,19 +482,19 @@ static lv_display_t *lvgl_port_add_disp_priv(const lvgl_port_display_cfg_t *disp
 err:
     if (ret != ESP_OK) {
         if (disp_ctx->draw_buffs[0]) {
-            free(disp_ctx->draw_buffs[0]);
+            heap_caps_free(disp_ctx->draw_buffs[0]);
         }
         if (disp_ctx->draw_buffs[1]) {
-            free(disp_ctx->draw_buffs[1]);
+            heap_caps_free(disp_ctx->draw_buffs[1]);
         }
         if (disp_ctx->draw_buffs[2]) {
-            free(disp_ctx->draw_buffs[2]);
+            heap_caps_free(disp_ctx->draw_buffs[2]);
         }
         if (disp_ctx->oled_buffer) {
-            free(disp_ctx->oled_buffer);
+            heap_caps_free(disp_ctx->oled_buffer);
         }
         if (disp_ctx) {
-            free(disp_ctx);
+            heap_caps_free(disp_ctx);
         }
         if (trans_sem) {
             vSemaphoreDelete(trans_sem);

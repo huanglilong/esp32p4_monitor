@@ -96,7 +96,10 @@ lv_disp_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *disp_cfg)
         /* Set display type */
         disp_ctx->disp_type = LVGL_PORT_DISP_TYPE_OTHER;
 
-        assert(disp_ctx->io_handle != NULL);
+        if (disp_ctx->io_handle == NULL) {
+            ESP_LOGE(TAG, "io_handle is NULL");
+            return NULL;
+        }
 
 #if LVGL_PORT_HANDLE_FLUSH_READY
         const esp_lcd_panel_io_callbacks_t cbs = {
@@ -210,11 +213,11 @@ esp_err_t lvgl_port_remove_disp(lv_disp_t *disp)
             disp_drv->draw_ctx = NULL;
         }
         if (disp_drv->draw_buf && disp_drv->draw_buf->buf1) {
-            free(disp_drv->draw_buf->buf1);
+            heap_caps_free(disp_drv->draw_buf->buf1);
             disp_drv->draw_buf->buf1 = NULL;
         }
         if (disp_drv->draw_buf && disp_drv->draw_buf->buf2) {
-            free(disp_drv->draw_buf->buf2);
+            heap_caps_free(disp_drv->draw_buf->buf2);
             disp_drv->draw_buf->buf2 = NULL;
         }
         if (disp_drv->draw_buf) {
@@ -223,7 +226,7 @@ esp_err_t lvgl_port_remove_disp(lv_disp_t *disp)
         }
     }
 
-    free(disp_ctx);
+    heap_caps_free(disp_ctx);
 
     return ESP_OK;
 }
@@ -404,19 +407,19 @@ static lv_disp_t *lvgl_port_add_disp_priv(const lvgl_port_display_cfg_t *disp_cf
 err:
     if (ret != ESP_OK) {
         if (buf1) {
-            free(buf1);
+            heap_caps_free(buf1);
         }
         if (buf2) {
-            free(buf2);
+            heap_caps_free(buf2);
         }
         if (buf3) {
-            free(buf3);
+            heap_caps_free(buf3);
         }
         if (trans_sem) {
             vSemaphoreDelete(trans_sem);
         }
         if (disp_ctx) {
-            free(disp_ctx);
+            heap_caps_free(disp_ctx);
         }
     }
 
