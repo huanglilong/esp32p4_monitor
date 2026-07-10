@@ -594,6 +594,45 @@ static esp_err_t cap_im_wechat_http_request(const char *url,
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* Lightweight network readiness check before the expensive TLS attempt.
+     *
+     * 1. DNS resolution: if getaddrinfo() fails (no netif / no DNS server),
+     *    skip immediately — avoids verbose esp-tls ERROR logs.
+     * 2. Wall-clock time: if SNTP hasn't synced yet, the system clock is at
+     *    epoch 0 and TLS certificate validation will fail.
+     *
+     * Both checks use only standard POSIX APIs — no esp_netif / esp_wifi
+     * dependency, future-proof for non-WiFi chips (Ethernet, PPPoS, etc.). */
+    {
+        const char *h = url;
+        if (strncmp(h, "https://", 8) == 0) {
+            h += 8;
+        } else if (strncmp(h, "http://", 7) == 0) {
+            h += 7;
+        }
+        char host[128];
+        size_t host_len = 0;
+        while (h[host_len] && h[host_len] != '/' && h[host_len] != ':') {
+            host_len++;
+        }
+        if (host_len >= sizeof(host)) {
+            host_len = sizeof(host) - 1;
+        }
+        memcpy(host, h, host_len);
+        host[host_len] = '\0';
+        {
+            struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+            struct addrinfo *res = NULL;
+            if (getaddrinfo(host, NULL, &hints, &res) != 0) {
+                return ESP_ERR_INVALID_STATE;
+            }
+            freeaddrinfo(res);
+        }
+        if ((uint64_t)time(NULL) < CAP_IM_WECHAT_TIME_SYNC_THRESHOLD) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
     ESP_RETURN_ON_ERROR(cap_im_wechat_resp_prepare(response), TAG, "prepare response failed");
 
     config.url = url;
@@ -1630,43 +1669,6 @@ static void cap_im_wechat_poll_task(void *arg)
     while (!s_wechat.stop_requested) {
         if (!s_wechat.configured) {
             vTaskDelay(pdMS_TO_TICKS(5000));
-            continue;
-        }
-
-        /* Lightweight network readiness check before the expensive TLS attempt.
-         *
-         * 1. DNS resolution: if getaddrinfo() fails (no netif / no DNS server),
-         *    skip immediately — avoids verbose esp-tls ERROR logs like
-         *    "mbedtls_ssl_handshake returned -0x7200".
-         * 2. Wall-clock time: if SNTP hasn't synced yet, the system clock is at
-         *    epoch 0 and TLS certificate validation will fail.
-         *
-         * Both checks use only standard POSIX APIs — no esp_netif / esp_wifi
-         * dependency, future-proof for non-WiFi chips (Ethernet, PPPoS, etc.). */
-        const char *host_raw = s_wechat.base_url;
-        if (strncmp(host_raw, "https://", 8) == 0) {
-            host_raw += 8;
-        } else if (strncmp(host_raw, "http://", 7) == 0) {
-            host_raw += 7;
-        }
-        {
-            char host[128];
-            strlcpy(host, host_raw, sizeof(host));
-            char *colon = strchr(host, ':');
-            if (colon) {
-                *colon = '\0';
-            }
-            struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
-            struct addrinfo *res = NULL;
-            if (getaddrinfo(host, NULL, &hints, &res) != 0) {
-                vTaskDelay(pdMS_TO_TICKS(CAP_IM_WECHAT_RETRY_DELAY_MS));
-                continue;
-            }
-            freeaddrinfo(res);
-        }
-
-        if ((uint64_t)time(NULL) < CAP_IM_WECHAT_TIME_SYNC_THRESHOLD) {
-            vTaskDelay(pdMS_TO_TICKS(CAP_IM_WECHAT_RETRY_DELAY_MS));
             continue;
         }
 
