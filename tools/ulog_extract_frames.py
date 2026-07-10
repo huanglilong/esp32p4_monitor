@@ -121,7 +121,7 @@ def extract_camera_frames(ulg_path, output_dir, verbose=False):
                 #   uint16_t height        (offset 14, 2 bytes)
                 #   uint16_t jpeg_size     (offset 16, 2 bytes)
                 #   uint8_t  format        (offset 18, 1 byte)
-                #   uint8_t  jpeg_data[8192] (offset 19, up to 8192 bytes)
+                #   uint8_t  jpeg_data[14336] (offset 19, up to 14336 bytes)
                 # Note: ULog writer uses o_size_no_padding, so trailing
                 # _padding bytes are NOT written to the file.
                 payload = data[scan_pos+5:scan_pos+3+msg_size]
@@ -207,8 +207,8 @@ def main():
                         help='Output directory for JPEG frames (default: <input>_frames/)')
     parser.add_argument('--no-video', action='store_true',
                         help='Skip video generation (only extract JPEG frames)')
-    parser.add_argument('--framerate', '-r', type=float, default=2,
-                        help='Video framerate in fps (default: 2)')
+    parser.add_argument('--framerate', '-r', type=float, default=10,
+                        help='Video framerate in fps (default: 10)')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Print detailed frame info')
     args = parser.parse_args()
@@ -233,7 +233,11 @@ def main():
         if not args.no_video:
             base = os.path.splitext(args.input)[0]
             video_path = base + '.mp4'
-            if not generate_video(output_dir, video_path, args.framerate, args.verbose):
+            if generate_video(output_dir, video_path, args.framerate, args.verbose):
+                # Video created successfully — remove extracted JPEG frames to save disk space
+                shutil.rmtree(output_dir, ignore_errors=True)
+                print(f"Removed extracted frames (video saved to {video_path})")
+            else:
                 print(f"\nTo create video manually with FFmpeg:")
                 print(f'  ffmpeg -framerate {args.framerate} -i {output_dir}/frame_%06d.jpg '
                       f'-c:v libx264 -pix_fmt yuv420p output.mp4')

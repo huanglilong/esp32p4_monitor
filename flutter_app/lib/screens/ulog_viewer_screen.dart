@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../main.dart';
 import '../providers/app_state.dart';
+import '../services/mjpeg_avi_writer.dart';
 import '../services/ulog_parser.dart';
 
 class UlogViewerScreen extends StatefulWidget {
@@ -44,7 +45,7 @@ class _UlogViewerScreenState extends State<UlogViewerScreen> {
 
   int _selectedIndex = -1;
   bool _isPlaying = false;
-  double _framerate = 2.0;
+  double _framerate = 10.0;
   Timer? _playTimer;
   final Map<int, ImageProvider> _thumbCache = {};
   final ScrollController _thumbScrollController = ScrollController();
@@ -212,34 +213,65 @@ class _UlogViewerScreenState extends State<UlogViewerScreen> {
     }
   }
 
+  bool _savingVideo = false;
+
   Future<void> _saveAllFrames() async {
     if (_result == null || _result!.frames.isEmpty) return;
+
+    setState(() => _savingVideo = true);
 
     try {
       final dir = await getApplicationDocumentsDirectory();
       final ulgName =
           (widget.remotePath ?? widget.localPath ?? 'ulog').split('/').last.replaceAll('.ulg', '');
-      final framesDir = Directory('${dir.path}/${ulgName}_frames');
-      if (!framesDir.existsSync()) framesDir.createSync(recursive: true);
 
-      for (int i = 0; i < _result!.frames.length; i++) {
-        final path =
-            '${framesDir.path}/frame_${i.toString().padLeft(6, '0')}.jpg';
-        await File(path).writeAsBytes(_result!.frames[i].jpegData);
-      }
+      // Generate MJPEG AVI video (pure Dart, no temp files needed)
+      final videoPath = '${dir.path}/${ulgName}.avi';
+      final success = await _generateVideo(videoPath);
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Saved ${_result!.frames.length} frames to ${framesDir.path}'),
-          duration: const Duration(seconds: 4),
-        ),
-      );
+      setState(() => _savingVideo = false);
+
+      if (success) {
+        final size = File(videoPath).lengthSync();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Video saved: ${ulgName}.avi (${_fmtBytes(size)})'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Video generation failed'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
+      setState(() => _savingVideo = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Save failed: $e'), backgroundColor: Colors.red),
       );
+    }
+  }
+
+  /// Generate MJPEG AVI video from JPEG frames (pure Dart, no native dependencies).
+  /// Returns true on success.
+  Future<bool> _generateVideo(String outputPath) async {
+    try {
+      final writer = MjpegAviWriter(
+        width: _result!.frames.first.width,
+        height: _result!.frames.first.height,
+        fps: _framerate.round(),
+      );
+      final jpegFrames = _result!.frames.map((f) => f.jpegData).toList();
+      final size = await writer.write(outputPath, jpegFrames);
+      return size > 0;
+    } catch (e) {
+      debugPrint('[UlogViewer] AVI generation error: $e');
+      return false;
     }
   }
 
@@ -286,9 +318,14 @@ class _UlogViewerScreenState extends State<UlogViewerScreen> {
                 onPressed: _saveCurrentFrame,
               ),
               IconButton(
-                icon: const Icon(Icons.save_as),
-                tooltip: 'Save all frames',
-                onPressed: _saveAllFrames,
+                icon: _savingVideo
+                    ? const SizedBox(
+                        width: 20, height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.videocam),
+                tooltip: 'Save as video',
+                onPressed: _savingVideo ? null : _saveAllFrames,
               ),
             ],
           ],
