@@ -842,7 +842,7 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     if (!_recording_enabled.load(std::memory_order_acquire)) return;
     if (!jpeg_data || jpeg_size == 0) return;
 
-    /* JPEG size must fit in camera_frame_s.jpeg_data[16384] */
+    /* JPEG size must fit in camera_frame_s.jpeg_data[14336] */
     if (jpeg_size > sizeof(((camera_frame_s *)0)->jpeg_data)) {
         ESP_LOGW(TAG, "JPEG frame too large for ULog (%u > %u), skipping",
                  (unsigned)jpeg_size, (unsigned)sizeof(((camera_frame_s *)0)->jpeg_data));
