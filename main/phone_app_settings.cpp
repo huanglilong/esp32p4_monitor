@@ -134,9 +134,11 @@ PhoneAppSettings::~PhoneAppSettings()
         _status_timer = nullptr;
     }
 
-    /* Delete WiFi reconnect timer (defensive) */
+    /* Delete WiFi reconnect timer — block until any in-flight callback
+     * completes to prevent it from triggering WiFi events after handlers
+     * are unregistered and the event group is deleted below. */
     if (_wifi_reconnect_timer) {
-        xTimerDelete(_wifi_reconnect_timer, 0);
+        xTimerDelete(_wifi_reconnect_timer, portMAX_DELAY);
         _wifi_reconnect_timer = nullptr;
     }
 
