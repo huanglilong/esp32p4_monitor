@@ -1137,8 +1137,11 @@ static esp_err_t set_quality_handler(httpd_req_t *req)
     if (q > 100) q = 100;
     cs->_jpeg_quality.store((uint8_t)q);
 
-    if (cs->_encoder_handle) {
-        example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
+    if (cs->_encoder_initialized.load(std::memory_order_acquire)) {
+        if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
+            example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
+            xSemaphoreGive(cs->_encoder_sem);
+        }
     }
     ESP_LOGI(TAG, "JPEG quality set to %d", q);
 
@@ -1172,8 +1175,11 @@ static esp_err_t set_camera_config_handler(httpd_req_t *req)
         if (quality < 1) quality = 1;
         if (quality > 100) quality = 100;
         cs->_jpeg_quality.store((uint8_t)quality);
-        if (cs->_encoder_handle) {
-            example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
+        if (cs->_encoder_initialized.load(std::memory_order_acquire)) {
+            if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
+                example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
+                xSemaphoreGive(cs->_encoder_sem);
+            }
         }
         ESP_LOGI(TAG, "JPEG quality set to %d (via POST)", quality);
     }
