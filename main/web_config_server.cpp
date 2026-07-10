@@ -127,7 +127,7 @@ static const char *TAG = "WebConfig";
 /* WIFI_CONNECTED_BIT now defined in example_config.h */
 
 static httpd_handle_t s_httpd = NULL;
-static TaskHandle_t   s_task_handle = NULL;
+static std::atomic<TaskHandle_t> s_task_handle{nullptr};
 static std::atomic<bool>  s_running{false};
 static std::atomic<bool>  s_mdns_running{false};
 
@@ -3197,7 +3197,7 @@ cleanup:
     }
 
     s_running = false;
-    s_task_handle = NULL;
+    s_task_handle.store(nullptr, std::memory_order_release);
     vTaskDelete(NULL);
 }
 
@@ -3206,13 +3206,17 @@ cleanup:
  *============================================================================*/
 void web_config_server_start(void)
 {
-    if (s_running || s_task_handle) {
+    if (s_running || s_task_handle.load(std::memory_order_acquire)) {
         ESP_LOGW(TAG, "Web config already running");
         return;
     }
+    TaskHandle_t tmp_handle = nullptr;
     BaseType_t ret = xTaskCreatePinnedToCore(
         web_config_task, "web_config", TASK_STACK_SIZE,
-        NULL, TASK_PRIORITY, &s_task_handle, 1);  /* Core 1 */
+        NULL, TASK_PRIORITY, &tmp_handle, 1);  /* Core 1 */
+    if (ret == pdPASS) {
+        s_task_handle.store(tmp_handle, std::memory_order_release);
+    }
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create web_config task");
     }
@@ -3245,14 +3249,14 @@ void web_config_server_stop(void)
      * check the handle — no need for eTaskGetState() which races with
      * the idle task reclaiming the TCB. */
     int timeout = 0;
-    while (s_task_handle && timeout < 30) {
+    while (s_task_handle.load(std::memory_order_acquire) && timeout < 30) {
         vTaskDelay(pdMS_TO_TICKS(100));
         timeout++;
     }
-    if (s_task_handle) {
+    TaskHandle_t h = s_task_handle.exchange(nullptr, std::memory_order_acq_rel);
+    if (h != nullptr) {
         ESP_LOGW(TAG, "Web config task did not exit, force-killing");
-        vTaskDelete(s_task_handle);
-        s_task_handle = NULL;
+        vTaskDelete(h);
     }
 
     /* Fallback: if task already exited but HTTP/mDNS not cleaned up */
