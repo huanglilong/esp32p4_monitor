@@ -369,6 +369,7 @@
 | # | 需求 | 说明 | 阻塞因素 |
 |---|------|------|----------|
 | P0 | **Camera Stream + Music 播放卡顿** (S247) | Camera Stream 运行时 Music 播放卡顿。git bisect 定位根因为 commit 65c36ad: 独立 `cam_capture` 任务错误绑定 Core 1 (priority 5)，抢占 Core 1 上 priority 3 的 Music GMF/ASP 任务导致 I2S DMA 欠载。修复: `cam_capture` 改绑 Core 0 (恢复 v0.0.3 httpd 上下文核亲和性)。构建通过，待硬件验证 | ✅ (待硬件验证) |
+| P0b | **ESP-Claw 启动后 Music 播放异常** | 引入 ESP-Claw AI Agent 后 (commits 56fade6, 5e6d816)，Music 播放出现杂音/卡顿。已修复部分原因: ① S283: claw tasks 强制绑定 Core 0，防止抢占 Core 1 Music GMF/ASP ② S284: event_router 栈 8KB→16KB 防溢出。残留问题: claw_core agent loop (prio 5) + IM platform tasks 在 Core 0 处理 HTTP 请求时产生 WiFi SDIO DMA 流量，与 Music 的 I2S TX DMA 争抢跨核共享 PSRAM 总线/L2 cache 带宽。后续方向: Music PCM buffer 放 Internal SRAM / 增大 I2S DMA 缓冲 / 降低 Agent task 优先级 | ⏳ (已知残留) |
 | P1 | **720×720 自定义样式表** | 当前使用默认回退方案，UI 一致性不佳 | 需设计 ESP-Brookesia 样式 |
 | P2 | **WIFI6 无屏配网** | 首次启动 NVS 为空时需要配网方案 | esp-hosted SDIO 不支持稳定 SoftAP (#197) |
 | PA | **ESP-Claw AI Agent 端到端验证** | ✅ 已验证: 15个设备 MCP tools (含 camera.capture_vision); Web Agent Chat UI (/api/agent/chat); Flutter Agent Chat 页面; LLM Vision 启用 (supports_vision=true)。硬件验证通过: Web Chat + WeChat IM → Agent → LLM (DeepSeek) → tool_call → 回复 (S281 修复后) | — |
@@ -455,7 +456,8 @@ P0 (阻塞)     → S248 PSRAM 带宽竞争 (Camera Stream + Music 卡顿残留)
 | L4 | **Camera Stream 帧率 ~4fps** | 受限于 sensor VTS=9840 (~5fps) + HW JPEG 编码 + 内联检测 |
 | L5 | **720×720 无预设样式表** | ESP-Brookesia 默认回退方案 |
 | L6 | **PPA client 注册未使用** | 307KB PSRAM 占用，可优化 |
-| L7 | **esp-dl mbedtls/sha256.h 兼容 shim** | ESP-IDF v6.x (mbedtls 4.x) 将 `sha256.h` 移至 `mbedtls/private/`，`managed_components/espressif__esp-dl` 未更新。当前方案: `main/compat/mbedtls/sha256.h` 转发头 + CMake include path。下次升级 esp-dl 后应移除 |
+| L7 | **ESP-Claw 启动后 Music 播放异常** | 引入 ESP-Claw 后 (commits 56fade6, 5e6d816)，Music 播放出现杂音/卡顿。已修复部分原因 (S283/S284)，残留为 PSRAM 总线竞争 (见 P0b) |
+| L8 | **esp-dl mbedtls/sha256.h 兼容 shim** | ESP-IDF v6.x (mbedtls 4.x) 将 `sha256.h` 移至 `mbedtls/private/`，`managed_components/espressif__esp-dl` 未更新。当前方案: `main/compat/mbedtls/sha256.h` 转发头 + CMake include path。下次升级 esp-dl 后应移除 |
 
 ### 4.3 已知未修复问题（架构审查遗留）
 
