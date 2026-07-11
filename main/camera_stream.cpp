@@ -366,8 +366,10 @@ void CameraStream::stop(void)
         }
         if (_capture_task.load(std::memory_order_acquire) != nullptr) {
             ESP_LOGW(TAG, "Capture task did not exit after 5s, force-killing (may corrupt heap)");
-            vTaskDelete(task);
-            _capture_task.store(nullptr, std::memory_order_release);
+            /* Claim the handle atomically so only one caller can kill it, even
+             * if the task already self-deleted (handle would be nullptr then). */
+            TaskHandle_t t = _capture_task.exchange(nullptr, std::memory_order_acq_rel);
+            if (t) vTaskDelete(t);
             /* Yield to let idle task reclaim TCB before we free the stack */
             vTaskDelay(pdMS_TO_TICKS(20));
         }
