@@ -3104,17 +3104,25 @@ static esp_err_t h_agent_messages(httpd_req_t *req)
 
 static void _register_web_config_uris(httpd_handle_t hd)
 {
+    /* Helper: register a URI handler and log on failure */
+#define REG_URI(u) do { \
+        esp_err_t _e = httpd_register_uri_handler(hd, (u)); \
+        if (_e != ESP_OK) { \
+            ESP_LOGE("webcfg", "Failed to register %s: %s", (u)->uri, esp_err_to_name(_e)); \
+        } \
+    } while(0)
+
     /* Core */
     httpd_uri_t uri_index = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
     httpd_uri_t uri_status = { .uri = "/api/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL };
     httpd_uri_t uri_settings = { .uri = "/api/settings", .method = HTTP_POST, .handler = settings_handler, .user_ctx = NULL };
     httpd_uri_t uri_cam = { .uri = "/api/camera_stream", .method = HTTP_POST, .handler = camera_stream_handler, .user_ctx = NULL };
     httpd_uri_t uri_reset = { .uri = "/api/factory_reset", .method = HTTP_POST, .handler = factory_reset_handler, .user_ctx = NULL };
-    httpd_register_uri_handler(hd, &uri_index);
-    httpd_register_uri_handler(hd, &uri_status);
-    httpd_register_uri_handler(hd, &uri_settings);
-    httpd_register_uri_handler(hd, &uri_cam);
-    httpd_register_uri_handler(hd, &uri_reset);
+    REG_URI(&uri_index);
+    REG_URI(&uri_status);
+    REG_URI(&uri_settings);
+    REG_URI(&uri_cam);
+    REG_URI(&uri_reset);
 
     /* Audio recording / playback */
     httpd_uri_t uri_r_start = { .uri = "/api/audio/record_start", .method = HTTP_GET, .handler = h_rec_start };
@@ -3123,22 +3131,22 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_a_list  = { .uri = "/api/audio/list",         .method = HTTP_GET, .handler = h_list };
     httpd_uri_t uri_a_play  = { .uri = "/api/audio/play",          .method = HTTP_GET, .handler = h_play };
     httpd_uri_t uri_a_stop  = { .uri = "/api/audio/stop",          .method = HTTP_GET, .handler = h_stop };
-    httpd_register_uri_handler(hd, &uri_r_start);
-    httpd_register_uri_handler(hd, &uri_r_stop);
-    httpd_register_uri_handler(hd, &uri_r_stat);
-    httpd_register_uri_handler(hd, &uri_a_list);
-    httpd_register_uri_handler(hd, &uri_a_play);
-    httpd_register_uri_handler(hd, &uri_a_stop);
+    REG_URI(&uri_r_start);
+    REG_URI(&uri_r_stop);
+    REG_URI(&uri_r_stat);
+    REG_URI(&uri_a_list);
+    REG_URI(&uri_a_play);
+    REG_URI(&uri_a_stop);
 
     /* File Manager */
     httpd_uri_t uri_fm_list = { .uri = "/api/files/list", .method = HTTP_GET, .handler = h_files_list };
     httpd_uri_t uri_fm_dl   = { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_files_download };
     httpd_uri_t uri_fm_del  = { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_files_delete };
     httpd_uri_t uri_fm_del_batch = { .uri = "/api/files/delete_batch", .method = HTTP_POST, .handler = h_files_delete_batch };
-    httpd_register_uri_handler(hd, &uri_fm_list);
-    httpd_register_uri_handler(hd, &uri_fm_dl);
-    httpd_register_uri_handler(hd, &uri_fm_del);
-    httpd_register_uri_handler(hd, &uri_fm_del_batch);
+    REG_URI(&uri_fm_list);
+    REG_URI(&uri_fm_dl);
+    REG_URI(&uri_fm_del);
+    REG_URI(&uri_fm_del_batch);
 
     /* CORS preflight (OPTIONS) handlers for POST endpoints */
     httpd_uri_t uri_cors_settings = { .uri = "/api/settings", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
@@ -3146,11 +3154,11 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_cors_reset = { .uri = "/api/factory_reset", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
     httpd_uri_t uri_cors_fm_del = { .uri = "/api/files/delete", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
     httpd_uri_t uri_cors_fm_del_batch = { .uri = "/api/files/delete_batch", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
-    httpd_register_uri_handler(hd, &uri_cors_settings);
-    httpd_register_uri_handler(hd, &uri_cors_cam);
-    httpd_register_uri_handler(hd, &uri_cors_reset);
-    httpd_register_uri_handler(hd, &uri_cors_fm_del);
-    httpd_register_uri_handler(hd, &uri_cors_fm_del_batch);
+    REG_URI(&uri_cors_settings);
+    REG_URI(&uri_cors_cam);
+    REG_URI(&uri_cors_reset);
+    REG_URI(&uri_cors_fm_del);
+    REG_URI(&uri_cors_fm_del_batch);
 
     /* ULog endpoints */
     httpd_uri_t uri_ulog_status = { .uri = "/api/ulog/status", .method = HTTP_GET, .handler = ulog_status_handler, .user_ctx = NULL };
@@ -3158,17 +3166,17 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_ulog_stop = { .uri = "/api/ulog/stop", .method = HTTP_POST, .handler = ulog_stop_handler, .user_ctx = NULL };
     httpd_uri_t uri_ulog_cors = { .uri = "/api/ulog/start", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
     httpd_uri_t uri_ulog_cors2 = { .uri = "/api/ulog/stop", .method = HTTP_OPTIONS, .handler = cors_preflight_handler, .user_ctx = NULL };
-    httpd_register_uri_handler(hd, &uri_ulog_status);
-    httpd_register_uri_handler(hd, &uri_ulog_start);
-    httpd_register_uri_handler(hd, &uri_ulog_stop);
-    httpd_register_uri_handler(hd, &uri_ulog_cors);
-    httpd_register_uri_handler(hd, &uri_ulog_cors2);
+    REG_URI(&uri_ulog_status);
+    REG_URI(&uri_ulog_start);
+    REG_URI(&uri_ulog_stop);
+    REG_URI(&uri_ulog_cors);
+    REG_URI(&uri_ulog_cors2);
 
     /* System stats */
     httpd_uri_t uri_sys_stats = { .uri = "/api/system_stats", .method = HTTP_GET, .handler = h_system_stats, .user_ctx = NULL };
     httpd_uri_t uri_sys_alerts = { .uri = "/api/system_alerts", .method = HTTP_GET, .handler = h_system_alerts, .user_ctx = NULL };
-    httpd_register_uri_handler(hd, &uri_sys_stats);
-    httpd_register_uri_handler(hd, &uri_sys_alerts);
+    REG_URI(&uri_sys_stats);
+    REG_URI(&uri_sys_alerts);
 
     /* ── WeChat QR Login API ── */
 #ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
@@ -3180,14 +3188,14 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t cors_wx_stat  = { .uri = "/api/wechat/login/status",  .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
     httpd_uri_t cors_wx_cancel= { .uri = "/api/wechat/login/cancel",  .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
     httpd_uri_t cors_wx_save  = { .uri = "/api/wechat/login/persist", .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
-    httpd_register_uri_handler(hd, &uri_wx_start);
-    httpd_register_uri_handler(hd, &uri_wx_status);
-    httpd_register_uri_handler(hd, &uri_wx_cancel);
-    httpd_register_uri_handler(hd, &uri_wx_save);
-    httpd_register_uri_handler(hd, &cors_wx_start);
-    httpd_register_uri_handler(hd, &cors_wx_stat);
-    httpd_register_uri_handler(hd, &cors_wx_cancel);
-    httpd_register_uri_handler(hd, &cors_wx_save);
+    REG_URI(&uri_wx_start);
+    REG_URI(&uri_wx_status);
+    REG_URI(&uri_wx_cancel);
+    REG_URI(&uri_wx_save);
+    REG_URI(&cors_wx_start);
+    REG_URI(&cors_wx_stat);
+    REG_URI(&cors_wx_cancel);
+    REG_URI(&cors_wx_save);
     ESP_LOGI("webcfg", "WeChat QR login API registered (/api/wechat/login/*)");
 #endif /* CONFIG_APP_CLAW_CAP_IM_WECHAT */
 
@@ -3195,34 +3203,36 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_llm_get = { .uri = "/api/llm/config", .method = HTTP_GET, .handler = h_llm_config_get };
     httpd_uri_t uri_llm_set = { .uri = "/api/llm/config", .method = HTTP_POST, .handler = h_llm_config_set };
     httpd_uri_t cors_llm_get = { .uri = "/api/llm/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
-    httpd_register_uri_handler(hd, &uri_llm_get);
-    httpd_register_uri_handler(hd, &uri_llm_set);
-    httpd_register_uri_handler(hd, &cors_llm_get);
+    REG_URI(&uri_llm_get);
+    REG_URI(&uri_llm_set);
+    REG_URI(&cors_llm_get);
 
     /* ── Feishu / QQ / Telegram Config API ── */
 #ifdef CONFIG_APP_CLAW_CAP_IM_FEISHU
-    { httpd_uri_t u = { .uri = "/api/feishu/config", .method = HTTP_POST, .handler = h_feishu_config }; httpd_register_uri_handler(hd, &u); }
-    { httpd_uri_t u = { .uri = "/api/feishu/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/feishu/config", .method = HTTP_POST, .handler = h_feishu_config }; REG_URI(&u); }
+    { httpd_uri_t u = { .uri = "/api/feishu/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; REG_URI(&u); }
 #endif
 #ifdef CONFIG_APP_CLAW_CAP_IM_QQ
-    { httpd_uri_t u = { .uri = "/api/qq/config", .method = HTTP_POST, .handler = h_qq_config }; httpd_register_uri_handler(hd, &u); }
-    { httpd_uri_t u = { .uri = "/api/qq/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/qq/config", .method = HTTP_POST, .handler = h_qq_config }; REG_URI(&u); }
+    { httpd_uri_t u = { .uri = "/api/qq/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; REG_URI(&u); }
 #endif
 #ifdef CONFIG_APP_CLAW_CAP_IM_TG
-    { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_POST, .handler = h_tg_config }; httpd_register_uri_handler(hd, &u); }
-    { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_POST, .handler = h_tg_config }; REG_URI(&u); }
+    { httpd_uri_t u = { .uri = "/api/tg/config", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; REG_URI(&u); }
 #endif
 
     /* ── Agent Chat API ── */
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
     defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG) || \
     defined(CONFIG_APP_CLAW_CAP_IM_LOCAL)
-    { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_POST, .handler = h_agent_chat }; httpd_register_uri_handler(hd, &u); }
-    { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_POST, .handler = h_agent_chat }; REG_URI(&u); }
+    { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; REG_URI(&u); }
 #endif
 #ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
-    { httpd_uri_t u = { .uri = "/api/agent/messages", .method = HTTP_GET, .handler = h_agent_messages }; httpd_register_uri_handler(hd, &u); }
+    { httpd_uri_t u = { .uri = "/api/agent/messages", .method = HTTP_GET, .handler = h_agent_messages }; REG_URI(&u); }
 #endif
+
+#undef REG_URI
 }
 
 /*============================================================================

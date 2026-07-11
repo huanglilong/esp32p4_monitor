@@ -135,14 +135,16 @@ static esp_err_t _captive_httpd_start(void)
         .method = HTTP_GET,
         .handler = _captive_handler,
     };
-    httpd_register_uri_handler(s_captive_httpd, &hotspot_uri);
+    esp_err_t _r = httpd_register_uri_handler(s_captive_httpd, &hotspot_uri);
+    if (_r != ESP_OK) ESP_LOGE(TAG, "Failed to register /hotspot-detect.html: %s", esp_err_to_name(_r));
 
     httpd_uri_t gen204_uri = {
         .uri = "/generate_204",
         .method = HTTP_GET,
         .handler = _captive_handler,
     };
-    httpd_register_uri_handler(s_captive_httpd, &gen204_uri);
+    _r = httpd_register_uri_handler(s_captive_httpd, &gen204_uri);
+    if (_r != ESP_OK) ESP_LOGE(TAG, "Failed to register /generate_204: %s", esp_err_to_name(_r));
 
     /* Catch-all: register "/" with wildcard matching (user_ctx != NULL).
      * This matches any path not handled by the specific handlers above.
@@ -154,7 +156,8 @@ static esp_err_t _captive_httpd_start(void)
         .handler = _captive_handler,
         .user_ctx = (void *)1,  /* Enable wildcard matching */
     };
-    httpd_register_uri_handler(s_captive_httpd, &catchall_uri);
+    esp_err_t _r2 = httpd_register_uri_handler(s_captive_httpd, &catchall_uri);
+    if (_r2 != ESP_OK) ESP_LOGE(TAG, "Failed to register catch-all GET: %s", esp_err_to_name(_r2));
 
     /* POST catch-all: silently discard non-GET requests (mmtls, etc.)
      * that arrive due to DNS hijacking. These are expected noise
@@ -165,7 +168,8 @@ static esp_err_t _captive_httpd_start(void)
         .handler = _captive_handler,
         .user_ctx = (void *)1,
     };
-    httpd_register_uri_handler(s_captive_httpd, &catchall_post);
+    _r2 = httpd_register_uri_handler(s_captive_httpd, &catchall_post);
+    if (_r2 != ESP_OK) ESP_LOGE(TAG, "Failed to register catch-all POST: %s", esp_err_to_name(_r2));
 
     ESP_LOGI(TAG, "Captive portal HTTP server started on port 80");
     return ESP_OK;
