@@ -344,6 +344,10 @@
 | S288 | **CameraStream 编码器生命周期竞态 (handler vs stop)** | `set_quality_handler`/`set_camera_config_handler` 先读 `_encoder_initialized` 再 `xSemaphoreTake(_encoder_sem)`/`set_jpeg_quality(_encoder_handle)`；`stop()`→`_deinit_encoder()` 在 handler 不持锁时删除 `_encoder_sem` 并置空 `_encoder_handle` → 并发请求可获取已释放信号量/空句柄 (hard fault)。修复: 新增 `_encoder_lock` (构造创建/析构释放)，`_deinit_encoder` 拆除时与两个 handler 的 check+use 互斥；`_encoder_sem` 为 null 时跳过内部 take (覆盖潜在 JPEG-sensor 路径) | ✅ |
 | S289 | **Captive portal HTTP 未释放 port 80** | WiFi provisioning 启动 captive portal HTTP server (port 80)，STA 连接后仅停止 DNS 但未停止 HTTP server → CameraStream 启动 port 80 失败 (EADDRINUSE errno 112)。修复: STA 连接后同时停止 captive HTTP server，释放 port 80。**二次修复**: `httpd_stop()` 是阻塞调用 (等待 httpd 线程退出)，在 event loop task 中调用会阻塞事件循环 → 其他 httpd 实例的 `esp_event_post` 超时 (ESP_ERR_TIMEOUT 每 2s)。改用 `esp_timer` one-shot 延迟停止，从 timer 上下文调用 `httpd_stop()` | ✅ |
 | S290 | **VFS FAT max_files 不足** | `esp_vfs_fat_sdspi_mount` 配置 `max_files=3`，ULog + logger + claw session 并发打开文件耗尽 → `open: no free file descriptors` (ENFILE)，claw session 回退默认 ID。修复: `max_files` 3→8，容纳 ULog(1-2) + logger(1) + session(1-2) + HTTP download(1) + audio(1) | ✅ |
+| S291 | **h_play() / h_rec_start() TOCTOU 竞态 — I2S 共享冲突** | `h_play()` 和 `h_rec_start()` 为销毁旧播放器释放 `s_audio_mutex` 期间，另一方可启动冲突操作，导致录音和播放同时占用同一 I2S 硬件。修复: 重新获取锁后双方均二次检查对方状态标志 (`s_playing` / `s_is_recording`)，`h_rec_start()` 停止新启动的播放，`h_play()` 返回错误 | ✅ |
+| S292 | **h_rec_start() 错误路径持锁调用 500ms delay** | `_stop_audio_task_if_running()` 在持 `s_audio_mutex` 时等待音频任务退出 (10×50ms)，阻塞其他 HTTP handler。修复: 3 个错误路径先将 `audio_unlock()` 移至 `_stop_audio_task_if_running()` 之前 | ✅ |
+| S293 | **captive_dns s_dns_task 跨核数据竞争** | `s_dns_task` (TaskHandle_t) 无原子保护，DNS 任务写入 `NULL` 但 `captive_dns_start()` 从另一核读取时无内存屏障。修复: 改为 `_Atomic TaskHandle_t`，使用 `memory_order_release`/`memory_order_acquire` | ✅ |
+| S294 | **httpd_register_uri_handler 返回值未检查** | 全部 ~51 次 `httpd_register_uri_handler()` 调用忽略返回值，handler 表满时端点静默返回 404。修复: `_register_web_config_uris()` 使用 `REG_URI` 宏，`_captive_httpd_start()` 使用内联检查，均 `ESP_LOGE` 记录失败 | ✅ |
 
 ### 2.3 系统性能监控
 

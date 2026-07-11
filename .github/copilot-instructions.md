@@ -147,6 +147,7 @@ When modifying `components/` code, follow its existing coding style and architec
 | Pitfall | Correct Approach |
 |---------|-----------------|
 | `volatile` for cross-core vars | `std::atomic<T>` with explicit memory ordering |
+| `TaskHandle_t` for cross-core task handles | `_Atomic TaskHandle_t` with `memory_order_release/acquire` |
 | Bare `new` | `new(std::nothrow)` + null check |
 | `free()` for `heap_caps_*` allocs | `heap_caps_free()` |
 | `free()` for cJSON strings | `cJSON_free()` |
@@ -154,6 +155,9 @@ When modifying `components/` code, follow its existing coding style and architec
 | `eTaskGetState()` on self-deleting tasks | `_task_exited` atomic flag |
 | `vTaskDelete()` on mutex-holding tasks | Let task self-delete after release |
 | `gettimeofday()` for durations | `esp_timer_get_time()` (monotonic) |
+| Releasing mutex mid-operation (TOCTOU) | Double-check shared state after re-acquisition |
+| Calling blocking ops while holding mutex | Release mutex before blocking call |
+| Ignoring `httpd_register_uri_handler()` return | Check with `ESP_LOGE` on failure |
 | Editing `sdkconfig` | Edit `sdkconfig.defaults` |
 | Editing `main/generated/` | Edit `proto/*.msg` + regenerate |
 | Unchecked HTTP `Content-Length` | Cap before `calloc()` |
