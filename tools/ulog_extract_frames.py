@@ -121,7 +121,7 @@ def extract_camera_frames(ulg_path, output_dir, verbose=False):
                 #   uint16_t height        (offset 14, 2 bytes)
                 #   uint16_t jpeg_size     (offset 16, 2 bytes)
                 #   uint8_t  format        (offset 18, 1 byte)
-                #   uint8_t  jpeg_data[14336] (offset 19, up to 14336 bytes)
+                #   uint8_t  jpeg_data[15360] (offset 19, up to 15360 bytes)
                 # Note: ULog writer uses o_size_no_padding, so trailing
                 # _padding bytes are NOT written to the file.
                 payload = data[scan_pos+5:scan_pos+3+msg_size]
