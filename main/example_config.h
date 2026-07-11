@@ -1,9 +1,19 @@
 #pragma once
 #include "sdkconfig.h"
 #include "driver/i2c_master.h"
+#include <atomic>
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+/* Board detection: true = LCD-4B (display + touch + dual codec + PA),
+ * false = WIFI6 (headless, single codec). Set in main.cpp at boot. */
+#ifdef __cplusplus
+extern std::atomic<bool> g_has_lcd;
+#else
+#include <stdatomic.h>
+extern _Atomic bool g_has_lcd;
 #endif
 
 /* Display */

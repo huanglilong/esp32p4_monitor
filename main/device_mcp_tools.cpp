@@ -26,9 +26,6 @@
 #include "generated/system_stats.h"
 #include "example_config.h"
 
-/* g_has_lcd is defined in main.cpp */
-extern std::atomic<bool> g_has_lcd;
-
 static const char *TAG = "device_mcp";
 
 /* ── Helper: build JSON string for MCP tool response ── */
