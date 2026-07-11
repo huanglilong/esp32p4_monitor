@@ -728,7 +728,7 @@ extern "C" void app_main(void)
             er_cfg.rules_path = "/sdcard/claw/router_rules/router_rules.json";
             er_cfg.task_stack_size = 8192;
             er_cfg.task_priority = 5;
-            er_cfg.task_core = tskNO_AFFINITY;
+            er_cfg.task_core = 0;  /* Bind to Core 0 — never preempt Core 1 (LVGL+Music) */
             er_cfg.default_route_messages_to_agent = true;
             claw_event_router_init(&er_cfg);
 
@@ -800,6 +800,7 @@ extern "C" void app_main(void)
             core_cfg.supports_tools = true;
             core_cfg.supports_vision = true;
             core_cfg.system_prompt = "";  /* Required by claw_agent_mgr_copy_core_config */
+            core_cfg.task_core = 0;       /* Bind to Core 0 — never preempt Core 1 (LVGL+Music) */
 
             claw_agent_mgr_config_t mgr_cfg;
             memset(&mgr_cfg, 0, sizeof(mgr_cfg));

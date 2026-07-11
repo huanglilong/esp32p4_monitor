@@ -60,6 +60,14 @@ static esp_err_t claw_task_resolve_config(const claw_task_config_t *input, claw_
         *out = *override;
     }
 
+    /* Project default: bind all claw tasks to Core 0.
+     * Core 1 is dedicated to LVGL rendering + Music GMF/ASP audio pipeline
+     * (prio 3). Claw tasks at prio 4-5 would preempt Music and cause I2S
+     * DMA underrun → audio glitches/crackling. */
+    if (out->core_id < 0) {
+        out->core_id = 0;
+    }
+
     return ESP_OK;
 }
 
