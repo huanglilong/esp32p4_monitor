@@ -285,7 +285,7 @@ static void claw_agent_mgr_unlock(void)
 
 static bool claw_agent_mgr_is_ready(void)
 {
-    return s_mgr->initialized && s_mgr->mutex != NULL;
+    return s_mgr != NULL && s_mgr->initialized && s_mgr->mutex != NULL;
 }
 
 static claw_agent_mgr_agent_t *claw_agent_mgr_find_locked(const char *agent_id)
@@ -668,7 +668,7 @@ claw_core_handle_t claw_agent_mgr_get_root_core(void)
 {
     claw_core_handle_t core = NULL;
 
-    if (!s_mgr->initialized || !s_mgr->mutex) {
+    if (!s_mgr || !s_mgr->initialized || !s_mgr->mutex) {
         return NULL;
     }
     claw_agent_mgr_lock();
