@@ -566,6 +566,7 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
      * Skip if writer was force-killed (mutex may be locked). */
     if (writer->task_exited.load(std::memory_order_acquire)) {
         uint8_t *drain_buf = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+        bool drain_is_caps = (drain_buf != nullptr);
         if (!drain_buf) drain_buf = (uint8_t *)malloc(4096);
         if (drain_buf) {
             size_t n;
@@ -573,7 +574,11 @@ esp_err_t ulog_writer_stop(ulog_writer_t *writer)
                 write(writer->fd, drain_buf, n);
                 writer->bytes_written += n;
             }
-            heap_caps_free(drain_buf);
+            if (drain_is_caps) {
+                heap_caps_free(drain_buf);
+            } else {
+                free(drain_buf);
+            }
         }
     }
 
