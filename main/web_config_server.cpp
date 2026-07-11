@@ -2841,10 +2841,10 @@ static esp_err_t ensure_agent_started(void)
             claw_event_router_start();
             claw_cap_start_all();
             /* Bind outbound channels */
-            claw_event_router_register_outbound_binding("wechat", "cap_im_wechat");
-            claw_event_router_register_outbound_binding("telegram", "cap_im_tg");
-            claw_event_router_register_outbound_binding("feishu", "cap_im_feishu");
-            claw_event_router_register_outbound_binding("qq", "cap_im_qq");
+            claw_event_router_register_outbound_binding("wechat", "wechat_send_message");
+            claw_event_router_register_outbound_binding("telegram", "tg_send_message");
+            claw_event_router_register_outbound_binding("feishu", "feishu_send_message");
+            claw_event_router_register_outbound_binding("qq", "qq_send_message");
 #ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
             claw_event_router_register_outbound_binding("web_chat", "local_send_message");
 #endif
