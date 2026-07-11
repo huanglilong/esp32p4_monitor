@@ -807,6 +807,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 
 **最近优化**:
 - **2026-07-11**: +S281 **Agent Chat LLM 配置保存后失效修复** — `h_llm_config_set` 保存后调用 `claw_agent_mgr_update_core_config` 更新运行中 agent + 懒创建 root agent；冷/热初始化路径 `supports_tools = true` (原硬编码 false 导致 `ESP_ERR_NOT_SUPPORTED`)；`h_agent_chat` 设 `chat_id` (原空导致 `out_message` 发布失败)；`max_tokens_field = "4096"` → `max_tokens = 4096` (JSON key name vs 数值混淆)；热初始化探测 event router/agent manager 状态跳过已初始化组件
+- **2026-07-11**: +S289 **SRAM 优化: BSS 大对象迁移至 PSRAM (P0+P1)** — `s_agent_msgs[16]` (74.9KB) + `s_topics/s_subs` (5.6KB) + `s_jobs` cap_lua_async (5.6KB) + `s_mgr` claw_agent_mgr (5.0KB) 从内部 SRAM (.bss) 迁移至 PSRAM (heap_caps_calloc)。DIRAM 使用 227KB(51.5%)→136KB(30.8%), 释放 91.1KB 内部 SRAM, 可用 heap 207KB→298KB。**彻底解决 P0/P0b/S248 PSRAM 带宽竞争导致的 Camera Stream + Music 偶发杂音/卡顿残留**
 - **2026-07-11**: `claw` 组件 KV 存储解耦 — 引入 `claw_kv_backend` 抽象接口, 组件不再直接依赖 `nvs_flash`。`settings_store`/`cap_scheduler`/`cap_im_wechat` 通过函数指针接口操作存储, NVS 实现仅限 `claw_kv_nvs` 单一组件。修复 NVS handle 竞态 (共享 ctx 存储 handle → 每操作独立局部 handle, 消除双核并发风险) (参考 esp-claw 依赖反转模式)
 - **2026-07-07**: 关闭 LVGL IRAM (`LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`) → LVGL 代码移至 PSRAM XIP，释放 **~64 KB** IRAM
 - **2026-07-07**: ASP 音频任务栈 8KB 移至 PSRAM (`task_stack_in_ext=true` — GMF 内部用 WithCaps 处理), 共省 **~8 KB**
@@ -894,8 +895,8 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 ### 集成优先级建议
 
-1. **P0 (阻塞)**: S248 PSRAM 带宽竞争 (Camera Stream + Music 卡顿残留)
-2. **高优先级**: G1 (cap_im_local) → G3+G4 (wifi_manager + captive_dns, 解决 P2)
+1. **P0 (阻塞)**: ✅ 已解决 — S247 (cam_capture 改绑 Core 0) + S289 (SRAM 优化, DIRAM 51.5%→30.8%, 释放 91.1KB)
+2. **高优先级**: G1 (cap_im_local) ✅ → G3+G4 (wifi_manager + captive_dns, 解决 P2)
 3. **中优先级**: G6 (lua_modules) → G16 (skills) → G5 (app_claw shell) → G15 (structured HTTP)
 4. **低优先级**: G2, G7-G14, G17 (按需集成)
 
