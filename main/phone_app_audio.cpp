@@ -177,7 +177,9 @@ bool PhoneAppAudio::run(void)
      * TCB was pre-allocated at construction and reused across run/close cycles.
      * Stack (12KB) is allocated from PSRAM per run and freed in close(). */
     _task_running = true;
-    _audio_stack = (StackType_t *)heap_caps_malloc(12288, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* xTaskCreateStatic depth (12288) is in StackType_t words; buffer must be
+     * depth * sizeof(StackType_t) bytes, else the kernel writes 4x past the alloc. */
+    _audio_stack = (StackType_t *)heap_caps_malloc(12288 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!_audio_stack || !_audio_tcb) {
         ESP_LOGE(TAG, "Failed to allocate audio task buffers");
         if (_audio_stack) { heap_caps_free(_audio_stack); _audio_stack = nullptr; }

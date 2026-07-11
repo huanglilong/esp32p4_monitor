@@ -487,8 +487,10 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
 #define CONFIG_ULOG_TASK_STACK_SIZE 8192
 #endif
     writer->task_exited.store(false, std::memory_order_release);
+    /* xTaskCreateStaticPinnedToCore depth (CONFIG_ULOG_TASK_STACK_SIZE) is in
+     * StackType_t words; buffer must be depth * sizeof(StackType_t) bytes. */
     writer->task_stack = (StackType_t *)heap_caps_malloc(
-        CONFIG_ULOG_TASK_STACK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        CONFIG_ULOG_TASK_STACK_SIZE * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!writer->task_stack) {
         ESP_LOGE(TAG, "Failed to allocate writer task stack");
         close(writer->fd);

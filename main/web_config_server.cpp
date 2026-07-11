@@ -1323,7 +1323,9 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     if (!__audio_init())  { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
     if (!s_audio_task.load(std::memory_order_acquire)) {
         s_audio_running = true;
-        s_audio_stack = (StackType_t *)heap_caps_malloc(12 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        /* xTaskCreateStaticPinnedToCore depth (12*1024) is in StackType_t words;
+         * buffer must be depth * sizeof(StackType_t) bytes. */
+        s_audio_stack = (StackType_t *)heap_caps_malloc(12 * 1024 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_audio_stack) {
             ESP_LOGE(TAG, "Failed to allocate audio task stack");
             s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
