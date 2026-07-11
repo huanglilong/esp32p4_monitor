@@ -2388,7 +2388,7 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
                   field_ok(j_model) && field_ok(j_base_url);
 
     cJSON *resp = cJSON_CreateObject();
-    if (!resp) { cJSON_Delete(root); return ESP_ERR_NO_MEM; }
+    if (!resp) { cJSON_Delete(root); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM"); return ESP_FAIL; }
 
     if (!all_ok) {
         ESP_LOGW(TAG, "LLM config incomplete (empty field) — skipping whole LLM NVS update");
@@ -2406,7 +2406,7 @@ static esp_err_t h_llm_config_set(httpd_req_t *req)
 
     nvs_handle_t nvs_h;
     esp_err_t err = nvs_open("claw_llm", NVS_READWRITE, &nvs_h);
-    if (err != ESP_OK) { ESP_LOGW(TAG, "LLM config save failed: nvs_open error (%s)", esp_err_to_name(err)); cJSON_Delete(root); cJSON_Delete(resp); return ESP_FAIL; }
+    if (err != ESP_OK) { ESP_LOGW(TAG, "LLM config save failed: nvs_open error (%s)", esp_err_to_name(err)); cJSON_Delete(root); cJSON_Delete(resp); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS open failed"); return ESP_FAIL; }
     nvs_set_str(nvs_h, "provider", j_provider->valuestring);
     nvs_set_str(nvs_h, "api_key", j_api_key->valuestring);
     nvs_set_str(nvs_h, "model", j_model->valuestring);
