@@ -859,7 +859,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 | # | 组件 | 上游路径 | 优先级 | 说明 |
 |---|------|----------|:------:|------|
-| G1 | **cap_im_local** | `claw_capabilities/cap_im_local/` | 高 | 本地 IM 通道, 支持不依赖外部 IM 平台的 Web/Flutter Agent 对话 |
+| G1 | **cap_im_local** | `claw_capabilities/cap_im_local/` | ✅ 已完成 | 本地 IM 通道, 支持不依赖外部 IM 平台的 Web/Flutter Agent 对话。实现: `cap_im_local.c` (IM gateway + send_message capability) + `web_config_server.cpp` (outbound callback → ring buffer → `/api/agent/messages` polling) + `main.cpp` (cold-init registration) + `agent_chat_screen.dart` (Flutter UI) |
 | G2 | **cap_llm_inspect** | `claw_capabilities/cap_llm_inspect/` | 中 | LLM 请求/响应检查, 用于调试 Agent 行为 |
 | G3 | **wifi_manager** | `common/wifi_manager/` | 高 | 独立 WiFi 管理组件, AP+STA 模式 + 自动重连 (解决 P2 无屏配网 + P10 WiFi 重构) |
 | G4 | **captive_dns** | `common/captive_dns/` | 高 | Captive Portal DNS, 配合 wifi_manager 实现无屏配网 |

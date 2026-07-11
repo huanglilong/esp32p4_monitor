@@ -68,8 +68,10 @@
 #include "cap_im_tg.h"
 #endif
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
-    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_LOCAL)
 #include "cap_im_platform.h"
+#include "cap_im_local.h"
 #include "claw_event_router.h"
 #include "claw_event.h"
 #include "claw_agent_mgr.h"
@@ -806,6 +808,8 @@ static const char *WEB_UI_HTML =
 "catch(e){document.getElementById('llm_status').textContent='Network error'}}"
 
 /* ── Agent Chat Functions ── */
+"let _agentMsgIdx=0;"
+"let _agentPollTimer=null;"
 "function appendChat(role,text){"
 "let log=document.getElementById('chat_log');"
 "let d=document.createElement('div');"
@@ -814,21 +818,34 @@ static const char *WEB_UI_HTML =
 "else if(role==='tool'){d.innerHTML='<span style=\"color:#ffa500;font-weight:bold\">Tool:</span> '+text}"
 "else{d.innerHTML='<span style=\"color:#4caf50;font-weight:bold\">Agent:</span> '+text}"
 "log.appendChild(d);log.scrollTop=log.scrollHeight}"
+"function pollAgentMessages(){"
+"fetch('/api/agent/messages?since='+_agentMsgIdx).then(r=>r.json()).then(j=>{"
+"if(j.messages&&j.messages.length>0){"
+"j.messages.forEach(m=>{"
+"let t=m.text.replace(/</g,'&lt;');"
+"if(m.link_url){t+='<br><a href=\"'+m.link_url+'\" target=\"_blank\" style=\"color:#00d4ff\">'+"
+"(m.link_label||m.link_url).replace(/</g,'&lt;')+'</a>'}"
+"appendChat('agent',t)});"
+"_agentMsgIdx=j.next_index;"
+"document.getElementById('chat_status').textContent=''}"
+"if(j.next_index>_agentMsgIdx){_agentMsgIdx=j.next_index}"
+"}).catch(()=>{})}"
+"function startAgentPoll(){"
+"if(_agentPollTimer)return;"
+"_agentPollTimer=setInterval(pollAgentMessages,2000)}"
 "async function sendChat(){"
 "let input=document.getElementById('chat_input');"
 "let msg=input.value.trim();if(!msg)return;"
 "input.value='';"
-"appendChat('user',msg);"
+"appendChat('user',msg.replace(/</g,'&lt;'));"
 "document.getElementById('chat_status').textContent='Thinking...';"
 "try{"
 "let r=await fetch('/api/agent/chat',{method:'POST',"
 "headers:{'Content-Type':'application/json'},"
 "body:JSON.stringify({message:msg})});"
 "let j=await r.json();"
-"if(j.reply)appendChat('agent',j.reply.replace(/</g,'&lt;'));"
-"if(j.tool_calls&&j.tool_calls.length>0){"
-"j.tool_calls.forEach(t=>appendChat('tool',t.name+' → '+t.result.replace(/</g,'&lt;')))}"
-"document.getElementById('chat_status').textContent=j.ok?'':'Error: '+(j.error||'unknown')}"
+"if(j.ok){startAgentPoll()}"
+"else{document.getElementById('chat_status').textContent='Error: '+(j.error||'unknown')}}"
 "catch(e){document.getElementById('chat_status').textContent='Network error'}}"
 
 "</script></body></html>";
@@ -2615,7 +2632,78 @@ static esp_err_t h_tg_config(httpd_req_t *req)
 
 /* ── Agent Chat API ── */
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
-    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_LOCAL)
+
+/* ── Agent Response Buffer ──
+ * cap_im_local outbound callback stores agent responses here.
+ * The Web/Flutter UI polls /api/agent/messages to retrieve them.
+ * Ring buffer of recent messages (last N), each with auto-expiring timestamp.
+ */
+#define AGENT_MSG_BUF_SIZE 16
+#define AGENT_MSG_MAX_TEXT 4096
+#define AGENT_MSG_MAX_ID   96
+
+typedef struct {
+    char message_id[AGENT_MSG_MAX_ID];
+    char chat_id[AGENT_MSG_MAX_ID];
+    char text[AGENT_MSG_MAX_TEXT];
+    char link_url[256];     /* optional attachment URL */
+    char link_label[128];   /* optional attachment label */
+    int64_t timestamp_ms;   /* esp_timer_get_time() / 1000 */
+} agent_msg_t;
+
+static agent_msg_t s_agent_msgs[AGENT_MSG_BUF_SIZE];
+static std::atomic<uint32_t> s_agent_msg_write_idx{0};
+static SemaphoreHandle_t s_agent_msg_mutex = NULL;
+
+static void agent_msg_mutex_init(void)
+{
+    if (!s_agent_msg_mutex) {
+        s_agent_msg_mutex = xSemaphoreCreateMutex();
+    }
+}
+
+/* Outbound callback for cap_im_local — stores agent response in ring buffer */
+static esp_err_t agent_outbound_cb(const cap_im_local_message_t *message, void *user_ctx)
+{
+    if (!message || !message->text || !message->text[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    agent_msg_mutex_init();
+    if (xSemaphoreTake(s_agent_msg_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        ESP_LOGW(TAG, "agent_outbound_cb: mutex timeout, dropping message");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    uint32_t idx = s_agent_msg_write_idx.fetch_add(1, std::memory_order_relaxed) % AGENT_MSG_BUF_SIZE;
+    agent_msg_t *slot = &s_agent_msgs[idx];
+
+    memset(slot, 0, sizeof(*slot));
+    strlcpy(slot->message_id, message->message_id ? message->message_id : "", sizeof(slot->message_id));
+    strlcpy(slot->chat_id, message->chat_id ? message->chat_id : "", sizeof(slot->chat_id));
+    strlcpy(slot->text, message->text, sizeof(slot->text));
+    strlcpy(slot->link_url, message->link_url ? message->link_url : "", sizeof(slot->link_url));
+    strlcpy(slot->link_label, message->link_label ? message->link_label : "", sizeof(slot->link_label));
+    slot->timestamp_ms = message->timestamp_ms ? message->timestamp_ms : (esp_timer_get_time() / 1000LL);
+
+    xSemaphoreGive(s_agent_msg_mutex);
+
+    ESP_LOGI(TAG, "Agent response stored: msg_id=%s chat=%s text=%.60s%s",
+             slot->message_id, slot->chat_id, slot->text,
+             strlen(slot->text) > 60 ? "..." : "");
+    return ESP_OK;
+}
+
+/* Bind cap_im_local outbound callback — call after cap_im_local_start() */
+void bind_agent_outbound(void)
+{
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+    cap_im_local_set_outbound_callback(agent_outbound_cb, NULL);
+    ESP_LOGI(TAG, "cap_im_local outbound callback bound to agent response buffer");
+#endif
+}
 
 /* Try to lazily initialize the agent if LLM is configured but agent wasn't started at boot.
  * Returns ESP_OK if agent is ready, or an error if it can't be started. */
@@ -2757,6 +2845,9 @@ static esp_err_t ensure_agent_started(void)
             claw_event_router_register_outbound_binding("telegram", "cap_im_tg");
             claw_event_router_register_outbound_binding("feishu", "cap_im_feishu");
             claw_event_router_register_outbound_binding("qq", "cap_im_qq");
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+            claw_event_router_register_outbound_binding("web_chat", "local_send_message");
+#endif
         }
     }
 
@@ -2795,6 +2886,25 @@ static esp_err_t ensure_agent_started(void)
     }
 
     ESP_LOGI(TAG, "Hot-init: agent started successfully (model: %s)", llm_cfg.model);
+
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+    /* Register and start cap_im_local if not already done (cold-init may have done it) */
+    if (!claw_cap_group_exists("cap_im_local")) {
+        cap_im_local_config_t local_cfg = {
+            .default_channel = "web_chat",
+            .default_sender_id = "web_user",
+            .log_outbound_messages = true,
+        };
+        cap_im_local_set_config(&local_cfg);
+        esp_err_t local_err = cap_im_local_register_group();
+        if (local_err != ESP_OK) {
+            ESP_LOGW(TAG, "Hot-init: cap_im_local_register_group failed: %s", esp_err_to_name(local_err));
+        }
+        cap_im_local_start();
+    }
+    bind_agent_outbound();
+#endif
+
     return ESP_OK;
 }
 
@@ -2831,7 +2941,13 @@ static esp_err_t h_agent_chat(httpd_req_t *req)
     esp_err_t err = ensure_agent_started();
 
     if (err == ESP_OK) {
-        /* Submit via event router for full IM→Agent pipeline */
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+        /* Submit via cap_im_local for proper IM→Agent→Response pipeline.
+         * The response will be stored in the agent response buffer by the
+         * outbound callback, and the UI can poll /api/agent/messages. */
+        err = cap_im_local_emit_text("web_chat", "web_chat", "web_user", NULL, msg_j->valuestring);
+#else
+        /* Fallback: submit directly via event router (no response delivery) */
         claw_event_t event = {};
         strlcpy(event.event_type, "message", sizeof(event.event_type));
         strlcpy(event.source_channel, "web_chat", sizeof(event.source_channel));
@@ -2841,6 +2957,7 @@ static esp_err_t h_agent_chat(httpd_req_t *req)
 
         claw_event_router_result_t result = {};
         err = claw_event_router_handle_event(&event, &result);
+#endif
     }
 
     cJSON_Delete(root);
@@ -2854,7 +2971,11 @@ static esp_err_t h_agent_chat(httpd_req_t *req)
     bool ok = (err == ESP_OK);
     cJSON_AddBoolToObject(resp, "ok", ok);
     if (ok) {
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+        cJSON_AddStringToObject(resp, "reply", "Message submitted. Poll /api/agent/messages for response.");
+#else
         cJSON_AddStringToObject(resp, "reply", "Message submitted to agent. Check IM channel for response.");
+#endif
     } else {
         const char *hint = (err == ESP_ERR_INVALID_STATE)
             ? "LLM not configured. Save API key in the AI Agent card first."
@@ -2873,6 +2994,93 @@ static esp_err_t h_agent_chat(httpd_req_t *req)
     }
     return ESP_OK;
 }
+
+/* ── Agent Messages Polling Endpoint ──
+ * GET /api/agent/messages?since=<index>
+ * Returns all agent responses stored since the given index.
+ * The client tracks the last seen index and passes it as `since`
+ * to only get new messages on each poll.
+ */
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+static esp_err_t h_agent_messages(httpd_req_t *req)
+{
+    /* Parse optional `since` query parameter (default: 0 = return all) */
+    uint32_t since = 0;
+    {
+        char query[32] = {0};
+        if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+            char val[16] = {0};
+            if (httpd_query_key_value(query, "since", val, sizeof(val)) == ESP_OK) {
+                since = (uint32_t)atoi(val);
+            }
+        }
+    }
+
+    agent_msg_mutex_init();
+    if (!s_agent_msg_mutex) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Not initialized");
+        return ESP_FAIL;
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+
+    uint32_t write_idx = s_agent_msg_write_idx.load(std::memory_order_relaxed);
+    cJSON_AddNumberToObject(resp, "next_index", (double)write_idx);
+
+    cJSON *msgs = cJSON_CreateArray();
+    if (!msgs) {
+        cJSON_Delete(resp);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+
+    if (xSemaphoreTake(s_agent_msg_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+        /* Calculate the range of valid messages in the ring buffer */
+        uint32_t total_stored = write_idx;
+        uint32_t start = (since > total_stored) ? total_stored : since;
+        for (uint32_t i = start; i < total_stored; i++) {
+            uint32_t buf_idx = i % AGENT_MSG_BUF_SIZE;
+            agent_msg_t *slot = &s_agent_msgs[buf_idx];
+            /* Skip empty slots (shouldn't happen but be safe) */
+            if (!slot->text[0]) continue;
+
+            cJSON *msg = cJSON_CreateObject();
+            if (!msg) continue;
+            cJSON_AddNumberToObject(msg, "index", (double)i);
+            cJSON_AddStringToObject(msg, "message_id", slot->message_id);
+            cJSON_AddStringToObject(msg, "chat_id", slot->chat_id);
+            cJSON_AddStringToObject(msg, "text", slot->text);
+            if (slot->link_url[0]) {
+                cJSON_AddStringToObject(msg, "link_url", slot->link_url);
+            }
+            if (slot->link_label[0]) {
+                cJSON_AddStringToObject(msg, "link_label", slot->link_label);
+            }
+            cJSON_AddNumberToObject(msg, "timestamp_ms", (double)slot->timestamp_ms);
+            cJSON_AddItemToArray(msgs, msg);
+        }
+        xSemaphoreGive(s_agent_msg_mutex);
+    }
+
+    cJSON_AddItemToObject(resp, "messages", msgs);
+
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    if (json) {
+        httpd_resp_sendstr(req, json);
+        cJSON_free(json);
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON build failed");
+    }
+    return ESP_OK;
+}
+#endif /* CONFIG_APP_CLAW_CAP_IM_LOCAL */
+
 #endif /* IM channels */
 
 static void _register_web_config_uris(httpd_handle_t hd)
@@ -2988,9 +3196,13 @@ static void _register_web_config_uris(httpd_handle_t hd)
 
     /* ── Agent Chat API ── */
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
-    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_LOCAL)
     { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_POST, .handler = h_agent_chat }; httpd_register_uri_handler(hd, &u); }
     { httpd_uri_t u = { .uri = "/api/agent/chat", .method = HTTP_OPTIONS, .handler = cors_preflight_handler }; httpd_register_uri_handler(hd, &u); }
+#endif
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+    { httpd_uri_t u = { .uri = "/api/agent/messages", .method = HTTP_GET, .handler = h_agent_messages }; httpd_register_uri_handler(hd, &u); }
 #endif
 }
 

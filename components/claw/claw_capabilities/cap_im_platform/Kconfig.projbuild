@@ -1,5 +1,15 @@
 menu "ESP-Claw IM Platform Channels"
 
+config APP_CLAW_CAP_IM_LOCAL
+    bool "Enable local / Web IM capability (cap_im_local)"
+    default y
+    help
+        Register cap_im_local for in-process IM (e.g. Web Agent Chat).
+        Provides a local IM channel that routes messages through the
+        event router without requiring external IM platforms (WeChat/TG/etc).
+        Outbound messages are delivered via a registered callback,
+        typically connected to the Web Agent Chat UI.
+
 config APP_CLAW_CAP_IM_FEISHU
     bool "Enable Feishu (Lark) IM channel"
     default n

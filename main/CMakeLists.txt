@@ -128,7 +128,8 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
 #  can include its headers and call its APIs.
 # ─────────────────────────────────────────────────────────────────
 if(CONFIG_APP_CLAW_CAP_IM_WECHAT OR CONFIG_APP_CLAW_CAP_IM_FEISHU OR
-   CONFIG_APP_CLAW_CAP_IM_QQ OR CONFIG_APP_CLAW_CAP_IM_TG)
+   CONFIG_APP_CLAW_CAP_IM_QQ OR CONFIG_APP_CLAW_CAP_IM_TG OR
+   CONFIG_APP_CLAW_CAP_IM_LOCAL)
     target_link_libraries(${COMPONENT_LIB} PRIVATE
         idf::cap_im_platform
         idf::claw_core
@@ -158,6 +159,10 @@ if(CONFIG_APP_CLAW_CAP_IM_WECHAT OR CONFIG_APP_CLAW_CAP_IM_FEISHU OR
     )
     # Device-specific MCP tools (depends on claw + peripheral drivers)
     target_sources(${COMPONENT_LIB} PRIVATE "device_mcp_tools.cpp")
+endif()
+
+if(CONFIG_APP_CLAW_CAP_IM_LOCAL)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::cap_im_local)
 endif()
 
 # Get LVGL component library to suppress warnings

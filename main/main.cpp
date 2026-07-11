@@ -50,8 +50,10 @@
 #include "cap_im_tg.h"
 #endif
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
-    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_LOCAL)
 #include "cap_im_platform.h"
+#include "cap_im_local.h"
 #include "claw_core.h"
 #include "claw_cap.h"
 #include "claw_event_router.h"
@@ -556,7 +558,8 @@ extern "C" void app_main(void)
 
     /* ── ESP-Claw IM Channel Init (after WiFi, before Web Config) ── */
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \
-    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG)
+    defined(CONFIG_APP_CLAW_CAP_IM_QQ) || defined(CONFIG_APP_CLAW_CAP_IM_TG) || \
+    defined(CONFIG_APP_CLAW_CAP_IM_LOCAL)
     {
         /* Create KV backend instances for claw components.
          * claw_kv_nvs is the only component that depends on nvs_flash;
@@ -578,6 +581,23 @@ extern "C" void app_main(void)
         if (cap_err != ESP_OK) {
             ESP_LOGE(TAG, "cap_im_platform_register_groups failed: %s", esp_err_to_name(cap_err));
         }
+
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+        {
+            cap_im_local_config_t local_cfg = {
+                .default_channel = "web_chat",
+                .default_sender_id = "web_user",
+                .log_outbound_messages = true,
+            };
+            cap_im_local_set_config(&local_cfg);
+            cap_err = cap_im_local_register_group();
+            if (cap_err != ESP_OK) {
+                ESP_LOGE(TAG, "cap_im_local_register_group failed: %s", esp_err_to_name(cap_err));
+            } else {
+                ESP_LOGI(TAG, "cap_im_local registered (channel: web_chat)");
+            }
+        }
+#endif
 
 #ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
         {
@@ -798,6 +818,11 @@ extern "C" void app_main(void)
             claw_event_router_start();
             claw_cap_start_all();
 
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+            cap_im_local_start();
+            bind_agent_outbound();
+#endif
+
             /* ── Phase 1: Start MCP server + mDNS advertisement ── */
             {
                 /* Configure mDNS for MCP (reuse existing mDNS instance) */
@@ -824,6 +849,9 @@ extern "C" void app_main(void)
             claw_event_router_register_outbound_binding("telegram", "cap_im_tg");
             claw_event_router_register_outbound_binding("feishu", "cap_im_feishu");
             claw_event_router_register_outbound_binding("qq", "cap_im_qq");
+#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
+            claw_event_router_register_outbound_binding("web_chat", "local_send_message");
+#endif
 
             ESP_LOGI(TAG, "ESP-Claw Agent Loop started (model: %s)", llm_cfg.model);
         } else {

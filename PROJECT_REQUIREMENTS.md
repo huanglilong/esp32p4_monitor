@@ -404,7 +404,7 @@
 
 | # | 需求 | 说明 | 优先级 |
 |---|------|------|:------:|
-| G1 | **cap_im_local 集成** | 本地 IM 通道, 支持不依赖外部 IM 平台 (WeChat/TG/Feishu/QQ) 的 Web/Flutter Agent 对话。上游: `claw_capabilities/cap_im_local/` | 高 |
+| G1 | **cap_im_local 集成** | 本地 IM 通道, 支持不依赖外部 IM 平台 (WeChat/TG/Feishu/QQ) 的 Web/Flutter Agent 对话。上游: `claw_capabilities/cap_im_local/` | ✅ 已完成 |
 | G2 | **cap_llm_inspect 集成** | LLM 请求/响应检查 capability, 用于调试 Agent 行为。上游: `claw_capabilities/cap_llm_inspect/` | 中 |
 | G3 | **wifi_manager 移植** | 独立 WiFi 管理组件 (AP+STA 模式 + 自动重连 + 状态回调), 解决 P2 无屏配网 + P10 WiFi 管理重构。上游: `common/wifi_manager/` | 高 |
 | G4 | **captive_dns 移植** | Captive Portal DNS, 配合 wifi_manager 实现无屏 WiFi 配网 (手机连接 AP 自动弹出配置页)。上游: `common/captive_dns/` | 高 |
@@ -590,3 +590,4 @@ P0 (阻塞)     → S248 PSRAM 带宽竞争 (Camera Stream + Music 卡顿残留)
 | 2026-07-08 | +S216 SRAM 优化: 禁用 EAP (WPA2-Enterprise, 省约1.1KB IRAM+21KB PSRAM) + DVP (此板仅用MIPI CSI); S175 TCP 窗口 64KB→32KB (65536超Kconfig range被钳制为5760, 32768无需WND_SCALE) |
 | 2026-07-09 | +R57 WiFi 始终启用: 移除 wifi_en NVS 键和 UI 开关, WiFi 不可禁用 (Settings App 移除 switch, Web 移除 checkbox, Flutter 移除 toggle, bootWifiAutoConnect 跳过 wifi_en 检查, 断线自动重连无条件触发) |
 | 2026-07-10 | +S264~S274 全项目代码审查 (Round 1): S264 s_pcm_count 数据竞态→atomic; S265 s_rec_start_ms→atomic; S266 __sync_synchronize 冗余移除; S267 audio_task calloc→heap_caps_calloc(PSRAM); S268 WiFi scan task vTaskDelete→self-delete pattern; S269 CameraStream isRunning/is_recording 显式 atomic load; S270 AudioDriver volume() 显式 atomic load; S271 ulog_writer ringbuf volatile→atomic + free→heap_caps_free; S272 uorb assert→explicit checks + orb_copy/orb_check use-after-free 修复; S273 JPEG encoder ref count 竞态→mutex + free→heap_caps_free; S274 example_video_init s_is_init 竞态→mutex; S275 esp_lvgl_port assert→null checks + task_notify NULL guard; S276 esp_lvgl_port_disp assert→null checks + free→heap_caps_free; S277 lcd_ppa assert→null checks + free→heap_caps_free |
+| 2026-07-11 | **G1 cap_im_local 集成完成**: ① 新增 `components/claw/claw_capabilities/cap_im_local/` (IM gateway + send_message capability, 498行 C 代码) ② `main.cpp` cold-init 路径注册 + start + outbound binding ③ `web_config_server.cpp` agent response ring buffer (16 slots) + outbound callback + `/api/agent/messages` polling endpoint + `bind_agent_outbound()` ④ `web_config_server.hpp` 新增 `bind_agent_outbound()` 声明 ⑤ `agent_chat_screen.dart` Flutter 聊天界面 (消息气泡 + LLM 配置弹窗 + 轮询) ⑥ Kconfig 新增 `CONFIG_APP_CLAW_CAP_IM_LOCAL` ⑦ `CMakeLists.txt` 条件链接 `idf::cap_im_local` ⑧ 修复 `bind_agent_outbound` extern "C" linkage mismatch (header 移出 extern "C" 块) ⑨ 修复 web hot-init 中 `!cap_im_local_register_group()` 布尔判断错误 (改用 `claw_cap_group_exists`) ⑩ Web UI Agent Chat card JS 完善 (pollAgentMessages + _agentMsgIdx 轮询) |

@@ -22,6 +22,10 @@ class _AgentChatScreenState extends State<AgentChatScreen> {
   bool _sending = false;
   String? _error;
 
+  // Agent message polling
+  int _agentMsgIdx = 0;
+  Timer? _pollTimer;
+
   // LLM config
   String _provider = 'deepseek';
   final _apiKeyController = TextEditingController();
@@ -37,6 +41,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> {
 
   @override
   void dispose() {
+    _pollTimer?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     _apiKeyController.dispose();
@@ -123,30 +128,57 @@ class _AgentChatScreenState extends State<AgentChatScreen> {
 
     try {
       final resp = await http.postJson('/api/agent/chat', {'message': text});
-      setState(() {
-        if (resp != null) {
-          if (resp['reply'] != null) {
-            _messages.add(_ChatMessage(role: 'agent', text: resp['reply']));
-          }
-          if (resp['tool_calls'] != null) {
-            final tools = resp['tool_calls'] as List;
-            for (final t in tools) {
-              _messages.add(_ChatMessage(
-                role: 'tool',
-                text: '${t['name']}: ${t['result']}',
-              ));
-            }
-          }
-          if (resp['ok'] != true && resp['error'] != null) {
-            _error = resp['error'];
-          }
-        }
-      });
+      if (resp != null && resp['ok'] == true) {
+        // Start polling for agent response
+        _startPolling();
+      } else if (resp != null && resp['error'] != null) {
+        setState(() => _error = resp['error']);
+      }
     } catch (e) {
       setState(() => _error = 'Network error: $e');
     } finally {
       setState(() => _sending = false);
       _scrollToBottom();
+    }
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _pollAgentMessages());
+    // Also poll immediately
+    _pollAgentMessages();
+  }
+
+  Future<void> _pollAgentMessages() async {
+    final state = AppStateScope.of(context);
+    final http = state.httpService;
+    if (http == null) return;
+
+    try {
+      final resp = await http.getJson('/api/agent/messages?since=$_agentMsgIdx');
+      if (resp == null) return;
+
+      final messages = resp['messages'] as List?;
+      if (messages != null && messages.isNotEmpty) {
+        setState(() {
+          for (final m in messages) {
+            String text = m['text'] ?? '';
+            final linkUrl = m['link_url'];
+            if (linkUrl != null && linkUrl.isNotEmpty) {
+              final label = m['link_label'] ?? linkUrl;
+              text += '\n[$label]($linkUrl)';
+            }
+            _messages.add(_ChatMessage(role: 'agent', text: text));
+          }
+          _agentMsgIdx = (resp['next_index'] as num?)?.toInt() ?? _agentMsgIdx;
+          _sending = false;
+        });
+        _scrollToBottom();
+        // Stop polling after receiving a response (will restart on next send)
+        _pollTimer?.cancel();
+      }
+    } catch (_) {
+      // Silently ignore polling errors
     }
   }
 
