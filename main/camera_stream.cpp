@@ -142,6 +142,7 @@ CameraStream::CameraStream() :
     _shared_jpeg_mutex = xSemaphoreCreateMutex();
     _frame_ready_sem = xSemaphoreCreateCounting(2, 0);  /* Max 2 MJPEG clients */
     _start_stop_mutex = xSemaphoreCreateMutex();  /* Serializes start()/stop() */
+    _encoder_lock = xSemaphoreCreateMutex();      /* Guards encoder lifetime vs HTTP handlers */
 
     /* Pre-allocate TCB — reused across start/stop cycles.
      * ~340B internal SRAM, avoids TCB use-after-free race with idle task. */
@@ -164,6 +165,10 @@ CameraStream::~CameraStream()
     if (_start_stop_mutex) {
         vSemaphoreDelete(_start_stop_mutex);
         _start_stop_mutex = nullptr;
+    }
+    if (_encoder_lock) {
+        vSemaphoreDelete(_encoder_lock);
+        _encoder_lock = nullptr;
     }
     /* Defensive: stop() should have freed stacks, but ensure no leak */
     if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
@@ -690,6 +695,12 @@ bool CameraStream::_init_encoder(void)
 
 void CameraStream::_deinit_encoder(void)
 {
+    /* Hold _encoder_lock so an in-flight HTTP handler (set_quality /
+     * set_camera_config) finishes touching _encoder_handle/_encoder_sem
+     * before we delete them — otherwise xSemaphoreTake on a freed semaphore
+     * or set_jpeg_quality on a null handle would fault. */
+    if (_encoder_lock) xSemaphoreTake(_encoder_lock, portMAX_DELAY);
+
     if (_encoder_handle) {
         if (_jpeg_out_buf) {
             example_encoder_free_output_buffer(_encoder_handle, _jpeg_out_buf);
@@ -703,6 +714,8 @@ void CameraStream::_deinit_encoder(void)
         vSemaphoreDelete(_encoder_sem);
         _encoder_sem = nullptr;
     }
+
+    if (_encoder_lock) xSemaphoreGive(_encoder_lock);
 
     /* Reset both flags — init-in-progress must be cleared so next start()
      * can re-enter _init_encoder() without seeing stale progress state. */
@@ -1139,11 +1152,14 @@ static esp_err_t set_quality_handler(httpd_req_t *req)
     if (q > 100) q = 100;
     cs->_jpeg_quality.store((uint8_t)q);
 
-    if (cs->_encoder_initialized.load(std::memory_order_acquire)) {
-        if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
-            example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
-            xSemaphoreGive(cs->_encoder_sem);
+    if (xSemaphoreTake(cs->_encoder_lock, pdMS_TO_TICKS(100)) == pdPASS) {
+        if (cs->_encoder_initialized.load(std::memory_order_acquire) && cs->_encoder_sem) {
+            if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
+                example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
+                xSemaphoreGive(cs->_encoder_sem);
+            }
         }
+        xSemaphoreGive(cs->_encoder_lock);
     }
     ESP_LOGI(TAG, "JPEG quality set to %d", q);
 
@@ -1177,11 +1193,14 @@ static esp_err_t set_camera_config_handler(httpd_req_t *req)
         if (quality < 1) quality = 1;
         if (quality > 100) quality = 100;
         cs->_jpeg_quality.store((uint8_t)quality);
-        if (cs->_encoder_initialized.load(std::memory_order_acquire)) {
-            if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
-                example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
-                xSemaphoreGive(cs->_encoder_sem);
+        if (xSemaphoreTake(cs->_encoder_lock, pdMS_TO_TICKS(100)) == pdPASS) {
+            if (cs->_encoder_initialized.load(std::memory_order_acquire) && cs->_encoder_sem) {
+                if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
+                    example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
+                    xSemaphoreGive(cs->_encoder_sem);
+                }
             }
+            xSemaphoreGive(cs->_encoder_lock);
         }
         ESP_LOGI(TAG, "JPEG quality set to %d (via POST)", quality);
     }

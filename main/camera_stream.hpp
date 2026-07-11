@@ -74,6 +74,7 @@ public:
     uint32_t               _jpeg_out_size;
     std::atomic<uint8_t>   _jpeg_quality;
     SemaphoreHandle_t      _encoder_sem;
+    SemaphoreHandle_t      _encoder_lock;            /* Guards encoder lifetime (init/deinit) vs HTTP handlers */
     std::atomic<bool>      _encoder_initialized;      /* Atomic: init done, safe to use _encoder_handle/_encoder_sem */
     std::atomic<bool>      _encoder_init_in_progress; /* Atomic: prevents double-init, notifies waiters */
 
