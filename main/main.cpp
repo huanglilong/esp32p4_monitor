@@ -26,6 +26,7 @@
 #include "phone_app_music.hpp"
 #include "phone_app_settings.hpp"
 #include "web_config_server.hpp"
+#include "wifi_service.hpp"
 #include "logger/logger.hpp"
 #include "system_monitor.hpp"
 #include "git_info.h"
@@ -553,8 +554,11 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "=== WIFI6 mode (no display) ===");
     }
 
-    /* Boot WiFi auto-connect — AFTER SD card mount (C6 SDIO claims host ctrl) */
-    PhoneAppSettings::bootWifiAutoConnect();
+    /* Boot WiFi — use WifiService (wifi_manager) instead of inline PhoneAppSettings code.
+     * WifiService reads NVS credentials, starts STA, and auto-reconnects forever.
+     * On boards without stored credentials, it starts an AP for provisioning. */
+    ESP_ERROR_CHECK(WifiService::instance().init());
+    ESP_ERROR_CHECK(WifiService::instance().start());
 
     /* ── ESP-Claw IM Channel Init (after WiFi, before Web Config) ── */
 #if defined(CONFIG_APP_CLAW_CAP_IM_WECHAT) || defined(CONFIG_APP_CLAW_CAP_IM_FEISHU) || \

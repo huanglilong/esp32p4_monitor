@@ -408,7 +408,7 @@
 |---|------|------|:------:|
 | G1 | **cap_im_local 集成** | 本地 IM 通道, 支持不依赖外部 IM 平台 (WeChat/TG/Feishu/QQ) 的 Web/Flutter Agent 对话。上游: `claw_capabilities/cap_im_local/` | ✅ 已完成 |
 | G2 | **cap_llm_inspect 集成** | LLM 请求/响应检查 capability, 用于调试 Agent 行为。上游: `claw_capabilities/cap_llm_inspect/` | 中 |
-| G3 | **wifi_manager 移植** | 独立 WiFi 管理组件 (AP+STA 模式 + 自动重连 + 状态回调), 解决 P2 无屏配网 + P10 WiFi 管理重构。上游: `common/wifi_manager/` | 高 |
+| G3 | **wifi_manager 移植** | 独立 WiFi 管理组件 (AP+STA 模式 + 自动重连 + 状态回调), 解决 P2 无屏配网 + P10 WiFi 管理重构。上游: `common/wifi_manager/` | ✅ 已完成 (高) |
 | G4 | **captive_dns 移植** | Captive Portal DNS, 配合 wifi_manager 实现无屏 WiFi 配网 (手机连接 AP 自动弹出配置页)。上游: `common/captive_dns/` | 高 |
 | G5 | **app_claw Shell 移植** | 模块化 capability/lua 注册 (app_capabilities.c + app_lua_modules.c + app_claw_cli.c), 替代 main.cpp 内联初始化。上游: `common/app_claw/` | 中 |
 | G6 | **lua_modules 移植** | Lua 脚本子系统 — esp-claw 核心特性"对话即创建"。按需移植相关模块 (audio, camera, display, storage, system, json, thread, http_server, event_publisher, call_capability)。上游: `lua_modules/` (35 个模块) | 中 |
@@ -429,7 +429,7 @@
 
 ```
 P0 (阻塞)     → ✅ 已解决: S247 (cam_capture 绑核) + S289 (SRAM 优化 91.1KB)
-高优先级       → G1 (cap_im_local) ✅ → G3+G4 (wifi_manager + captive_dns, 解决 P2)
+高优先级       → G1 (cap_im_local) ✅ → G3 (wifi_manager) ✅ → G4 (captive_dns, 解决 P2)
 中优先级       → G6 (lua_modules) → G16 (skills) → G5 (app_claw) → G15 (HTTP Server)
 低优先级       → G2, G7-G14, G17 (按需集成)
 ```
@@ -532,7 +532,7 @@ P0 (阻塞)     → ✅ 已解决: S247 (cam_capture 绑核) + S289 (SRAM 优化
 
 | 日期 | 变更 |
 |------|------|
-| 2026-07-11 | **ESP-Claw 架构对比与补全计划**: 对比 esp-claw 上游项目 (`~/works/opensource/esp-claw`) 全部组件, 识别 18 个缺失项 (G1-G18)。PROJECT.md 新增 "ESP-Claw 架构对比与补全计划" 章节 (已集成组件清单 + 缺失组件表 + 架构差异对比 + 集成优先级)。PROJECT_REQUIREMENTS.md §3.4 新增 G 系列 TODO。已集成: 16/18 claw_capabilities, 7/7 claw_modules, 5/12 common, 15 device MCP tools, WeChat/Feishu/QQ/TG IM, Web+Flutter Agent Chat, LLM Vision。缺失关键项: cap_im_local (G1), wifi_manager+captive_dns (G3+G4, 解决 P2 无屏配网), lua_modules (G6, 35个模块), app_claw shell (G5), structured HTTP server (G15), FATFS images (G14), 内置 Skills (G16), ASR/TTS (G18) |
+| 2026-07-11 | **G3 wifi_manager 集成**: 移植 esp-claw 上游 `common/wifi_manager/` → `components/common/wifi_manager/`。新增 `WifiService` C++ facade (main/wifi_service.hpp/cpp) — 封装 wifi_manager C API, 自动发布 uORB wifi_state, 管理 SNTP 启动和 NVS 持久化。PhoneAppSettings 重构: 移除 bootWifiAutoConnect()/wifiInit()/wifiEventHandler()/wifiReconnectTimerCallback() (~200 行), scan/connect 改用 WifiService。web_config_server 重构: 移除 s_wifi_state_sub uORB 订阅, settings_handler WiFi connect 改用 WifiService::apply_sta_config()/wait_connected()。main.cpp boot WiFi 改用 WifiService::init()+start()。CMakeLists.txt 添加 EXTRA_COMPONENT_DIRS components/common, main REQUIRES wifi_manager。wifi_manager 配置: AP always on (ap_behavior=keep) + infinite auto-reconnect。idf.py build 验证通过 | | (`~/works/opensource/esp-claw`) 全部组件, 识别 18 个缺失项 (G1-G18)。PROJECT.md 新增 "ESP-Claw 架构对比与补全计划" 章节 (已集成组件清单 + 缺失组件表 + 架构差异对比 + 集成优先级)。PROJECT_REQUIREMENTS.md §3.4 新增 G 系列 TODO。已集成: 16/18 claw_capabilities, 7/7 claw_modules, 5/12 common, 15 device MCP tools, WeChat/Feishu/QQ/TG IM, Web+Flutter Agent Chat, LLM Vision。缺失关键项: cap_im_local (G1), wifi_manager+captive_dns (G3+G4, 解决 P2 无屏配网), lua_modules (G6, 35个模块), app_claw shell (G5), structured HTTP server (G15), FATFS images (G14), 内置 Skills (G16), ASR/TTS (G18) |
 | 2026-07-11 | **P0/P0b/S248 关闭: SRAM 优化解决 PSRAM 带宽竞争**: commit 3dcdd25 (S289) 将 4 个 BSS 大对象 (agent_msgs/uORB/lua_jobs/agent_mgr, 共 91.1KB) 从内部 SRAM 迁移至 PSRAM，DIRAM 使用 51.5%→30.8%。释放足够内部 SRAM 用于关键 DMA 缓冲后，Camera Stream + Music 并发的 PSRAM 总线/L2 cache 带宽竞争消除，偶发杂音/卡顿彻底解决。P0/P0b/S248 状态更新为已解决；§3.5 集成优先级移除 P0 阻塞项 |
 | 2026-07-11 | +S281 **Agent Chat 在 LLM 配置保存后失效 (CRITICAL)**: `h_llm_config_set` 仅写 NVS 未更新运行中 agent 的 core config，冷/热初始化路径多处缺陷导致 agent 无法启动/响应。7 个增量提交 squash 为一个: ① `h_llm_config_set` 保存后调用 `claw_agent_mgr_update_core_config` + 懒创建 root agent ② 冷初始化检查 `mgr_init`/`create_root_agent` 返回值 ③ 热初始化探测 event router/agent manager 状态跳过已初始化组件 ④ 修复 `max_tokens_field = "4096"` → `max_tokens = 4096` (JSON key name vs 数值混淆) ⑤ `supports_tools = false` → `true` (硬编码 false 导致所有含工具的请求被拒绝) ⑥ `h_agent_chat` 设 `chat_id = "web_chat"` (空 chat_id 导致 out_message 发布失败) ⑦ `h_llm_config_set` 补全 `supports_tools`/`supports_vision`/`timeout_ms` (缺失导致 update_core_config 全量覆写降级运行中 agent)。硬件验证通过: Web Chat + WeChat IM 双通道正常响应 |
 | 2026-07-11 | +S282~S288 代码审查 (Round 6, 7 个 HIGH/MEDIUM): xTaskCreateStatic 栈缓冲 4× 欠分配 (S282: `phone_app_audio`/`web_config_server` `w_audio`/`ulog_writer` PSRAM 栈 malloc 乘 `sizeof(StackType_t)`，原仅分配字数对应字节导致内核越界写入相邻 PSRAM)，~~`h_files_list` opendir 失败 cJSON 泄漏 (S283 误报，已 revert: `root` 在 opendir 之后创建，无泄漏)~~，`h_llm_config_set` OOM/nvs_open 错误路径缺失 HTTP 500 响应 (S284)，ULog writer `data_buf` OOM 自删前未置 `task_exited` 致 stop() 强杀已回收 TCB (S285)，CameraStream `stop()` force-kill 用过期句柄 `vTaskDelete` 已回收 TCB (S286: 改 `exchange(nullptr)` 独占)，CameraDriver `release(nullptr)` 绕过 owner 检查 (S287)，CameraStream 编码器生命周期竞态 handler vs `stop()` (S288: 新增 `_encoder_lock` 互斥 `_deinit_encoder` 拆除与 handler 的 check+use)。`idf.py build` (IDF v6.0.2) 验证通过；S283 经构建验证为误报已 revert |

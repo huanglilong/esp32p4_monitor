@@ -851,10 +851,10 @@ static const char *WEB_UI_HTML =
 "</script></body></html>";
 
 /*============================================================================
- * WiFi Event Handler (used by settings_handler for connection verification)
+ * WiFi state — now managed by WifiService (wifi_manager).
+ * SNTP and ULog auto-start are triggered when WifiService reports connected.
  *============================================================================*/
-/* WiFi state from uORB — published by PhoneAppSettings */
-static orb_sub_t s_wifi_state_sub = -1;
+#include "wifi_service.hpp"
 
 /* SNTP initialized flag — prevent double init */
 static std::atomic<bool> s_sntp_initialized{false};
@@ -903,11 +903,6 @@ static void sntp_start_and_ulog_autostart(void)
         ESP_LOGI(TAG, "SNTP synchronized: %04d-%02d-%02d %02d:%02d:%02d",
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                  tm.tm_hour, tm.tm_min, tm.tm_sec);
-        /* Only set wall-clock flag + signal main loop.
-         * Do NOT call ulog_writer_start() here — it does heavy file I/O
-         * (statvfs, opendir, write, xTaskCreate) that overflows the
-         * lwIP tcpip task's 3KB stack. The web_config_task loop
-         * (8KB stack) will handle the actual start. */
         ulog_writer_set_wall_clock(ulog_writer_get(), true);
         s_sntp_synced.store(true, std::memory_order_release);
     });
@@ -918,24 +913,9 @@ static void sntp_start_and_ulog_autostart(void)
 
 static bool wifi_sta_is_connected(void)
 {
-    /* Check uORB wifi_state first */
-    if (s_wifi_state_sub >= 0) {
-        bool updated = false;
-        struct wifi_state_s ws = {};
-        if (orb_check(s_wifi_state_sub, &updated) == 0 && updated) {
-            orb_copy(ORB_ID(wifi_state), s_wifi_state_sub, &ws);
-            return ws.connected;
-        }
-    }
-    /* Fallback: direct netif IP check.
-     * esp_wifi_sta_get_ap_info() is NOT used here because it can return
-     * stale AP info even after disconnection — the IP address is the
-     * definitive connectivity indicator. */
-    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (!sta) return false;
-    esp_netif_ip_info_t ip;
-    if (esp_netif_get_ip_info(sta, &ip) != ESP_OK) return false;
-    return ip.ip.addr != 0;
+    wifi_service_status_t st;
+    WifiService::instance().get_status(&st);
+    return st.sta_connected;
 }
 
 /*============================================================================
@@ -1068,66 +1048,29 @@ static esp_err_t settings_handler(httpd_req_t *req)
                                    ? j_pass->valuestring : "";
         ESP_LOGI(TAG, "Trying WiFi connection to %s before saving...", target_ssid);
 
-        esp_wifi_disconnect();
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        wifi_config_t wifi_cfg = {};
-        size_t slen = strlen(target_ssid);
-        if (slen > sizeof(wifi_cfg.sta.ssid) - 1)
-            slen = sizeof(wifi_cfg.sta.ssid) - 1;
-        memcpy(wifi_cfg.sta.ssid, target_ssid, slen);
-        if (target_pass && strlen(target_pass) > 0) {
-            slen = strlen(target_pass);
-            if (slen > sizeof(wifi_cfg.sta.password) - 1)
-                slen = sizeof(wifi_cfg.sta.password) - 1;
-            memcpy(wifi_cfg.sta.password, target_pass, slen);
-        }
-        esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
-        esp_wifi_connect();
-
-        /* Wait for connection result via uORB (published by PhoneAppSettings::wifiEventHandler) */
-        bool wifi_connected = false;
-        int timeout_ms = WIFI_CONNECT_TIMEOUT_MS;
-        while (timeout_ms > 0) {
-            if (s_wifi_state_sub >= 0) {
-                bool updated = false;
-                struct wifi_state_s ws = {};
-                if (orb_check(s_wifi_state_sub, &updated) == 0 && updated) {
-                    orb_copy(ORB_ID(wifi_state), s_wifi_state_sub, &ws);
-                    if (ws.connected) {
-                        wifi_connected = true;
-                        break;
-                    }
-                }
-            }
-            /* Fallback direct check */
-            if (wifi_sta_is_connected()) { wifi_connected = true; break; }
-            vTaskDelay(pdMS_TO_TICKS(200));
-            timeout_ms -= 200;
+        /* Use WifiService to apply STA config and wait for connection.
+         * wifi_manager handles disconnect + set_config + connect internally. */
+        esp_err_t err = WifiService::instance().apply_sta_config(target_ssid, target_pass);
+        if (err == ESP_OK) {
+            err = WifiService::instance().wait_connected(WIFI_CONNECT_TIMEOUT_MS);
         }
 
-        if (wifi_connected) {
+        if (err == ESP_OK) {
             ESP_LOGI(TAG, "WiFi connected to %s — saving to NVS", target_ssid);
             nvs_set_str_def(NVS_KEY_WIFI_SSID, target_ssid);
             if (target_pass && strlen(target_pass) > 0)
                 nvs_set_str_def(NVS_KEY_WIFI_PASS, target_pass);
             wifi_ok = true;
         } else {
-            ESP_LOGW(TAG, "WiFi connect to %s timed out — NOT saving to NVS", target_ssid);
+            ESP_LOGW(TAG, "WiFi connect to %s failed: %s — NOT saving to NVS",
+                     target_ssid, esp_err_to_name(err));
             wifi_ok = false;
             /* Reconnect to old credentials if any */
             char old_ssid[33] = {}; nvs_get_str(NVS_KEY_WIFI_SSID, old_ssid, sizeof(old_ssid));
             if (strlen(old_ssid) > 0) {
                 ESP_LOGI(TAG, "Reconnecting to previous SSID: %s", old_ssid);
-                esp_wifi_disconnect();
-                vTaskDelay(pdMS_TO_TICKS(500));
-                wifi_config_t old_cfg = {};
-                strlcpy((char *)old_cfg.sta.ssid, old_ssid, sizeof(old_cfg.sta.ssid));
                 char old_pass[65] = {}; nvs_get_str(NVS_KEY_WIFI_PASS, old_pass, sizeof(old_pass));
-                if (strlen(old_pass) > 0)
-                    strlcpy((char *)old_cfg.sta.password, old_pass, sizeof(old_cfg.sta.password));
-                esp_wifi_set_config(WIFI_IF_STA, &old_cfg);
-                esp_wifi_connect();
+                WifiService::instance().apply_sta_config(old_ssid, old_pass);
             }
         }
     }
@@ -3329,11 +3272,6 @@ static bool web_config_self_probe(void)
  *============================================================================*/
 static void web_config_task(void *arg)
 {
-    /* Subscribe to wifi_state uORB topic (published by PhoneAppSettings) */
-    if (s_wifi_state_sub < 0) {
-        s_wifi_state_sub = orb_subscribe(ORB_ID(wifi_state));
-    }
-
     /* Create audio mutex BEFORE any HTTP handlers can run.
      * Avoids race where two handlers lazily create separate mutexes. */
     s_audio_mutex = xSemaphoreCreateMutex();
@@ -3347,21 +3285,16 @@ static void web_config_task(void *arg)
     s_running = true;
 
     /* Wait for WiFi connection before starting HTTP server.
-     * LWIP TCPIP mbox is only valid after netif is up. */
+     * LWIP TCPIP mbox is only valid after netif is up.
+     * WifiService handles connection status — use wait_connected(). */
     ESP_LOGI(TAG, "Web config waiting for WiFi connection...");
 
     bool stop_requested = false;
     /* Check if already connected (event may have fired before this task) */
     if (!wifi_sta_is_connected()) {
-        ESP_LOGI(TAG, "Waiting for wifi_state topic...");
-        struct wifi_state_s ws = {};
+        ESP_LOGI(TAG, "Waiting for WiFi connection via WifiService...");
         while (1) {
             if (!s_running) { stop_requested = true; break; }
-            if (s_wifi_state_sub >= 0) {
-                orb_copy(ORB_ID(wifi_state), s_wifi_state_sub, &ws);
-                if (ws.connected) break;
-            }
-            /* Also check directly in case uORB isn't set up yet */
             if (wifi_sta_is_connected()) break;
             vTaskDelay(pdMS_TO_TICKS(500));
         }
@@ -3552,10 +3485,6 @@ cleanup:
     /* TCB is pre-allocated and never freed — ~340B internal SRAM,
      * negligible cost for permanent use in embedded firmware.
      * Avoids TCB use-after-free race with idle task entirely. */
-    if (s_wifi_state_sub >= 0) {
-        orb_unsubscribe(s_wifi_state_sub);
-        s_wifi_state_sub = -1;
-    }
 
     s_running = false;
     s_task_handle.store(nullptr, std::memory_order_release);
@@ -3641,10 +3570,6 @@ void web_config_server_stop(void)
     /* TCB is pre-allocated and never freed — ~340B internal SRAM,
      * negligible cost for permanent use in embedded firmware.
      * Avoids TCB use-after-free race with idle task entirely. */
-    if (s_wifi_state_sub >= 0) {
-        orb_unsubscribe(s_wifi_state_sub);
-        s_wifi_state_sub = -1;
-    }
 
     ESP_LOGI(TAG, "Web config server stopped");
 }

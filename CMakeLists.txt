@@ -10,6 +10,7 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_SOURCE_DIR}/components/claw/claw_modules"
     "${CMAKE_SOURCE_DIR}/components/claw/claw_capabilities"
     "${CMAKE_SOURCE_DIR}/components/claw/common"
+    "${CMAKE_SOURCE_DIR}/components/common"
 )
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

@@ -22,10 +22,7 @@ public:
     bool close(void) override;
     bool init(void) override;
 
-    /** Boot-time WiFi auto-connect: read NVS and connect if SSID stored */
-    static void bootWifiAutoConnect(void);
-
-private:
+    private:
     /* Screen indices */
     enum ScreenIndex {
         SCREEN_MAIN = 0,
@@ -52,7 +49,6 @@ private:
     void createWifiPasswordScreen(void);
     void updateMainScreenFromNvs(void);
     /* WiFi */
-    esp_err_t wifiInit(void);
     void startWifiScan(void);
     void stopWifiScan(void);
     void scanWifiAndUpdateUi(void);
@@ -62,12 +58,6 @@ private:
     /* Tasks */
     static void wifiScanTaskHandler(void *arg);
     static void wifiConnectTaskHandler(void *arg);
-
-    /* Event handlers */
-    static void wifiEventHandler(void *arg, esp_event_base_t event_base,
-                                 int32_t event_id, void *event_data);
-    /** Reconnect timer: fires every 10s to retry esp_wifi_connect() on disconnect */
-    static void wifiReconnectTimerCallback(TimerHandle_t xTimer);
 
     /* WiFi callbacks */
     static void onWifiRowClicked(lv_event_t *e);
@@ -138,18 +128,12 @@ private:
     lv_obj_t              *_spinner_connect;
     lv_obj_t              *_label_connect_status;
     /* WiFi state — static to persist across Settings app open/close cycles.
-     * WiFi runs in background even when Settings app is closed. */
+     * WiFi runs in background even when Settings app is closed, managed by WifiService. */
     static std::atomic<TaskHandle_t> _wifi_scan_task;
-    static EventGroupHandle_t _wifi_event_group;
-    static std::atomic<bool> _wifi_initialized;  // one-time netif/wifi init done
-    static std::atomic<bool> _wifi_connecting;   // true while connect task is running (intentional disconnect, also guards against multiple connect tasks)
-    static TimerHandle_t     _wifi_reconnect_timer;  // 10s periodic reconnect timer
-    static std::atomic<uint32_t> _wifi_reconnect_count;  // consecutive reconnect attempts
-    static esp_event_handler_instance_t _wifi_handler_inst;  // WIFI_EVENT handler instance
-    static esp_event_handler_instance_t _ip_handler_inst;    // IP_EVENT handler instance
-    std::atomic<bool>       _wifi_scanning;
-    static std::atomic<bool> _wifi_scan_exit;     // Signal scan task to self-delete
-    static std::atomic<TaskHandle_t> _wifi_connect_task;   // Handle for connect task (for cleanup)
+    std::atomic<bool>               _wifi_scanning;
+    static std::atomic<bool>        _wifi_scan_exit;          /* Signal scan task to self-delete */
+    static std::atomic<TaskHandle_t> _wifi_connect_task;      /* Handle for connect task (for cleanup) */
+    static std::atomic<bool>        _wifi_connecting;
 
     static constexpr int   WIFI_SCAN_MAX = 20;
     static constexpr int   TASK_STACK_WIFI_SCAN = 6 * 1024;

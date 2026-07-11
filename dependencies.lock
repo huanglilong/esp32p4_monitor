@@ -720,6 +720,6 @@ direct_dependencies:
 - mcp_mdns
 - protocol_examples_common
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 40958d22b6094dce7199f9a1d39a7472babead449bb571c5502c9453eb434281
+manifest_hash: 27e16c596c63f4bbe4de2dbc25c08a8b7074649c3d09d95d12507b7301bda0dc
 target: esp32p4
 version: 3.0.0
