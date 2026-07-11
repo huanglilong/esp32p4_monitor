@@ -841,11 +841,70 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
+## ESP-Claw 架构对比与补全计划
+
+> 参考项目: [esp-claw](https://github.com/espressif/esp-claw) — Espressif AI Agent Framework for IoT Devices
+> 集成日期: 2026-07-10 ~ 2026-07-11 (Phase 1-3)
+
+### 已集成的 ESP-Claw 组件
+
+| 类别 | 组件 | 说明 |
+|------|------|------|
+| **claw_modules** | claw_cap, claw_core, claw_event_router, claw_manager, claw_memory, claw_skill, claw_utils | 全部 7 个模块已集成 |
+| **claw_capabilities** | cap_agent_mgr, cap_boards, cap_cli, cap_files, cap_http_request, cap_im_platform (WeChat/Feishu/QQ/Telegram), cap_llm_config, cap_lua, cap_mcp_client, cap_mcp_server, cap_router_mgr, cap_scheduler, cap_session_mgr, cap_skill_mgr, cap_system, cap_web_search | 16/18 已集成 |
+| **common** | claw_kv_backend, claw_kv_nvs, http_reuse, mcp_mdns, settings | 5/12 已集成 |
+| **device_mcp_tools** | 15 个设备专属 MCP tools (system, audio, camera, brightness, wifi, files, vision) | `main/device_mcp_tools.cpp` |
+
+### 缺失的 ESP-Claw 组件 (TODO)
+
+| # | 组件 | 上游路径 | 优先级 | 说明 |
+|---|------|----------|:------:|------|
+| G1 | **cap_im_local** | `claw_capabilities/cap_im_local/` | 高 | 本地 IM 通道, 支持不依赖外部 IM 平台的 Web/Flutter Agent 对话 |
+| G2 | **cap_llm_inspect** | `claw_capabilities/cap_llm_inspect/` | 中 | LLM 请求/响应检查, 用于调试 Agent 行为 |
+| G3 | **wifi_manager** | `common/wifi_manager/` | 高 | 独立 WiFi 管理组件, AP+STA 模式 + 自动重连 (解决 P2 无屏配网 + P10 WiFi 重构) |
+| G4 | **captive_dns** | `common/captive_dns/` | 高 | Captive Portal DNS, 配合 wifi_manager 实现无屏配网 |
+| G5 | **app_claw** | `common/app_claw/` | 中 | 应用 Shell, 模块化 capability/lua 注册 (替代 main.cpp 内联初始化) |
+| G6 | **lua_modules** | `lua_modules/` | 中 | Lua 脚本子系统, 35 个模块 (硬件驱动 + 高层模块), 支持"对话即创建" |
+| G7 | **lua_module_builder** | `common/lua_module_builder/` | 低 | Lua 模块文档/测试构建工具 |
+| G8 | **skill_builder** | `common/skill_builder/` | 低 | Skill 编译工具 |
+| G9 | **display_arbiter** | `common/display_arbiter/` | 低 | 多显示客户端仲裁 |
+| G10 | **emote** | `common/emote/` | 低 | 表情/情绪系统 |
+| G11 | **esp_painter** | `common/esp_painter/` | 低 | 图形绘画库 |
+| G12 | **esp_video** | `common/esp_video/` | 低 | 视频捕获组件 (当前使用 example_video_common) |
+| G13 | **Board Manager** | `application/edge_agent/boards/` | 低 | 结构化多板元数据 + 外设 YAML (当前用 GT911 I2C 探测) |
+| G14 | **FATFS Images** | `application/edge_agent/fatfs_image/` | 中 | 构建时 FATFS 镜像 (SYSTEM 只读 + DATA 种子), 用于 bundle skills/router_rules/recovery |
+| G15 | **HTTP Server (structured)** | `application/edge_agent/components/http_server/` | 中 | 结构化 HTTP 服务 (API 分域 + 嵌入式前端), 替代 inline HTML |
+| G16 | **Skills 系统** | component `skills/` dirs | 中 | 内置 Skill 文档 (SKILL.md), 当前 claw_skill 已链接但无内置 skill |
+| G17 | **Scheduler Rules** | DATA root `scheduler/` | 低 | 定时任务规则, cap_scheduler 已链接但无默认规则 |
+| G18 | **ASR/TTS** | — | 中 | 语音交互: 录音→ASR→LLM→TTS→播放 (PE, 需外部服务) |
+
+### 架构差异与对齐方向
+
+| 方面 | 当前项目 | esp-claw 上游 | 对齐方向 |
+|------|----------|--------------|----------|
+| **语言** | C++ (main/) + C (components/) | 纯 C (C-style OOP) | 保持 C++ for app, C for claw 组件 |
+| **WiFi 管理** | PhoneAppSettings + web_config_server 内联 | wifi_manager 组件 (AP+STA+captive portal) | → G3+G4: 提取为独立 WiFi 服务 |
+| **多板支持** | GT911 I2C 探测 + `g_has_lcd` | Board Manager (YAML 元数据 + setup code) | → G13: 可选, 当前方式更轻量 |
+| **Web 配置** | inline HTML in web_config_server.cpp | 结构化 http_server + React 前端 | → G15: 可选, 当前方式够用 |
+| **Lua 脚本** | cap_lua 已链接, 无 lua_modules | 35 个 lua_modules + app_lua_modules.c | → G6: 需移植 lua_modules |
+| **文件系统** | SD 卡直接路径 `/sdcard/claw/` | claw_paths 抽象 (SYSTEM/DATA) | 当前已用 claw_paths, 可进一步对齐 |
+| **KV 存储** | claw_kv_backend + claw_kv_nvs | settings_store + backend 抽象 | ✅ 已对齐 (S279) |
+| **Agent 通信** | WeChat/Feishu/QQ/TG + Web Chat | IM platforms + cap_im_local | → G1: 添加 cap_im_local |
+| **Skill 管理** | claw_skill 链接, 无内置 skill | component skills/ + FATFS SYSTEM 镜像 | → G16+G14: 创建内置 skills |
+
+### 集成优先级建议
+
+1. **P0 (阻塞)**: S248 PSRAM 带宽竞争 (Camera Stream + Music 卡顿残留)
+2. **高优先级**: G1 (cap_im_local) → G3+G4 (wifi_manager + captive_dns, 解决 P2)
+3. **中优先级**: G6 (lua_modules) → G16 (skills) → G5 (app_claw shell) → G15 (structured HTTP)
+4. **低优先级**: G2, G7-G14, G17 (按需集成)
+
 ## 需求与问题登记
 
 已完成需求、已修复问题 (R/S/M 编号) 与变更记录统一维护在 **[PROJECT_REQUIREMENTS.md](PROJECT_REQUIREMENTS.md)**，本文档不再重复登记。
 
-- **已完成需求 / 已修复问题**: 见 PROJECT_REQUIREMENTS.md §2 (R1–R22 核心功能, S1–S246 稳定性与性能, M1–M13 系统监控)
+- **已完成需求 / 已修复问题**: 见 PROJECT_REQUIREMENTS.md §2 (R1–R22 核心功能, S1–S281 稳定性与性能, M1–M13 系统监控)
 - **待完成需求 / 已知限制 / 风险**: 见 PROJECT_REQUIREMENTS.md §3–§4
+- **ESP-Claw 架构对比**: 见上文 §ESP-Claw 架构对比与补全计划
 - **变更记录**: 见 PROJECT_REQUIREMENTS.md §7
 

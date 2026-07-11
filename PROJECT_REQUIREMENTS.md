@@ -390,6 +390,41 @@
 | P10 | **WiFi 管理重构** | WiFi 功能解耦为独立服务模块 |
 | P11 | **IPC 迁移至 uORB** | 逐步将现有的 volatile/mutex/event_group IPC 替换为 uORB topic |
 
+### 3.4 ESP-Claw 架构对齐 (G 系列)
+
+> 参考上游: [esp-claw](https://github.com/espressif/esp-claw) — Espressif AI Agent Framework
+> 详见 PROJECT.md §ESP-Claw 架构对比与补全计划
+
+| # | 需求 | 说明 | 优先级 |
+|---|------|------|:------:|
+| G1 | **cap_im_local 集成** | 本地 IM 通道, 支持不依赖外部 IM 平台 (WeChat/TG/Feishu/QQ) 的 Web/Flutter Agent 对话。上游: `claw_capabilities/cap_im_local/` | 高 |
+| G2 | **cap_llm_inspect 集成** | LLM 请求/响应检查 capability, 用于调试 Agent 行为。上游: `claw_capabilities/cap_llm_inspect/` | 中 |
+| G3 | **wifi_manager 移植** | 独立 WiFi 管理组件 (AP+STA 模式 + 自动重连 + 状态回调), 解决 P2 无屏配网 + P10 WiFi 管理重构。上游: `common/wifi_manager/` | 高 |
+| G4 | **captive_dns 移植** | Captive Portal DNS, 配合 wifi_manager 实现无屏 WiFi 配网 (手机连接 AP 自动弹出配置页)。上游: `common/captive_dns/` | 高 |
+| G5 | **app_claw Shell 移植** | 模块化 capability/lua 注册 (app_capabilities.c + app_lua_modules.c + app_claw_cli.c), 替代 main.cpp 内联初始化。上游: `common/app_claw/` | 中 |
+| G6 | **lua_modules 移植** | Lua 脚本子系统 — esp-claw 核心特性"对话即创建"。按需移植相关模块 (audio, camera, display, storage, system, json, thread, http_server, event_publisher, call_capability)。上游: `lua_modules/` (35 个模块) | 中 |
+| G7 | **lua_module_builder** | Lua 模块文档/测试构建工具。上游: `common/lua_module_builder/` | 低 |
+| G8 | **skill_builder** | Skill 编译工具。上游: `common/skill_builder/` | 低 |
+| G9 | **display_arbiter** | 多显示客户端仲裁。上游: `common/display_arbiter/` | 低 |
+| G10 | **emote** | 表情/情绪系统。上游: `common/emote/` | 低 |
+| G11 | **esp_painter** | 图形绘画库。上游: `common/esp_painter/` | 低 |
+| G12 | **esp_video** | 视频捕获组件 (当前使用 example_video_common)。上游: `common/esp_video/` | 低 |
+| G13 | **Board Manager** | 结构化多板元数据 + 外设 YAML + setup code (当前用 GT911 I2C 探测)。上游: `application/edge_agent/boards/` | 低 |
+| G14 | **FATFS Images** | 构建时 FATFS 镜像 (SYSTEM 只读 + DATA 种子), 用于 bundle skills/router_rules/recovery defaults。上游: `application/edge_agent/fatfs_image/` | 中 |
+| G15 | **结构化 HTTP Server** | API 分域 + 嵌入式前端, 替代 web_config_server.cpp 内联 HTML。上游: `application/edge_agent/components/http_server/` | 中 |
+| G16 | **内置 Skills 系统** | 创建设备专属 Skill 文档 (SKILL.md), 如 camera/audio/system monitor 使用指南。当前 claw_skill 已链接但无内置 skill | 中 |
+| G17 | **Scheduler Rules** | 设置默认定时任务规则 (周期性系统统计、摄像头捕获计划等)。cap_scheduler 已链接但无默认规则 | 低 |
+| G18 | **ASR/TTS 语音交互** | 语音交互: 录音→ASR→LLM→TTS→播放 (同 PE, 需外部 ASR/TTS 服务) | 中 |
+
+### 3.5 集成优先级建议
+
+```
+P0 (阻塞)     → S248 PSRAM 带宽竞争 (Camera Stream + Music 卡顿残留)
+高优先级       → G1 (cap_im_local) → G3+G4 (wifi_manager + captive_dns, 解决 P2)
+中优先级       → G6 (lua_modules) → G16 (skills) → G5 (app_claw) → G15 (HTTP Server)
+低优先级       → G2, G7-G14, G17 (按需集成)
+```
+
 ---
 
 ## 4. 已知限制与风险
@@ -487,7 +522,7 @@
 
 | 日期 | 变更 |
 |------|------|
-| 2026-07-11 | +S281 **Agent Chat 在 LLM 配置保存后失效 (CRITICAL)**: `h_llm_config_set` 仅写 NVS 未更新运行中 agent 的 core config，冷/热初始化路径多处缺陷导致 agent 无法启动/响应。7 个增量提交 squash 为一个: ① `h_llm_config_set` 保存后调用 `claw_agent_mgr_update_core_config` + 懒创建 root agent ② 冷初始化检查 `mgr_init`/`create_root_agent` 返回值 ③ 热初始化探测 event router/agent manager 状态跳过已初始化组件 ④ 修复 `max_tokens_field = "4096"` → `max_tokens = 4096` (JSON key name vs 数值混淆) ⑤ `supports_tools = false` → `true` (硬编码 false 导致所有含工具的请求被拒绝) ⑥ `h_agent_chat` 设 `chat_id = "web_chat"` (空 chat_id 导致 out_message 发布失败) ⑦ `h_llm_config_set` 补全 `supports_tools`/`supports_vision`/`timeout_ms` (缺失导致 update_core_config 全量覆写降级运行中 agent)。硬件验证通过: Web Chat + WeChat IM 双通道正常响应 |
+| 2026-07-11 | **ESP-Claw 架构对比与补全计划**: 对比 esp-claw 上游项目 (`~/works/opensource/esp-claw`) 全部组件, 识别 18 个缺失项 (G1-G18)。PROJECT.md 新增 "ESP-Claw 架构对比与补全计划" 章节 (已集成组件清单 + 缺失组件表 + 架构差异对比 + 集成优先级)。PROJECT_REQUIREMENTS.md §3.4 新增 G 系列 TODO。已集成: 16/18 claw_capabilities, 7/7 claw_modules, 5/12 common, 15 device MCP tools, WeChat/Feishu/QQ/TG IM, Web+Flutter Agent Chat, LLM Vision。缺失关键项: cap_im_local (G1), wifi_manager+captive_dns (G3+G4, 解决 P2 无屏配网), lua_modules (G6, 35个模块), app_claw shell (G5), structured HTTP server (G15), FATFS images (G14), 内置 Skills (G16), ASR/TTS (G18) |
 | 2026-07-11 | +S280 **ULog writer 自动启动竞态修复**: SNTP 同步早于 ULog 初始化完成时，`ulog_autostart_done` 在 state==UNINIT 时即被设为 true，导致 ULog 永远不会自动启动。修复: 仅在 state==IDLE (成功启动) 或 state!=UNINIT (无需重试) 时设置 ulog_autostart_done；state==UNINIT 时跳过本轮等待下一轮重试 |
 | 2026-07-11 | +S279 **claw 组件 NVS 依赖解耦**: `components/claw/` 内 3 处直接依赖 `nvs_flash` (settings_store/cap_scheduler/cap_im_wechat)，违反组件应独立于外部存储的设计原则。参考 esp-claw 上游依赖反转模式修复: ① 新增 `claw_kv_backend` 纯接口组件 (函数指针表: init/get_str/set_str/has_key/erase_key/get_blob/set_blob/commit/deinit) ② 新增 `claw_kv_nvs` — 唯一依赖 nvs_flash 的 NVS 实现 ③ settings_store 重构为 backend 驱动 + 新增 blob API ④ cap_scheduler_store 替换 nvs_get_blob/set_blob/erase_key 为 backend 调用 ⑤ cap_im_wechat 替换 nvs_open/erase_key 为 backend 调用 (s_wechat_kv_backend) ⑥ main.cpp 创建 claw_kv_nvs 实例并注入各组件。二次修复: NVS handle 从共享 ctx 移至每操作局部变量，消除双核并发竞态；init() 返回值检查。构建通过，nvs_flash 依赖仅限 claw_kv_nvs 单一组件 |
 | 2026-07-10 | +S263 **QR fetch_code 网络未就绪误判为致命错误 (CR)**: `cap_im_wechat_qr_task` 两处 `cap_im_wechat_qr_fetch_code_locked()` 调用将 `ESP_ERR_NOT_FOUND` (DNS/SNTP 未就绪) 当致命错误处理。修复: 回退 refresh_count + 2s 重试，匹配 poll 路径模式 |
