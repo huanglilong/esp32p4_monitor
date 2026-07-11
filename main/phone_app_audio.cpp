@@ -35,7 +35,7 @@ PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :
     _encoder(nullptr), _record_file(nullptr),
     _pcm_buffer(nullptr), _pcm_buf_count(0),
     _record_bytes_written{0}, _record_start_ms{0},
-    _rec_pub(ORB_ADVERT_INVALID),
+    _rec_pub{ORB_ADVERT_INVALID},
     _recording_count(0),
     _btn_back(nullptr), _btn_record(nullptr),
     _label_rec_status(nullptr), _label_footer(nullptr),
@@ -89,7 +89,7 @@ PhoneAppAudio::~PhoneAppAudio()
         _update_timer = nullptr;
     }
     /* Reset uORB recording_state publisher handle */
-    _rec_pub = ORB_ADVERT_INVALID;
+    _rec_pub.store(ORB_ADVERT_INVALID, std::memory_order_release);
 
     /* Free recording names (defensive — close() normally does this) */
     for (int i = 0; i < _recording_count; i++) {
@@ -257,7 +257,7 @@ bool PhoneAppAudio::close(void)
     }
 
     /* Reset uORB recording_state publisher handle */
-    _rec_pub = ORB_ADVERT_INVALID;
+    _rec_pub.store(ORB_ADVERT_INVALID, std::memory_order_release);
 
     /* Deinit audio — release DMA/PSRAM resources. SD card stays mounted. */
     PeripheralManager::instance().deinit_audio();
@@ -436,16 +436,22 @@ void PhoneAppAudio::_start_recording(void)
     _is_recording = true;
 
     /* Publish recording_state.active=true for cross-module notification (e.g. Music app) */
-    if (_rec_pub < 0) {
-        _rec_pub = orb_advertise(ORB_ID(recording_state));
+    orb_advert_t pub = _rec_pub.load(std::memory_order_acquire);
+    if (pub < 0) {
+        orb_advert_t new_pub = orb_advertise(ORB_ID(recording_state));
+        if (!_rec_pub.compare_exchange_strong(pub, new_pub, std::memory_order_release, std::memory_order_relaxed)) {
+            /* Another context set it first — discard our new handle */
+        } else {
+            pub = new_pub;
+        }
     }
-    if (_rec_pub >= 0) {
+    if (pub >= 0) {
         struct recording_state_s rs = {};
         rs.timestamp = esp_timer_get_time();
         rs.active = true;
         rs.bytes_written = 0;
         rs.elapsed_ms = 0;
-        orb_publish(ORB_ID(recording_state), _rec_pub, &rs);
+        orb_publish(ORB_ID(recording_state), pub, &rs);
     }
 
     /* Update button appearance */
@@ -503,13 +509,14 @@ void PhoneAppAudio::_stop_recording(void)
     }
 
     /* Publish recording_state.active=false for cross-module notification (e.g. Music app) */
-    if (_rec_pub >= 0) {
+    orb_advert_t pub = _rec_pub.load(std::memory_order_acquire);
+    if (pub >= 0) {
         struct recording_state_s rs = {};
         rs.timestamp = esp_timer_get_time();
         rs.active = false;
         rs.bytes_written = _record_bytes_written;
         rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 - _record_start_ms));
-        orb_publish(ORB_ID(recording_state), _rec_pub, &rs);
+        orb_publish(ORB_ID(recording_state), pub, &rs);
     }
 
     /* Update button appearance */

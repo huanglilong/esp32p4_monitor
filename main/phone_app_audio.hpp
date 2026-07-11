@@ -52,7 +52,7 @@ private:
     std::atomic<uint32_t> _record_start_ms;
 
     /* uORB publisher: notifies other modules (e.g. Music) when recording is active */
-    orb_advert_t       _rec_pub;
+    std::atomic<orb_advert_t> _rec_pub{ORB_ADVERT_INVALID};
 
     /* Recordings list */
     char              *_recording_names[MAX_RECORDINGS];
