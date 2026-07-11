@@ -187,7 +187,7 @@ SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独
 | Driver | 目录 | 职责 | 线程安全 |
 |--------|------|------|----------|
 | AudioDriver | `drivers/audio/` | I2S channel + ES8311/ES7210 codec init/deinit, volume/mic_gain/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
-| SDCardDriver | `drivers/sdcard/` | SDSPI init-once (LDO VO4 power-cycle), never unmount | _init_mutex |
+| SDCardDriver | `drivers/sdcard/` | SDSPI init-once (LDO VO4 power-cycle), never unmount, max_files=8 | _init_mutex |
 | CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API with owner tracking | _mutex |
 | SystemMonitor | `drivers/system_monitor/` | Per-core CPU busy% (via idle task runtime, no scheduler suspend) + heap/PSRAM 采样, system_stats uORB, ESP_LOG 摘要, Web API, 资源异常告警 (CPU>90% / Memory>85%) | _latest_mutex + _alert_mutex |
 
@@ -867,7 +867,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 | G1 | **cap_im_local** | `claw_capabilities/cap_im_local/` | ✅ 已完成 | 本地 IM 通道, 支持不依赖外部 IM 平台的 Web/Flutter Agent 对话。实现: `cap_im_local.c` (IM gateway + send_message capability) + `web_config_server.cpp` (outbound callback → ring buffer → `/api/agent/messages` polling) + `main.cpp` (cold-init registration) + `agent_chat_screen.dart` (Flutter UI) |
 | G2 | **cap_llm_inspect** | `claw_capabilities/cap_llm_inspect/` | 中 | LLM 请求/响应检查, 用于调试 Agent 行为 |
 | G3 | **wifi_manager** | `common/wifi_manager/` | ✅ 已完成 | 独立 WiFi 管理组件, AP+STA 模式 + 自动重连。实现: 移植自 esp-claw 上游 → `components/common/wifi_manager/`，C++ facade `WifiService` (main/wifi_service.hpp/cpp) 封装 wifi_manager C API + uORB wifi_state 发布 + SNTP 启动 + NVS 持久化。PhoneAppSettings 和 web_config_server 重构为使用 WifiService，消除 ~200 行内联 WiFi 代码 |
-| G4 | **captive_dns** | `common/captive_dns/` | ✅ 已完成 | Captive Portal DNS, 配合 wifi_manager 实现无屏配网。移植自 esp-claw 上游 → `components/common/captive_dns/`。WifiService::start() 自动启动: 劫持所有 DNS 查询到 AP IP (192.168.4.1), DHCP 通告 AP 为 DNS 服务器。手机连接 AP 后自动弹出 Web Config 页面
+| G4 | **captive_dns** | `common/captive_dns/` | ✅ 已完成 | Captive Portal DNS + HTTP (port 80), 配合 wifi_manager 实现无屏配网。移植自 esp-claw 上游 → `components/common/captive_dns/`。WifiService::start() 自动启动: 劫持所有 DNS 查询到 AP IP (192.168.4.1), DHCP 通告 AP 为 DNS 服务器, HTTP port 80 重定向到 Web Config。STA 连接后自动停止 DNS + HTTP (释放 port 80 给 CameraStream)。手机连接 AP 后自动弹出 Web Config 页面
 | G5 | **app_claw** | `common/app_claw/` | 中 | 应用 Shell, 模块化 capability/lua 注册 (替代 main.cpp 内联初始化) |
 | G6 | **lua_modules** | `lua_modules/` | 中 | Lua 脚本子系统, 35 个模块 (硬件驱动 + 高层模块), 支持"对话即创建" |
 | G7 | **lua_module_builder** | `common/lua_module_builder/` | 低 | Lua 模块文档/测试构建工具 |
