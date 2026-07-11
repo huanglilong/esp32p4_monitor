@@ -137,8 +137,8 @@ void CameraDriver::release(const char *caller_id)
         return;
     }
 
-    /* Defensive: ignore release from non-owner */
-    if (caller_id && _owner_id && strcmp(_owner_id, caller_id) != 0) {
+    /* Defensive: ignore release from non-owner (null caller_id is also a non-match) */
+    if (!caller_id || !_owner_id || strcmp(_owner_id, caller_id) != 0) {
         ESP_LOGW(TAG, "Camera release ignored: caller %s is not owner %s",
                  caller_id, _owner_id);
         xSemaphoreGive(_mutex);
