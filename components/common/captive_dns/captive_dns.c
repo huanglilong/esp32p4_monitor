@@ -23,7 +23,7 @@ static const char *TAG = "captive_dns";
 #define DNS_BUF_SIZE      512
 #define DHCPS_OFFER_DNS   0x02
 
-static TaskHandle_t s_dns_task;
+static _Atomic TaskHandle_t s_dns_task;
 static atomic_bool s_running;
 static captive_dns_config_t s_config;
 
@@ -127,7 +127,7 @@ static void dns_task(void *arg)
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         atomic_store_explicit(&s_running, false, memory_order_release);
-        s_dns_task = NULL;
+        atomic_store_explicit(&s_dns_task, NULL, memory_order_release);
         vTaskDelete(NULL);
         return;
     }
@@ -140,7 +140,7 @@ static void dns_task(void *arg)
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(sock);
         atomic_store_explicit(&s_running, false, memory_order_release);
-        s_dns_task = NULL;
+        atomic_store_explicit(&s_dns_task, NULL, memory_order_release);
         vTaskDelete(NULL);
         return;
     }
@@ -152,7 +152,7 @@ static void dns_task(void *arg)
     if (captive_dns_get_redirect_ip(&redirect_ip_host) != ESP_OK) {
         close(sock);
         atomic_store_explicit(&s_running, false, memory_order_release);
-        s_dns_task = NULL;
+        atomic_store_explicit(&s_dns_task, NULL, memory_order_release);
         vTaskDelete(NULL);
         return;
     }
@@ -175,7 +175,7 @@ static void dns_task(void *arg)
 
     close(sock);
     ESP_LOGI(TAG, "Captive DNS stopped");
-    s_dns_task = NULL;
+    atomic_store_explicit(&s_dns_task, NULL, memory_order_release);
     vTaskDelete(NULL);
 }
 
@@ -184,7 +184,7 @@ esp_err_t captive_dns_start(const captive_dns_config_t *config)
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_dns_task) {
+    if (atomic_load_explicit(&s_dns_task, memory_order_acquire)) {
         return ESP_OK;
     }
 
@@ -204,12 +204,14 @@ esp_err_t captive_dns_start(const captive_dns_config_t *config)
     }
 
     atomic_store_explicit(&s_running, true, memory_order_release);
-    BaseType_t ret = xTaskCreate(dns_task, "captive_dns", 3072, NULL, 5, &s_dns_task);
+    TaskHandle_t task_handle = NULL;
+    BaseType_t ret = xTaskCreate(dns_task, "captive_dns", 3072, NULL, 5, &task_handle);
     if (ret != pdPASS) {
         atomic_store_explicit(&s_running, false, memory_order_release);
-        s_dns_task = NULL;
+        atomic_store_explicit(&s_dns_task, NULL, memory_order_release);
         return ESP_FAIL;
     }
+    atomic_store_explicit(&s_dns_task, task_handle, memory_order_release);
     return ESP_OK;
 }
 
