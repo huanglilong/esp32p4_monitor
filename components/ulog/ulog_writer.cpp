@@ -689,6 +689,7 @@ static void writer_task_func(void *arg)
     if (!data_buf) {
         ESP_LOGE(TAG, "Failed to allocate data_buf (%u bytes)", (unsigned)data_buf_size);
         writer->task_should_run.store(false, std::memory_order_release);
+        writer->task_exited.store(true, std::memory_order_release);
         vTaskDelete(NULL);
         return;
     }
