@@ -2241,6 +2241,61 @@ static esp_err_t claw_event_router_process_event(const claw_event_t *event,
         return err;
     }
 
+    /* Default out_message routing: if no explicit rule handles an out_message
+     * event, look up the outbound binding for the channel and call the cap
+     * directly. This ensures agent responses are delivered to the correct IM
+     * channel (web_chat, wechat, telegram, etc.) without requiring explicit
+     * router_rules.json entries for every out_message case. */
+    if (!local.matched &&
+            s_runtime->config.default_route_messages_to_agent &&
+            strcmp(event->event_type, "out_message") == 0 &&
+            event->text && event->text[0]) {
+        char cap_name[64] = {0};
+        const char *channel = event->source_channel[0] ? event->source_channel
+                                                        : event->chat_id;
+        esp_err_t resolve_err = claw_event_router_resolve_outbound_cap(
+                                    event, channel, event->chat_id,
+                                    cap_name, sizeof(cap_name));
+        if (resolve_err == ESP_OK && cap_name[0]) {
+            cJSON *payload = cJSON_CreateObject();
+            if (payload) {
+                cJSON_AddStringToObject(payload, "chat_id", event->chat_id);
+                cJSON_AddStringToObject(payload, "message", event->text);
+                cJSON_AddStringToObject(payload, "event_type", event->event_type);
+                char *payload_str = cJSON_PrintUnformatted(payload);
+                cJSON_Delete(payload);
+                if (payload_str) {
+                    char cap_output[256] = {0};
+                    claw_cap_call_context_t call_ctx = {
+                        .channel = channel,
+                        .chat_id = event->chat_id,
+                        .target_channel = channel,
+                        .target_chat_id = event->chat_id,
+                        .source_cap = "claw_event_router",
+                        .caller = CLAW_CAP_CALLER_SYSTEM,
+                    };
+                    esp_err_t cap_err = claw_cap_call(cap_name, payload_str,
+                                                      &call_ctx, cap_output,
+                                                      sizeof(cap_output));
+                    ESP_LOGI(TAG,
+                             "out_message fallback cap=%s channel=%s err=%s output=%s",
+                             cap_name, channel,
+                             esp_err_to_name(cap_err),
+                             cap_output[0] ? cap_output : "-");
+                    local.matched = true;
+                    local.matched_rules++;
+                    strlcpy(local.first_rule_id, "out_message_fallback",
+                            sizeof(local.first_rule_id));
+                    free(payload_str);
+                }
+            }
+        } else {
+            ESP_LOGW(TAG,
+                     "out_message fallback: no outbound cap for channel=%s err=%s",
+                     channel, esp_err_to_name(resolve_err));
+        }
+    }
+
     if (local.matched && !local.ack[0]) {
         snprintf(local.ack, sizeof(local.ack), "matched:%s",
                  local.first_rule_id[0] ? local.first_rule_id : "(unknown)");
