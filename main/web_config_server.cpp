@@ -2647,13 +2647,13 @@ static esp_err_t h_tg_config(httpd_req_t *req)
 typedef struct {
     char message_id[AGENT_MSG_MAX_ID];
     char chat_id[AGENT_MSG_MAX_ID];
-    char text[AGENT_MSG_MAX_TEXT];
+    char *text;             /* PSRAM dynamic allocation — saves ~4KB per slot vs static char[4096] */
     char link_url[256];     /* optional attachment URL */
     char link_label[128];   /* optional attachment label */
     int64_t timestamp_ms;   /* esp_timer_get_time() / 1000 */
 } agent_msg_t;
 
-static agent_msg_t s_agent_msgs[AGENT_MSG_BUF_SIZE];
+static agent_msg_t *s_agent_msgs = NULL;  /* PSRAM heap_caps_calloc (16 × 592B ≈ 9.5KB) */
 static std::atomic<uint32_t> s_agent_msg_write_idx{0};
 static SemaphoreHandle_t s_agent_msg_mutex = NULL;
 
@@ -2664,6 +2664,44 @@ static void agent_msg_mutex_init(void)
     }
 }
 
+/* Initialize agent message ring buffer in PSRAM (one-time, before any use).
+ * Returns true on success. Idempotent — safe to call multiple times. */
+static bool agent_msg_buf_init(void)
+{
+    if (s_agent_msgs) return true;  /* Already initialized */
+
+    agent_msg_mutex_init();
+    if (!s_agent_msg_mutex) return false;
+
+    if (xSemaphoreTake(s_agent_msg_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        return false;
+    }
+
+    /* Double-check under mutex */
+    if (!s_agent_msgs) {
+        s_agent_msgs = (agent_msg_t *)heap_caps_calloc(AGENT_MSG_BUF_SIZE, sizeof(agent_msg_t),
+                                                        MALLOC_CAP_SPIRAM);
+        if (!s_agent_msgs) {
+            ESP_LOGE(TAG, "agent_msg_buf_init: PSRAM OOM (%zu bytes)",
+                     AGENT_MSG_BUF_SIZE * sizeof(agent_msg_t));
+            xSemaphoreGive(s_agent_msg_mutex);
+            return false;
+        }
+    }
+
+    xSemaphoreGive(s_agent_msg_mutex);
+    return true;
+}
+
+/* Free a single agent message's PSRAM text buffer. */
+static void agent_msg_free_slot(agent_msg_t *slot)
+{
+    if (slot && slot->text) {
+        heap_caps_free(slot->text);
+        slot->text = NULL;
+    }
+}
+
 /* Outbound callback for cap_im_local — stores agent response in ring buffer */
 static esp_err_t agent_outbound_cb(const cap_im_local_message_t *message, void *user_ctx)
 {
@@ -2671,7 +2709,11 @@ static esp_err_t agent_outbound_cb(const cap_im_local_message_t *message, void *
         return ESP_ERR_INVALID_ARG;
     }
 
-    agent_msg_mutex_init();
+    if (!agent_msg_buf_init()) {
+        ESP_LOGE(TAG, "agent_outbound_cb: buffer init failed");
+        return ESP_ERR_NO_MEM;
+    }
+
     if (xSemaphoreTake(s_agent_msg_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
         ESP_LOGW(TAG, "agent_outbound_cb: mutex timeout, dropping message");
         return ESP_ERR_TIMEOUT;
@@ -2680,10 +2722,24 @@ static esp_err_t agent_outbound_cb(const cap_im_local_message_t *message, void *
     uint32_t idx = s_agent_msg_write_idx.fetch_add(1, std::memory_order_relaxed) % AGENT_MSG_BUF_SIZE;
     agent_msg_t *slot = &s_agent_msgs[idx];
 
+    /* Free previous text if this slot is being recycled */
+    agent_msg_free_slot(slot);
+
     memset(slot, 0, sizeof(*slot));
+
+    /* Allocate text in PSRAM — only allocate what's needed */
+    size_t text_len = strnlen(message->text, AGENT_MSG_MAX_TEXT - 1);
+    slot->text = (char *)heap_caps_malloc(text_len + 1, MALLOC_CAP_SPIRAM);
+    if (!slot->text) {
+        ESP_LOGE(TAG, "agent_outbound_cb: PSRAM OOM for text (%zu bytes)", text_len + 1);
+        xSemaphoreGive(s_agent_msg_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(slot->text, message->text, text_len);
+    slot->text[text_len] = '\0';
+
     strlcpy(slot->message_id, message->message_id ? message->message_id : "", sizeof(slot->message_id));
     strlcpy(slot->chat_id, message->chat_id ? message->chat_id : "", sizeof(slot->chat_id));
-    strlcpy(slot->text, message->text, sizeof(slot->text));
     strlcpy(slot->link_url, message->link_url ? message->link_url : "", sizeof(slot->link_url));
     strlcpy(slot->link_label, message->link_label ? message->link_label : "", sizeof(slot->link_label));
     slot->timestamp_ms = message->timestamp_ms ? message->timestamp_ms : (esp_timer_get_time() / 1000LL);
@@ -3017,8 +3073,7 @@ static esp_err_t h_agent_messages(httpd_req_t *req)
         }
     }
 
-    agent_msg_mutex_init();
-    if (!s_agent_msg_mutex) {
+    if (!agent_msg_buf_init()) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Not initialized");
         return ESP_FAIL;
     }
@@ -3047,7 +3102,7 @@ static esp_err_t h_agent_messages(httpd_req_t *req)
             uint32_t buf_idx = i % AGENT_MSG_BUF_SIZE;
             agent_msg_t *slot = &s_agent_msgs[buf_idx];
             /* Skip empty slots (shouldn't happen but be safe) */
-            if (!slot->text[0]) continue;
+            if (!slot->text || !slot->text[0]) continue;
 
             cJSON *msg = cJSON_CreateObject();
             if (!msg) continue;

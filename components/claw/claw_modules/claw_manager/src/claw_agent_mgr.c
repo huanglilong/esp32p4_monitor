@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -124,7 +125,7 @@ typedef struct {
     claw_agent_mgr_agent_t agents[CLAW_AGENT_MGR_MAX_AGENTS];
 } claw_agent_mgr_state_t;
 
-static claw_agent_mgr_state_t s_mgr = {0};
+static claw_agent_mgr_state_t *s_mgr = NULL;  /* PSRAM allocation in claw_agent_mgr_init() */
 
 static void claw_agent_mgr_completion_observer(const claw_core_completion_summary_t *summary,
                                                void *user_ctx);
@@ -150,37 +151,37 @@ static char *claw_agent_mgr_strdup(const char *src)
 
 static void claw_agent_mgr_free_prompt_config(void)
 {
-    if (s_mgr.subagent_type_prompts) {
-        for (size_t i = 0; i < s_mgr.subagent_type_prompt_count; i++) {
-            free((char *)s_mgr.subagent_type_prompts[i].agent_type);
-            free((char *)s_mgr.subagent_type_prompts[i].system_prompt);
+    if (s_mgr->subagent_type_prompts) {
+        for (size_t i = 0; i < s_mgr->subagent_type_prompt_count; i++) {
+            free((char *)s_mgr->subagent_type_prompts[i].agent_type);
+            free((char *)s_mgr->subagent_type_prompts[i].system_prompt);
         }
-        free(s_mgr.subagent_type_prompts);
+        free(s_mgr->subagent_type_prompts);
     }
-    s_mgr.subagent_type_prompts = NULL;
-    s_mgr.subagent_type_prompt_count = 0;
-    free(s_mgr.root_agent_system_prompt);
-    s_mgr.root_agent_system_prompt = NULL;
-    free(s_mgr.subagent_system_prompt);
-    s_mgr.subagent_system_prompt = NULL;
+    s_mgr->subagent_type_prompts = NULL;
+    s_mgr->subagent_type_prompt_count = 0;
+    free(s_mgr->root_agent_system_prompt);
+    s_mgr->root_agent_system_prompt = NULL;
+    free(s_mgr->subagent_system_prompt);
+    s_mgr->subagent_system_prompt = NULL;
 }
 
 static void claw_agent_mgr_free_config_storage(void)
 {
-    free(s_mgr.api_key);
-    free(s_mgr.backend_type);
-    free(s_mgr.model);
-    free(s_mgr.base_url);
-    free(s_mgr.auth_type);
-    free(s_mgr.max_tokens_field);
-    free(s_mgr.system_prompt);
-    s_mgr.api_key = NULL;
-    s_mgr.backend_type = NULL;
-    s_mgr.model = NULL;
-    s_mgr.base_url = NULL;
-    s_mgr.auth_type = NULL;
-    s_mgr.max_tokens_field = NULL;
-    s_mgr.system_prompt = NULL;
+    free(s_mgr->api_key);
+    free(s_mgr->backend_type);
+    free(s_mgr->model);
+    free(s_mgr->base_url);
+    free(s_mgr->auth_type);
+    free(s_mgr->max_tokens_field);
+    free(s_mgr->system_prompt);
+    s_mgr->api_key = NULL;
+    s_mgr->backend_type = NULL;
+    s_mgr->model = NULL;
+    s_mgr->base_url = NULL;
+    s_mgr->auth_type = NULL;
+    s_mgr->max_tokens_field = NULL;
+    s_mgr->system_prompt = NULL;
     claw_agent_mgr_free_prompt_config();
 }
 
@@ -188,10 +189,10 @@ static const char *claw_agent_mgr_find_subagent_type_prompt(const char *agent_ty
 {
     const char *type_name = (agent_type && agent_type[0]) ? agent_type : "subagent";
 
-    for (size_t i = 0; i < s_mgr.subagent_type_prompt_count; i++) {
-        if (s_mgr.subagent_type_prompts[i].agent_type &&
-                strcmp(s_mgr.subagent_type_prompts[i].agent_type, type_name) == 0) {
-            return s_mgr.subagent_type_prompts[i].system_prompt;
+    for (size_t i = 0; i < s_mgr->subagent_type_prompt_count; i++) {
+        if (s_mgr->subagent_type_prompts[i].agent_type &&
+                strcmp(s_mgr->subagent_type_prompts[i].agent_type, type_name) == 0) {
+            return s_mgr->subagent_type_prompts[i].system_prompt;
         }
     }
     for (size_t i = 0; i < sizeof(s_default_subagent_type_prompts) /
@@ -257,16 +258,16 @@ static char *claw_agent_mgr_build_agent_system_prompt(const claw_agent_mgr_agent
         return NULL;
     }
     if (agent->role == CLAW_AGENT_MGR_ROLE_ROOT) {
-        return claw_agent_mgr_format_prompt_stack(s_mgr.system_prompt,
+        return claw_agent_mgr_format_prompt_stack(s_mgr->system_prompt,
                                                  "Root Agent",
-                                                 s_mgr.root_agent_system_prompt,
+                                                 s_mgr->root_agent_system_prompt,
                                                  "Root Agent",
                                                  CLAW_AGENT_MGR_ROOT_AGENT_TYPE_PROMPT,
                                                  agent->agent_type);
     }
-    return claw_agent_mgr_format_prompt_stack(s_mgr.system_prompt,
+    return claw_agent_mgr_format_prompt_stack(s_mgr->system_prompt,
                                              "Subagent",
-                                             s_mgr.subagent_system_prompt,
+                                             s_mgr->subagent_system_prompt,
                                              "Subagent",
                                              claw_agent_mgr_find_subagent_type_prompt(agent->agent_type),
                                              agent->agent_type);
@@ -274,17 +275,17 @@ static char *claw_agent_mgr_build_agent_system_prompt(const claw_agent_mgr_agent
 
 static void claw_agent_mgr_lock(void)
 {
-    xSemaphoreTakeRecursive(s_mgr.mutex, portMAX_DELAY);
+    xSemaphoreTakeRecursive(s_mgr->mutex, portMAX_DELAY);
 }
 
 static void claw_agent_mgr_unlock(void)
 {
-    xSemaphoreGiveRecursive(s_mgr.mutex);
+    xSemaphoreGiveRecursive(s_mgr->mutex);
 }
 
 static bool claw_agent_mgr_is_ready(void)
 {
-    return s_mgr.initialized && s_mgr.mutex != NULL;
+    return s_mgr->initialized && s_mgr->mutex != NULL;
 }
 
 static claw_agent_mgr_agent_t *claw_agent_mgr_find_locked(const char *agent_id)
@@ -293,8 +294,8 @@ static claw_agent_mgr_agent_t *claw_agent_mgr_find_locked(const char *agent_id)
         return NULL;
     }
     for (size_t i = 0; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
-        if (s_mgr.agents[i].occupied && strcmp(s_mgr.agents[i].agent_id, agent_id) == 0) {
-            return &s_mgr.agents[i];
+        if (s_mgr->agents[i].occupied && strcmp(s_mgr->agents[i].agent_id, agent_id) == 0) {
+            return &s_mgr->agents[i];
         }
     }
 
@@ -306,14 +307,14 @@ static claw_agent_mgr_agent_t *claw_agent_mgr_alloc_locked(claw_agent_mgr_role_t
     size_t start = role == CLAW_AGENT_MGR_ROLE_ROOT ? 0 : 1;
 
     if (role == CLAW_AGENT_MGR_ROLE_ROOT) {
-        return s_mgr.agents[0].occupied ? NULL : &s_mgr.agents[0];
+        return s_mgr->agents[0].occupied ? NULL : &s_mgr->agents[0];
     }
     for (size_t i = start; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
-        if (!s_mgr.agents[i].occupied ||
-                (s_mgr.agents[i].role == CLAW_AGENT_MGR_ROLE_SUBAGENT &&
-                 s_mgr.agents[i].status == CLAW_AGENT_MGR_STATUS_CLOSED &&
-                 !s_mgr.agents[i].core && !s_mgr.agents[i].closing)) {
-            return &s_mgr.agents[i];
+        if (!s_mgr->agents[i].occupied ||
+                (s_mgr->agents[i].role == CLAW_AGENT_MGR_ROLE_SUBAGENT &&
+                 s_mgr->agents[i].status == CLAW_AGENT_MGR_STATUS_CLOSED &&
+                 !s_mgr->agents[i].core && !s_mgr->agents[i].closing)) {
+            return &s_mgr->agents[i];
         }
     }
 
@@ -327,27 +328,27 @@ static esp_err_t claw_agent_mgr_copy_core_config(const claw_core_config_t *confi
         return ESP_ERR_INVALID_ARG;
     }
 
-    s_mgr.api_key = claw_agent_mgr_strdup(config->api_key);
-    s_mgr.backend_type = claw_agent_mgr_strdup(config->backend_type);
-    s_mgr.model = claw_agent_mgr_strdup(config->model);
-    s_mgr.base_url = claw_agent_mgr_strdup(config->base_url ? config->base_url : "");
-    s_mgr.auth_type = claw_agent_mgr_strdup(config->auth_type ? config->auth_type : "");
-    s_mgr.max_tokens_field = claw_agent_mgr_strdup(config->max_tokens_field ? config->max_tokens_field : "");
-    s_mgr.system_prompt = claw_agent_mgr_strdup(config->system_prompt);
-    if (!s_mgr.api_key || !s_mgr.backend_type || !s_mgr.model ||
-            !s_mgr.base_url || !s_mgr.auth_type || !s_mgr.max_tokens_field ||
-            !s_mgr.system_prompt) {
+    s_mgr->api_key = claw_agent_mgr_strdup(config->api_key);
+    s_mgr->backend_type = claw_agent_mgr_strdup(config->backend_type);
+    s_mgr->model = claw_agent_mgr_strdup(config->model);
+    s_mgr->base_url = claw_agent_mgr_strdup(config->base_url ? config->base_url : "");
+    s_mgr->auth_type = claw_agent_mgr_strdup(config->auth_type ? config->auth_type : "");
+    s_mgr->max_tokens_field = claw_agent_mgr_strdup(config->max_tokens_field ? config->max_tokens_field : "");
+    s_mgr->system_prompt = claw_agent_mgr_strdup(config->system_prompt);
+    if (!s_mgr->api_key || !s_mgr->backend_type || !s_mgr->model ||
+            !s_mgr->base_url || !s_mgr->auth_type || !s_mgr->max_tokens_field ||
+            !s_mgr->system_prompt) {
         return ESP_ERR_NO_MEM;
     }
 
-    s_mgr.core_config = *config;
-    s_mgr.core_config.api_key = s_mgr.api_key;
-    s_mgr.core_config.backend_type = s_mgr.backend_type;
-    s_mgr.core_config.model = s_mgr.model;
-    s_mgr.core_config.base_url = s_mgr.base_url;
-    s_mgr.core_config.auth_type = s_mgr.auth_type;
-    s_mgr.core_config.max_tokens_field = s_mgr.max_tokens_field;
-    s_mgr.core_config.system_prompt = s_mgr.system_prompt;
+    s_mgr->core_config = *config;
+    s_mgr->core_config.api_key = s_mgr->api_key;
+    s_mgr->core_config.backend_type = s_mgr->backend_type;
+    s_mgr->core_config.model = s_mgr->model;
+    s_mgr->core_config.base_url = s_mgr->base_url;
+    s_mgr->core_config.auth_type = s_mgr->auth_type;
+    s_mgr->core_config.max_tokens_field = s_mgr->max_tokens_field;
+    s_mgr->core_config.system_prompt = s_mgr->system_prompt;
     return ESP_OK;
 }
 
@@ -360,19 +361,19 @@ static esp_err_t claw_agent_mgr_copy_prompt_config(const claw_agent_mgr_config_t
         return ESP_ERR_INVALID_ARG;
     }
 
-    s_mgr.root_agent_system_prompt = claw_agent_mgr_strdup(
+    s_mgr->root_agent_system_prompt = claw_agent_mgr_strdup(
                                          config->root_agent_system_prompt ?
                                          config->root_agent_system_prompt :
                                          CLAW_AGENT_MGR_DEFAULT_ROOT_AGENT_SYSTEM_PROMPT);
-    if (!s_mgr.root_agent_system_prompt) {
+    if (!s_mgr->root_agent_system_prompt) {
         return ESP_ERR_NO_MEM;
     }
 
-    s_mgr.subagent_system_prompt = claw_agent_mgr_strdup(
+    s_mgr->subagent_system_prompt = claw_agent_mgr_strdup(
                                        config->subagent_system_prompt ?
                                        config->subagent_system_prompt :
                                        CLAW_AGENT_MGR_DEFAULT_SUBAGENT_SYSTEM_PROMPT);
-    if (!s_mgr.subagent_system_prompt) {
+    if (!s_mgr->subagent_system_prompt) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -380,12 +381,12 @@ static esp_err_t claw_agent_mgr_copy_prompt_config(const claw_agent_mgr_config_t
         return ESP_OK;
     }
 
-    s_mgr.subagent_type_prompts = calloc(config->subagent_type_prompt_count,
-                                         sizeof(s_mgr.subagent_type_prompts[0]));
-    if (!s_mgr.subagent_type_prompts) {
+    s_mgr->subagent_type_prompts = calloc(config->subagent_type_prompt_count,
+                                         sizeof(s_mgr->subagent_type_prompts[0]));
+    if (!s_mgr->subagent_type_prompts) {
         return ESP_ERR_NO_MEM;
     }
-    s_mgr.subagent_type_prompt_count = config->subagent_type_prompt_count;
+    s_mgr->subagent_type_prompt_count = config->subagent_type_prompt_count;
     for (size_t i = 0; i < config->subagent_type_prompt_count; i++) {
         const claw_agent_mgr_subagent_type_prompt_t *src = &config->subagent_type_prompts[i];
 
@@ -393,10 +394,10 @@ static esp_err_t claw_agent_mgr_copy_prompt_config(const claw_agent_mgr_config_t
                 !src->system_prompt || !src->system_prompt[0]) {
             return ESP_ERR_INVALID_ARG;
         }
-        s_mgr.subagent_type_prompts[i].agent_type = claw_agent_mgr_strdup(src->agent_type);
-        s_mgr.subagent_type_prompts[i].system_prompt = claw_agent_mgr_strdup(src->system_prompt);
-        if (!s_mgr.subagent_type_prompts[i].agent_type ||
-                !s_mgr.subagent_type_prompts[i].system_prompt) {
+        s_mgr->subagent_type_prompts[i].agent_type = claw_agent_mgr_strdup(src->agent_type);
+        s_mgr->subagent_type_prompts[i].system_prompt = claw_agent_mgr_strdup(src->system_prompt);
+        if (!s_mgr->subagent_type_prompts[i].agent_type ||
+                !s_mgr->subagent_type_prompts[i].system_prompt) {
             return ESP_ERR_NO_MEM;
         }
     }
@@ -411,7 +412,7 @@ esp_err_t claw_agent_mgr_init(const claw_agent_mgr_config_t *config)
     if (!config || !config->core_config) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_mgr.initialized) {
+    if (s_mgr && s_mgr->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
     if (config->base_context_provider_count > CLAW_AGENT_MGR_MAX_BASE_PROVIDERS ||
@@ -419,9 +420,20 @@ esp_err_t claw_agent_mgr_init(const claw_agent_mgr_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
-    memset(&s_mgr, 0, sizeof(s_mgr));
-    s_mgr.mutex = xSemaphoreCreateRecursiveMutex();
-    if (!s_mgr.mutex) {
+    /* Allocate manager state from PSRAM to save internal SRAM (~5KB).
+     * This is a one-time lifecycle allocation. */
+    if (!s_mgr) {
+        s_mgr = (claw_agent_mgr_state_t *)heap_caps_calloc(1, sizeof(claw_agent_mgr_state_t),
+                                                            MALLOC_CAP_SPIRAM);
+        if (!s_mgr) {
+            ESP_LOGE(TAG, "Failed to allocate agent_mgr state from PSRAM");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    memset(s_mgr, 0, sizeof(*s_mgr));
+    s_mgr->mutex = xSemaphoreCreateRecursiveMutex();
+    if (!s_mgr->mutex) {
         return ESP_ERR_NO_MEM;
     }
     err = claw_agent_mgr_copy_core_config(config->core_config);
@@ -433,20 +445,20 @@ esp_err_t claw_agent_mgr_init(const claw_agent_mgr_config_t *config)
         goto fail;
     }
     for (size_t i = 0; i < config->base_context_provider_count; i++) {
-        s_mgr.base_providers[i] = config->base_context_providers[i];
+        s_mgr->base_providers[i] = config->base_context_providers[i];
     }
-    s_mgr.base_provider_count = config->base_context_provider_count;
-    s_mgr.next_instance_id = 0;
-    s_mgr.next_request_id = 1;
-    s_mgr.initialized = true;
+    s_mgr->base_provider_count = config->base_context_provider_count;
+    s_mgr->next_instance_id = 0;
+    s_mgr->next_request_id = 1;
+    s_mgr->initialized = true;
     return ESP_OK;
 
 fail:
     claw_agent_mgr_free_config_storage();
-    if (s_mgr.mutex) {
-        vSemaphoreDelete(s_mgr.mutex);
+    if (s_mgr->mutex) {
+        vSemaphoreDelete(s_mgr->mutex);
     }
-    memset(&s_mgr, 0, sizeof(s_mgr));
+    memset(s_mgr, 0, sizeof(*s_mgr));
     return err;
 }
 
@@ -492,21 +504,21 @@ esp_err_t claw_agent_mgr_update_core_config(const claw_core_config_t *core_confi
     next_config.system_prompt = system_prompt;
 
     claw_agent_mgr_lock();
-    free(s_mgr.api_key);
-    free(s_mgr.backend_type);
-    free(s_mgr.model);
-    free(s_mgr.base_url);
-    free(s_mgr.auth_type);
-    free(s_mgr.max_tokens_field);
-    free(s_mgr.system_prompt);
-    s_mgr.api_key = api_key;
-    s_mgr.backend_type = backend_type;
-    s_mgr.model = model;
-    s_mgr.base_url = base_url;
-    s_mgr.auth_type = auth_type;
-    s_mgr.max_tokens_field = max_tokens_field;
-    s_mgr.system_prompt = system_prompt;
-    s_mgr.core_config = next_config;
+    free(s_mgr->api_key);
+    free(s_mgr->backend_type);
+    free(s_mgr->model);
+    free(s_mgr->base_url);
+    free(s_mgr->auth_type);
+    free(s_mgr->max_tokens_field);
+    free(s_mgr->system_prompt);
+    s_mgr->api_key = api_key;
+    s_mgr->backend_type = backend_type;
+    s_mgr->model = model;
+    s_mgr->base_url = base_url;
+    s_mgr->auth_type = auth_type;
+    s_mgr->max_tokens_field = max_tokens_field;
+    s_mgr->system_prompt = system_prompt;
+    s_mgr->core_config = next_config;
     api_key = NULL;
     backend_type = NULL;
     model = NULL;
@@ -516,9 +528,9 @@ esp_err_t claw_agent_mgr_update_core_config(const claw_core_config_t *core_confi
     system_prompt = NULL;
 
     for (size_t i = 0; i < CLAW_AGENT_MGR_MAX_AGENTS; i++) {
-        if (s_mgr.agents[i].occupied && s_mgr.agents[i].core) {
-            esp_err_t update_err = claw_core_update_llm_config(s_mgr.agents[i].core,
-                                                               &s_mgr.core_config);
+        if (s_mgr->agents[i].occupied && s_mgr->agents[i].core) {
+            esp_err_t update_err = claw_core_update_llm_config(s_mgr->agents[i].core,
+                                                               &s_mgr->core_config);
             if (update_err != ESP_OK && err == ESP_OK) {
                 err = update_err;
             }
@@ -543,10 +555,10 @@ fail:
 static void claw_agent_mgr_fill_core_config(claw_agent_mgr_agent_t *agent,
                                             claw_core_config_t *out_config)
 {
-    *out_config = s_mgr.core_config;
-    out_config->instance_id = s_mgr.next_instance_id++;
+    *out_config = s_mgr->core_config;
+    out_config->instance_id = s_mgr->next_instance_id++;
     out_config->cap_user_ctx = &agent->cap_user_ctx;
-    out_config->max_context_providers = s_mgr.base_provider_count + 1;
+    out_config->max_context_providers = s_mgr->base_provider_count + 1;
 }
 
 static esp_err_t claw_agent_mgr_start_agent_core(claw_agent_mgr_agent_t *agent)
@@ -588,8 +600,8 @@ static esp_err_t claw_agent_mgr_start_agent_core(claw_agent_mgr_agent_t *agent)
         snprintf(agent->last_error, sizeof(agent->last_error), "%s", esp_err_to_name(ret));
         return ret;
     }
-    for (size_t i = 0; i < s_mgr.base_provider_count; i++) {
-        ESP_GOTO_ON_ERROR(claw_core_add_context_provider(agent->core, &s_mgr.base_providers[i]),
+    for (size_t i = 0; i < s_mgr->base_provider_count; i++) {
+        ESP_GOTO_ON_ERROR(claw_core_add_context_provider(agent->core, &s_mgr->base_providers[i]),
                           fail, TAG, "add base context provider");
     }
     cap_tools_provider = agent->role == CLAW_AGENT_MGR_ROLE_ROOT ?
@@ -656,12 +668,12 @@ claw_core_handle_t claw_agent_mgr_get_root_core(void)
 {
     claw_core_handle_t core = NULL;
 
-    if (!s_mgr.initialized || !s_mgr.mutex) {
+    if (!s_mgr->initialized || !s_mgr->mutex) {
         return NULL;
     }
     claw_agent_mgr_lock();
-    if (s_mgr.agents[0].occupied) {
-        core = s_mgr.agents[0].core;
+    if (s_mgr->agents[0].occupied) {
+        core = s_mgr->agents[0].core;
     }
     claw_agent_mgr_unlock();
     return core;
@@ -687,7 +699,7 @@ static esp_err_t claw_agent_mgr_build_root_session_id(const claw_agent_mgr_root_
 
 static uint32_t claw_agent_mgr_next_request_id_locked(void)
 {
-    return s_mgr.next_request_id++;
+    return s_mgr->next_request_id++;
 }
 
 static esp_err_t claw_agent_mgr_submit_to_agent(claw_agent_mgr_agent_t *agent,

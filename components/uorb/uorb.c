@@ -45,21 +45,21 @@ typedef struct {
 /*  Global state                                                       */
 /* ------------------------------------------------------------------ */
 
-/** Topic registry (one per unique topic). */
-static orb_topic_reg_t s_topics[ORB_MAX_TOPICS];
+/** Topic registry (one per unique topic) — PSRAM allocation. */
+static orb_topic_reg_t *s_topics = NULL;
 
-/** Subscriber table (flat, handles are indices into this array). */
+/** Subscriber table (flat, handles are indices into this array) — PSRAM allocation. */
 #define ORB_MAX_SUBS  (ORB_MAX_TOPICS * ORB_MAX_SUBSCRIBERS)
-static orb_sub_entry_t s_subs[ORB_MAX_SUBS];
+static orb_sub_entry_t *s_subs = NULL;
 static int s_num_subs;         /**< High-water mark: next never-used index. */
 
-/** Free-list for reusable subscriber slots.
+/** Free-list for reusable subscriber slots — PSRAM allocation.
  * When orb_unsubscribe() frees a slot, its index is pushed here.
  * orb_subscribe() pops from the free-list first (if non-empty),
  * then falls back to s_num_subs (append).
  * This prevents subscriber slot exhaustion from repeated
  * subscribe/unsubscribe cycles. */
-static int s_sub_free_list[ORB_MAX_SUBS];
+static int *s_sub_free_list = NULL;
 static int s_sub_free_count;   /**< Number of entries in the free-list. */
 
 /** Monotonically increasing generation counter assigned to subscriber
@@ -88,6 +88,26 @@ void orb_init(void)
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) {
         ESP_LOGE("uORB", "Failed to create uORB mutex");
+        return;
+    }
+
+    /* Allocate registry tables from PSRAM to save internal SRAM.
+     * These are one-time allocations that live for the lifetime of the system. */
+    s_topics = (orb_topic_reg_t *)heap_caps_calloc(ORB_MAX_TOPICS, sizeof(orb_topic_reg_t),
+                                                    MALLOC_CAP_SPIRAM);
+    s_subs = (orb_sub_entry_t *)heap_caps_calloc(ORB_MAX_SUBS, sizeof(orb_sub_entry_t),
+                                                  MALLOC_CAP_SPIRAM);
+    s_sub_free_list = (int *)heap_caps_calloc(ORB_MAX_SUBS, sizeof(int),
+                                               MALLOC_CAP_SPIRAM);
+
+    if (!s_topics || !s_subs || !s_sub_free_list) {
+        ESP_LOGE("uORB", "PSRAM allocation failed for registry tables");
+        /* Free whatever was allocated and null out */
+        if (s_topics) { heap_caps_free(s_topics); s_topics = NULL; }
+        if (s_subs) { heap_caps_free(s_subs); s_subs = NULL; }
+        if (s_sub_free_list) { heap_caps_free(s_sub_free_list); s_sub_free_list = NULL; }
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
     }
 }
 
@@ -97,9 +117,13 @@ void orb_init(void)
 
 static inline void lock(void)
 {
-    /* s_mutex is created by orb_init() at boot, so it must already
-     * exist by the time any other uORB API is called. */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+}
+
+/** Check if uORB is properly initialized (one-time PSRAM allocations succeeded). */
+static inline bool is_initialized(void)
+{
+    return (s_topics != NULL && s_subs != NULL && s_sub_free_list != NULL && s_mutex != NULL);
 }
 
 static inline void unlock(void)

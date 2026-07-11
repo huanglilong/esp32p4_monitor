@@ -59,7 +59,7 @@ typedef struct {
 } cap_lua_job_ctx_t;
 
 static SemaphoreHandle_t s_job_lock;
-static EXT_RAM_BSS_ATTR cap_lua_job_record_t s_jobs[CAP_LUA_ASYNC_MAX_JOBS];
+static cap_lua_job_record_t *s_jobs = NULL;  /* PSRAM allocation in cap_lua_async_init() */
 static SemaphoreHandle_t s_slot_terminal_sem[CAP_LUA_ASYNC_MAX_JOBS];
 static size_t s_running_jobs;
 static bool s_runner_started;
@@ -433,6 +433,18 @@ esp_err_t cap_lua_async_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    /* Allocate job records from PSRAM to save internal SRAM (~5.6KB).
+     * This is a one-time lifecycle allocation. */
+    if (!s_jobs) {
+        s_jobs = (cap_lua_job_record_t *)heap_caps_calloc(CAP_LUA_ASYNC_MAX_JOBS,
+                                                           sizeof(cap_lua_job_record_t),
+                                                           MALLOC_CAP_SPIRAM);
+        if (!s_jobs) {
+            ESP_LOGE(TAG, "Failed to allocate job records from PSRAM");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     for (int i = 0; i < CAP_LUA_ASYNC_MAX_JOBS; i++) {
         cap_lua_clear_slot(&s_jobs[i]);
         if (!s_slot_terminal_sem[i]) {
@@ -442,7 +454,7 @@ esp_err_t cap_lua_async_init(void)
             }
         }
     }
-    memset(s_jobs, 0, sizeof(s_jobs));
+    memset(s_jobs, 0, CAP_LUA_ASYNC_MAX_JOBS * sizeof(cap_lua_job_record_t));
     s_running_jobs = 0;
     s_runner_started = false;
     return ESP_OK;
