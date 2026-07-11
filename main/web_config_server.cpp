@@ -1346,6 +1346,18 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         esp_audio_simple_player_destroy(old_asp);
         audio_lock();
         ESP_LOGI(TAG, "Stopped web playback for recording");
+
+        /* Re-check: a concurrent h_play() may have started during the unlocked window.
+         * If so, stop it again to prevent recording + playback on shared I2S. */
+        if (s_asp && s_playing) {
+            esp_asp_handle_t old_asp2 = s_asp;
+            s_asp = NULL;
+            s_playing = false;
+            audio_unlock();
+            esp_audio_simple_player_stop(old_asp2);
+            esp_audio_simple_player_destroy(old_asp2);
+            audio_lock();
+        }
     }
 
     /* Publish recording_state.active=true so PhoneAppMusic can stop its playback */
@@ -1534,6 +1546,14 @@ static esp_err_t h_play(httpd_req_t *req) {
         esp_audio_simple_player_stop(old_asp);
         esp_audio_simple_player_destroy(old_asp);
         audio_lock();
+
+        /* Re-check: a concurrent h_rec_start() may have started recording during
+         * the unlocked window. Abort playback to avoid I2S conflict. */
+        if (s_is_recording) {
+            audio_unlock();
+            httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Recording in progress\"}");
+            return ESP_OK;
+        }
     }
     s_playing = false;
     esp_asp_cfg_t c={.out={.cb=_asp_out},.task_prio=3,.task_stack=8192,.task_core=1,.task_stack_in_ext=true};
