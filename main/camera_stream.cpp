@@ -131,7 +131,7 @@ CameraStream::CameraStream() :
     _stream_enc_width(0), _stream_enc_height(0), _stream_enc_format(0),
     _ppa(nullptr),
     _capture_task(nullptr),
-    _capture_stack(nullptr), _capture_tcb(nullptr),
+    _capture_stack{nullptr}, _capture_tcb(nullptr),
     _httpd_80(nullptr), _httpd_81(nullptr),
     _running(false),
     _start_stop_mutex(nullptr),
@@ -171,7 +171,10 @@ CameraStream::~CameraStream()
         _encoder_lock = nullptr;
     }
     /* Defensive: stop() should have freed stacks, but ensure no leak */
-    if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
+    if (_capture_stack.load(std::memory_order_acquire)) {
+        heap_caps_free(_capture_stack.load(std::memory_order_acquire));
+        _capture_stack.store(nullptr, std::memory_order_release);
+    }
     /* TCBs are pre-allocated at construction and never freed — ~340B each,
      * negligible cost for permanent singletons in embedded firmware.
      * Avoids TCB use-after-free race with idle task entirely. */
@@ -243,10 +246,11 @@ bool CameraStream::start(void)
     /* Start independent capture task — runs DQBUF/encode/publish loop
      * regardless of HTTP client connections.
      * Use static task creation with PSRAM stack to save ~32KB internal SRAM. */
-    _capture_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!_capture_stack || !_capture_tcb) {
+    StackType_t *capture_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    _capture_stack.store(capture_stack, std::memory_order_release);
+    if (!capture_stack || !_capture_tcb) {
         ESP_LOGE(TAG, "Capture task PSRAM stack alloc failed or TCB is null");
-        if (_capture_stack) { heap_caps_free(_capture_stack); _capture_stack = nullptr; }
+        if (capture_stack) { heap_caps_free(capture_stack); _capture_stack.store(nullptr, std::memory_order_release); }
         _deinit_encoder();
         _deinit_video();
         _deinit_ppa();
@@ -262,10 +266,10 @@ bool CameraStream::start(void)
      * causing audible music stutter whenever Camera Stream is enabled. */
     TaskHandle_t task_handle = xTaskCreateStaticPinnedToCore(
         _capture_task_fn, "cam_capture", 8192, this, 5,
-        _capture_stack, _capture_tcb, 0);  /* Core 0, priority 5 */
+        capture_stack, _capture_tcb, 0);  /* Core 0, priority 5 */
     if (!task_handle) {
         ESP_LOGE(TAG, "Capture task create failed");
-        heap_caps_free(_capture_stack); _capture_stack = nullptr;
+        heap_caps_free(capture_stack); _capture_stack.store(nullptr, std::memory_order_release);
         _deinit_encoder();
         _deinit_video();
         _deinit_ppa();
@@ -391,9 +395,9 @@ void CameraStream::stop(void)
      * TCB is pre-allocated and reused — not freed here.
      * Stack is safe to free immediately: FreeRTOS doesn't reference it
      * after the task exits (idle task only reclaims the TCB). */
-    if (_capture_stack) {
-        heap_caps_free(_capture_stack);
-        _capture_stack = nullptr;
+    StackType_t *capture_stack = _capture_stack.exchange(nullptr, std::memory_order_acq_rel);
+    if (capture_stack) {
+        heap_caps_free(capture_stack);
     }
 
     /* Reset shared JPEG buffer */

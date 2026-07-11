@@ -132,7 +132,7 @@ private:
     /* Capture task: independent frame capture/encode/publish loop */
     static void _capture_task_fn(void *arg);
     std::atomic<TaskHandle_t>  _capture_task;       /* Atomic: task writes nullptr on exit, stop() reads */
-    StackType_t               *_capture_stack;      /* PSRAM-allocated stack (8KB words = 32KB) */
+    std::atomic<StackType_t *> _capture_stack{nullptr}; /* Atomic: start() writes (release), stop() frees (acquire). Protects against concurrent _capture_task_fn self-delete and stop() freeing stack. */
     StaticTask_t              *_capture_tcb;        /* TCB buffer for static task (internal SRAM) */
 
     /* HTTP server */
