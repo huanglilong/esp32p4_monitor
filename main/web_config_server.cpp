@@ -1363,8 +1363,12 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     /* Publish recording_state.active=true so PhoneAppMusic can stop its playback */
     orb_advert_t pub = s_rec_pub.load(std::memory_order_acquire);
     if (pub < 0) {
-        pub = orb_advertise(ORB_ID(recording_state));
-        s_rec_pub.store(pub, std::memory_order_release);
+        orb_advert_t new_pub = orb_advertise(ORB_ID(recording_state));
+        if (!s_rec_pub.compare_exchange_strong(pub, new_pub, std::memory_order_release, std::memory_order_relaxed)) {
+            /* Another context set it first — discard our new handle */
+        } else {
+            pub = new_pub;
+        }
     }
     if (pub >= 0) {
         struct recording_state_s rs = {};
