@@ -177,7 +177,7 @@ static void compose_ap_ssid(void)
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
     }
 #endif
-    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s-%02X%02X%02X",
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s-%02x%02x%02x",
              wifi_manager_ap_ssid_prefix(), mac[3], mac[4], mac[5]);
     ESP_LOGI(TAG, "Provisioning AP SSID: %s", s_ap_ssid);
 }

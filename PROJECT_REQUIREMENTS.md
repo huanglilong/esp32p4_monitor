@@ -409,7 +409,7 @@
 | G1 | **cap_im_local 集成** | 本地 IM 通道, 支持不依赖外部 IM 平台 (WeChat/TG/Feishu/QQ) 的 Web/Flutter Agent 对话。上游: `claw_capabilities/cap_im_local/` | ✅ 已完成 |
 | G2 | **cap_llm_inspect 集成** | LLM 请求/响应检查 capability, 用于调试 Agent 行为。上游: `claw_capabilities/cap_llm_inspect/` | 中 |
 | G3 | **wifi_manager 移植** | 独立 WiFi 管理组件 (AP+STA 模式 + 自动重连 + 状态回调), 解决 P2 无屏配网 + P10 WiFi 管理重构。上游: `common/wifi_manager/` | ✅ 已完成 (高) |
-| G4 | **captive_dns 移植** | Captive Portal DNS, 配合 wifi_manager 实现无屏 WiFi 配网 (手机连接 AP 自动弹出配置页)。上游: `common/captive_dns/` | 高 |
+| G4 | **captive_dns 移植** | Captive Portal DNS, 配合 wifi_manager 实现无屏 WiFi 配网 (手机连接 AP 自动弹出配置页)。上游: `common/captive_dns/` | ✅ 已完成 (高) |
 | G5 | **app_claw Shell 移植** | 模块化 capability/lua 注册 (app_capabilities.c + app_lua_modules.c + app_claw_cli.c), 替代 main.cpp 内联初始化。上游: `common/app_claw/` | 中 |
 | G6 | **lua_modules 移植** | Lua 脚本子系统 — esp-claw 核心特性"对话即创建"。按需移植相关模块 (audio, camera, display, storage, system, json, thread, http_server, event_publisher, call_capability)。上游: `lua_modules/` (35 个模块) | 中 |
 | G7 | **lua_module_builder** | Lua 模块文档/测试构建工具。上游: `common/lua_module_builder/` | 低 |
@@ -429,7 +429,7 @@
 
 ```
 P0 (阻塞)     → ✅ 已解决: S247 (cam_capture 绑核) + S289 (SRAM 优化 91.1KB)
-高优先级       → G1 (cap_im_local) ✅ → G3 (wifi_manager) ✅ → G4 (captive_dns, 解决 P2)
+高优先级       → G1 (cap_im_local) ✅ → G3 (wifi_manager) ✅ → G4 (captive_dns) ✅
 中优先级       → G6 (lua_modules) → G16 (skills) → G5 (app_claw) → G15 (HTTP Server)
 低优先级       → G2, G7-G14, G17 (按需集成)
 ```

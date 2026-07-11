@@ -130,6 +130,7 @@ private:
     std::atomic<bool> _started{false};
     std::atomic<bool> _sntp_started{false};
     std::atomic<bool> _sntp_synced{false};
+    std::atomic<bool> _captive_dns_started{false};
 
     /* uORB wifi_state publisher */
     std::atomic<orb_advert_t> _wifi_state_pub{ORB_ADVERT_INVALID};

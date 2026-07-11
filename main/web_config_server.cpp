@@ -3290,23 +3290,38 @@ static void web_config_task(void *arg)
     ESP_LOGI(TAG, "Web config waiting for WiFi connection...");
 
     bool stop_requested = false;
-    /* Check if already connected (event may have fired before this task) */
+    /* Wait for either STA connection OR AP to become active.
+     * AP-only mode (no stored WiFi credentials) needs the web server
+     * for first-boot provisioning via captive portal. */
     if (!wifi_sta_is_connected()) {
-        ESP_LOGI(TAG, "Waiting for WiFi connection via WifiService...");
+        ESP_LOGI(TAG, "Waiting for WiFi (STA or AP)...");
         while (1) {
             if (!s_running) { stop_requested = true; break; }
             if (wifi_sta_is_connected()) break;
+
+            /* In AP-only provisioning mode, start the web server once
+             * the AP is active — no STA connection will ever arrive. */
+            wifi_service_status_t st;
+            WifiService::instance().get_status(&st);
+            if (!st.sta_configured) {
+                /* AP mode: wait a few seconds for AP to stabilize,
+                 * then proceed even without STA. */
+                vTaskDelay(pdMS_TO_TICKS(500));
+                break;
+            }
             vTaskDelay(pdMS_TO_TICKS(500));
         }
     }
 
     if (stop_requested) goto cleanup;
 
-    ESP_LOGI(TAG, "WiFi connected, starting web config server on port %d...",
+    ESP_LOGI(TAG, "Starting web config server on port %d...",
              WEB_CONFIG_PORT);
 
-    /* Start SNTP for wall-clock time; ULog auto-starts on SNTP sync */
-    sntp_start_and_ulog_autostart();
+    /* Start SNTP for wall-clock time (no-op if no STA connection) */
+    if (wifi_sta_is_connected()) {
+        sntp_start_and_ulog_autostart();
+    }
 
     {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -3400,6 +3415,13 @@ static void web_config_task(void *arg)
         }
 
         bool wifi_up = wifi_sta_is_connected();
+        /* Also consider AP-only mode as "up" — web server must stay
+         * running for captive portal provisioning even without STA. */
+        if (!wifi_up) {
+            wifi_service_status_t st;
+            WifiService::instance().get_status(&st);
+            wifi_up = !st.sta_configured;  /* AP provisioning mode */
+        }
 
         /* When WiFi goes down, stop httpd to flush stale TCP sessions.
          * Without this, half-open connections from the WiFi outage can
@@ -3443,11 +3465,10 @@ static void web_config_task(void *arg)
         }
         prev_wifi_up = wifi_up;
 
-        /* Self-heal watchdog: directly probe the HTTP server from this task.
-         * Detects the "handle=UP but can't reconnect" condition that WiFi
-         * transitions don't cover. On sustained probe failure, bounce httpd
-         * so stale sessions are flushed and accept() resumes. */
-        if (wifi_up && s_httpd && ++health_log_counter >= 15) {  /* every 15s */
+        /* Self-heal watchdog: only run when STA is connected.
+         * In AP-only provisioning mode, there is no STA IP to probe,
+         * and httpd won't be affected by external network issues. */
+        if (wifi_sta_is_connected() && s_httpd && ++health_log_counter >= 15) {  /* every 15s */
             health_log_counter = 0;
             if (web_config_self_probe()) {
                 probe_fail_count = 0;

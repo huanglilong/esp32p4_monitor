@@ -21,10 +21,117 @@
 
 #include "example_config.h"
 #include "wifi_manager.h"
+#include "captive_dns.h"
 #include "generated/wifi_state.h"
 #include "topics.h"
+#include "esp_http_server.h"
 
 static const char *TAG = "wifi_service";
+
+/* ── Captive Portal HTTP Server (port 80) ──────────────────────────
+ * Responds to all requests with a 302 redirect to the Web Config
+ * portal (port 8080). This enables automatic captive portal detection
+ * on phones (Android: connectivitycheck.gstatic.com, iOS: captive.apple.com).
+ * The DNS hijacking (captive_dns) redirects all domain lookups here,
+ * and this HTTP handler completes the captive portal detection flow. */
+
+static httpd_handle_t s_captive_httpd = nullptr;
+
+static esp_err_t _captive_handler(httpd_req_t *req)
+{
+    const char *uri = req->uri;
+
+    /* iOS captive portal detection: http://captive.apple.com/hotspot-detect.html
+     * must return "Success" (plain text, no HTML) for iOS to detect captive portal. */
+    if (uri && strcmp(uri, "/hotspot-detect.html") == 0) {
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "Success", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    /* Android captive portal detection: various /generate_204 endpoints.
+     * Android expects HTTP 204 No Content to confirm internet access.
+     * Returning a 302 redirect here signals "captive portal detected" and
+     * triggers the system captive portal dialog. */
+    if (uri && strstr(uri, "generate_204")) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "http://192.168.4.1:8080/");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    /* All other requests: redirect to Web Config portal.
+     * This catches both user browser requests and other captive portal
+     * detection methods (e.g., connectivitycheck.gstatic.com on Android). */
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1:8080/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t _captive_httpd_start(void)
+{
+    if (s_captive_httpd) return ESP_OK;
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    config.max_uri_handlers = 4;
+    config.max_open_sockets = 4;
+    config.lru_purge_enable = true;
+    config.core_id = 0;
+
+    esp_err_t err = httpd_start(&s_captive_httpd, &config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Captive HTTP server start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* Register handlers for known captive portal detection URLs.
+     * iOS: http://captive.apple.com/hotspot-detect.html → "Success"
+     * Android: various /generate_204 endpoints → 302 redirect
+     * All others: catch-all wildcard → 302 redirect to Web Config */
+
+    httpd_uri_t hotspot_uri = {
+        .uri = "/hotspot-detect.html",
+        .method = HTTP_GET,
+        .handler = _captive_handler,
+    };
+    httpd_register_uri_handler(s_captive_httpd, &hotspot_uri);
+
+    httpd_uri_t gen204_uri = {
+        .uri = "/generate_204",
+        .method = HTTP_GET,
+        .handler = _captive_handler,
+    };
+    httpd_register_uri_handler(s_captive_httpd, &gen204_uri);
+
+    /* Catch-all: register "/" with wildcard matching (user_ctx != NULL).
+     * This matches any path not handled by the specific handlers above.
+     * Also register a POST handler to silence 404 warnings from non-HTTP
+     * protocols like WeChat mmtls being misrouted here via DNS hijacking. */
+    httpd_uri_t catchall_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = _captive_handler,
+        .user_ctx = (void *)1,  /* Enable wildcard matching */
+    };
+    httpd_register_uri_handler(s_captive_httpd, &catchall_uri);
+
+    /* POST catch-all: silently discard non-GET requests (mmtls, etc.)
+     * that arrive due to DNS hijacking. These are expected noise
+     * during provisioning mode and are harmless. */
+    httpd_uri_t catchall_post = {
+        .uri = "/",
+        .method = HTTP_POST,
+        .handler = _captive_handler,
+        .user_ctx = (void *)1,
+    };
+    httpd_register_uri_handler(s_captive_httpd, &catchall_post);
+
+    ESP_LOGI(TAG, "Captive portal HTTP server started on port 80");
+    return ESP_OK;
+}
 
 /* ── Singleton ──────────────────────────────────────────────────── */
 
@@ -105,6 +212,37 @@ void WifiService::_state_callback(bool connected, void *user_ctx) {
     wifi_manager_status_t st;
     wifi_manager_get_status(&st);
 
+    /* Start captive portal DNS when AP becomes active.
+     * AP startup is asynchronous — the netif IP is only valid
+     * after WIFI_EVENT_AP_START fires. */
+    if (st.ap_active && !self->_captive_dns_started.load(std::memory_order_acquire)) {
+        esp_netif_t *ap_netif = wifi_manager_get_ap_netif();
+        if (ap_netif) {
+            captive_dns_config_t dns_cfg = {
+                .ap_netif = ap_netif,
+                .redirect_ip = 0,
+                .configure_dhcp_dns = true,
+            };
+            if (captive_dns_start(&dns_cfg) == ESP_OK) {
+                self->_captive_dns_started.store(true, std::memory_order_release);
+                ESP_LOGI(TAG, "Captive portal DNS started on AP interface");
+                /* Start HTTP server on port 80 for captive portal detection */
+                _captive_httpd_start();
+            } else {
+                ESP_LOGW(TAG, "Captive portal DNS start failed");
+            }
+        }
+    }
+
+    /* Stop captive portal once STA is connected — no longer needed.
+     * Prevents background app traffic (WeChat mmtls, push notifications,
+     * etc.) from flooding the captive HTTP server with 404 errors. */
+    if (connected && self->_captive_dns_started.load(std::memory_order_acquire)) {
+        captive_dns_stop();
+        self->_captive_dns_started.store(false, std::memory_order_release);
+        ESP_LOGI(TAG, "Captive portal DNS stopped (STA connected)");
+    }
+
     int8_t rssi = 0;
     if (connected) {
         int rssi_raw = 0;
@@ -168,7 +306,7 @@ esp_err_t WifiService::start() {
     } else {
         /* No stored credentials — AP-only provisioning mode.
          * Use a descriptive AP SSID prefix for this device. */
-        cfg.ap_ssid_prefix = "esp-monitor";
+        cfg.ap_ssid_prefix = "esp-p4";
         ESP_LOGI(TAG, "Starting WiFi in AP-only provisioning mode");
     }
 
@@ -181,6 +319,10 @@ esp_err_t WifiService::start() {
         ESP_LOGE(TAG, "wifi_manager_start failed: %s", esp_err_to_name(err));
         return err;
     }
+
+    /* Captive portal DNS will be started from _state_callback
+     * when the AP becomes active (AP_START event). AP startup is
+     * asynchronous — the netif IP is not yet assigned here. */
 
     _started.store(true, std::memory_order_release);
     return ESP_OK;
