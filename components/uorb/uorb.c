@@ -258,7 +258,7 @@ orb_sub_t orb_subscribe(orb_id_t meta)
 
 int orb_unsubscribe(orb_sub_t handle)
 {
-    if (handle < 0 || handle >= s_num_subs) {
+    if (handle < 0) {
         return -1;
     }
     if (!is_initialized()) {
@@ -267,6 +267,11 @@ int orb_unsubscribe(orb_sub_t handle)
     }
 
     lock();
+
+    if (handle >= s_num_subs) {
+        unlock();
+        return -1;
+    }
 
     orb_sub_entry_t *sub = &s_subs[handle];
     if (sub->topic_idx < 0) {
@@ -355,7 +360,7 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
 {
     (void)meta;
 
-    if (handle < 0 || handle >= s_num_subs || buffer == NULL) {
+    if (handle < 0 || buffer == NULL) {
         return -1;
     }
     if (!is_initialized()) {
@@ -375,7 +380,7 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
             return -1; /* Unsubscribed */
         }
         QueueHandle_t q = sub->queue;
-        uint16_t gen = sub->generation;
+        int gen = sub->generation;
         unlock();
 
         /* Wait for data outside the lock — xQueueReceive is thread-safe.
@@ -394,7 +399,7 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
 
 int orb_check(orb_sub_t handle, bool *updated)
 {
-    if (handle < 0 || handle >= s_num_subs || updated == NULL) {
+    if (handle < 0 || updated == NULL) {
         return -1;
     }
     if (!is_initialized()) {
@@ -403,6 +408,12 @@ int orb_check(orb_sub_t handle, bool *updated)
     }
 
     lock();
+
+    if (handle >= s_num_subs) {
+        unlock();
+        return -1;
+    }
+
     orb_sub_entry_t *sub = &s_subs[handle];
     if (sub->topic_idx < 0) {
         unlock();
