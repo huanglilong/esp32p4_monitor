@@ -240,11 +240,17 @@ void WifiService::_state_callback(bool connected, void *user_ctx) {
 
     /* Stop captive portal once STA is connected — no longer needed.
      * Prevents background app traffic (WeChat mmtls, push notifications,
-     * etc.) from flooding the captive HTTP server with 404 errors. */
+     * etc.) from flooding the captive HTTP server with 404 errors.
+     * Also stop the HTTP server to free port 80 for CameraStream. */
     if (connected && self->_captive_dns_started.load(std::memory_order_acquire)) {
         captive_dns_stop();
         self->_captive_dns_started.store(false, std::memory_order_release);
         ESP_LOGI(TAG, "Captive portal DNS stopped (STA connected)");
+        if (s_captive_httpd) {
+            httpd_stop(s_captive_httpd);
+            s_captive_httpd = nullptr;
+            ESP_LOGI(TAG, "Captive portal HTTP server stopped (STA connected)");
+        }
     }
 
     int8_t rssi = 0;
