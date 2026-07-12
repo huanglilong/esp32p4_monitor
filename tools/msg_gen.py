@@ -17,6 +17,7 @@ import argparse
 import os
 import re
 import struct
+import sys
 
 
 # ────────────────────────────────────────────────────────────
