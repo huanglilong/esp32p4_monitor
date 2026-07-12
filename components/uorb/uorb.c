@@ -18,7 +18,6 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include "esp_log.h"
-#include <assert.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
