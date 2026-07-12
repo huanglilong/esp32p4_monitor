@@ -657,7 +657,272 @@ Capability 提供"能做什么"(工具)，Skill 提供"怎么做"(知识文档)�
 - **Lua 扩展层** — 将硬件外设通过脚本暴露给 Agent 控制
 - **多Agent架构** — Root/Sub-agent 分层用于任务隔离
 - **Event Router 的模板渲染** — `{{event.*}}`, `{{last.output}}` 模式的动态规则
+- **Lua 桥接模式** — C→Lua 模块注册、JSON→table 转换、超时钩子、异步作业队列
+- **Skill+Script 协作** — SKILL.md 声明 cap_groups，脚本通过 `{CUR_SKILL_DIR}/scripts/` 引用
 
 ---
 
-> 整个系统以 `claw_core`(LLM循环)为"大脑"、`claw_event_router`(事件路由)为"神经系统"、`claw_memory`(记忆)为"海马体"、`claw_skill`(技能)为"知识库"、`claw_cap`(能力)为"四肢"，构成了一套完整的边缘AI Agent运行时。
+## 八、Lua 层原理详解
+
+ESP-Claw 的 Lua 层是连接 C 语言实现的硬件抽象层和 AI Agent 推理层的关键桥梁。整个 Lua 子系统的设计分为三个层次：**C 桥接 API**、**Lua 运行时引擎**、**Skill+Script 应用层**。
+
+### 8.1 架构总览
+
+```
+┌──────────────────────────────────────────────────────┐
+│  LLM Agent Layer (claw_core)                        │
+│  → 调用 lua_run_script 工具                          │
+│  → 激活技能(如 take_picture)                         │
+└──────────────────────┬───────────────────────────────┘
+                       │ cap_lua group
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│  cap_lua — Lua 能力适配层                            │
+│  ├─ lua_run_script (同步)                            │
+│  ├─ lua_run_script_async (异步)                      │
+│  └─ lua_list_jobs / lua_stop_job (作业管理)          │
+└──────────────────────┬───────────────────────────────┘
+                       │ cap_lua_runtime_execute_file()
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│  Lua Runtime Engine (cap_lua_runtime)               │
+│  ├─ luaL_newstate → luaL_openlibs → 注册模块         │
+│  ├─ 超时钩子(每100条指令检查)                        │
+│  ├─ print 重定向(捕获输出)                           │
+│  ├─ JSON args 转 Lua table                          │
+│  └─ 异步作业调度(16槽, 最大4并发)                    │
+└──────────────────────┬───────────────────────────────┘
+                       │ luaL_requiref("gpio", luaopen_gpio)
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│  Lua Modules (30+ C 桥接模块)                        │
+│  ├─ lua_driver_gpio     — GPIO 控制                  │
+│  ├─ lua_module_camera   — 摄像头拍照                 │
+│  ├─ lua_module_display  — 显示屏绘制                 │
+│  ├─ lua_module_audio    — 音频播放/录制              │
+│  ├─ lua_module_lvgl     — LVGL GUI                   │
+│  ├─ lua_module_storage  — 文件系统操作               │
+│  └─ ...30+ 模块...                                   │
+└──────────────────────────────────────────────────────┘
+```
+
+### 8.2 C → Lua 桥接模式
+
+以 GPIO 模块为例 (`lua_driver_gpio.c`)：
+
+```c
+// 1. 每个 Lua 可调用函数都是一个 C 函数，签名为 int (*)(lua_State*)
+static int lua_driver_gpio_set_direction(lua_State *L) {
+    gpio_num_t pin = (gpio_num_t)luaL_checkinteger(L, 1);  // 从 Lua 栈取参数
+    const char *mode_str = luaL_checkstring(L, 2);
+    gpio_mode_t mode = lua_driver_gpio_mode_from_string(mode_str);
+
+    if (gpio_set_direction(pin, mode) != ESP_OK) {
+        return luaL_error(L, "gpio_set_direction failed");  // 异常传播到 Lua
+    }
+    return 0;  // 无返回值
+}
+
+static int lua_driver_gpio_get_level(lua_State *L) {
+    gpio_num_t pin = (gpio_num_t)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, gpio_get_level(pin));  // 返回值入栈
+    return 1;                                  // 1 个返回值
+}
+
+// 2. 模块入口函数：创建 Lua table，注册所有函数
+int luaopen_gpio(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, lua_driver_gpio_set_direction);
+    lua_setfield(L, -2, "set_direction");       // gpio.set_direction(...)
+    lua_pushcfunction(L, lua_driver_gpio_set_level);
+    lua_setfield(L, -2, "set_level");           // gpio.set_level(...)
+    lua_pushcfunction(L, lua_driver_gpio_get_level);
+    lua_setfield(L, -2, "get_level");           // gpio.get_level(...)
+    return 1;  // 返回 module table
+}
+
+// 3. 注册到 cap_lua 的全局模块表
+esp_err_t lua_driver_gpio_register(void) {
+    return cap_lua_register_module("gpio", luaopen_gpio);
+}
+```
+
+**关键设计点**:
+- `luaL_checkinteger` / `luaL_checkstring` 做参数验证并在 Lua 层抛异常
+- `luaL_error` 替代 `return` 做错误传播，自动生成 Lua 栈追踪
+- 每个模块通过 `cap_lua_register_module("name", luaopen_func)` 注册到全局模块列表
+- 模块在 `cap_lua_load_registered_modules()` 中通过 `luaL_requiref` 预加载到每个 Lua 虚拟机
+- 共 32 个模块槽位 (`CAP_LUA_MAX_MODULES`)
+
+### 8.3 Lua 运行时引擎 (`cap_lua_runtime.c`)
+
+#### 8.3.1 执行流程
+
+```
+cap_lua_runtime_execute_file(path, args_json, timeout_ms):
+  1. 验证脚本路径和文件大小(最大64KB)
+  2. luaL_newstate() — 创建独立 Lua VM (每次执行新建，保证隔离)
+  3. luaL_openlibs() — 加载 Lua 标准库
+  4. cap_lua_load_registered_modules() — 预加载所有已注册的 C 桥接模块
+  5. cap_lua_add_script_dir_to_package_path() — 设置 package.path
+     优先级: 脚本自身目录 > 已注册共享目录 > 原始 path
+  6. cap_lua_set_exec_ctx() — 注入执行上下文到 extraspace
+  7. cap_lua_set_args_global() — JSON args → Lua table → 全局变量 args
+  8. 替换全局 print 为 cap_lua_print_capture (捕获输出)
+  9. lua_sethook(timeout_hook, LUA_MASKCOUNT, 100) — 设置100条指令检查一次
+  10. luaL_dofile(path) — 执行脚本
+  11. cap_lua_run_exit_cleanups() — 执行退出清理回调
+  12. lua_close() — 销毁 VM
+```
+
+#### 8.3.2 超时与取消机制
+
+```c
+// 每执行100条Lua指令触发一次钩子
+static void cap_lua_timeout_hook(lua_State *L, lua_Debug *ar) {
+    cap_lua_exec_ctx_t *ctx = cap_lua_get_exec_ctx(L);
+
+    // 合作式取消(由异步作业的 stop_requested 标志触发)
+    if (ctx->stop_requested && *ctx->stop_requested) {
+        luaL_error(L, "stopped by user");
+    }
+    // 墙钟时间超时
+    if (ctx->deadline_us != 0 && esp_timer_get_time() > ctx->deadline_us) {
+        luaL_error(L, "execution timed out");
+    }
+}
+```
+
+**安全设计**: 执行上下文指针 (ctx) 存储在 `lua_State` 的 extraspace 中（而非全局变量或注册表）。extraspace 对 Lua 脚本完全不可见（连 `debug.getregistry()` 也访问不到），防止脚本篡改超时机制。
+
+```
+LUA_EXTRASPACE 默认 sizeof(void*) → 恰好存一个指针
+lua_newthread 会从主线程复制 extraspace → 协程也能感知超时
+```
+
+#### 8.3.3 输出捕获
+
+```c
+static int cap_lua_print_capture(lua_State *L) {
+    // 通过 upvalue 获取 ctx（push为lightuserdata避免脚本伪造）
+    cap_lua_exec_ctx_t *ctx = (cap_lua_exec_ctx_t *)lua_touserdata(L, lua_upvalueindex(1));
+    for (int i = 1; i <= top; i++) {
+        const char *text = luaL_tolstring(L, i, &len);
+        cap_lua_output_append(ctx, text, len);  // 输出到缓冲区
+        // 同时输出到 stdout 和 log_fn（方便实时监控）
+    }
+}
+```
+
+#### 8.3.4 JSON → Lua table 双向转换
+
+```c
+// JSON → Lua table: 递归深度限制64层，防止栈溢出
+static esp_err_t cap_lua_push_json_value_depth(lua_State *L, const cJSON *item, int depth) {
+    if (depth >= CAP_LUA_JSON_MAX_DEPTH) return ESP_ERR_INVALID_SIZE;
+    if (cJSON_IsObject(item)) {
+        lua_newtable(L);
+        cJSON_ArrayForEach(child, item) {
+            push_value(L, child, depth+1);
+            lua_setfield(L, -2, child->string);
+        }
+    }
+    // ... array, string, number, bool, null ...
+}
+```
+
+脚本中通过全局变量 `args` 访问传入的 JSON 参数：
+```lua
+local timeout = args.timeout_ms or 3000
+local filename = args.filename or "capture.jpg"
+```
+
+### 8.4 异步作业调度 (`cap_lua_async.c`)
+
+支持长时间运行的 Lua 脚本异步执行，核心设计：
+
+```
+cap_lua_async:
+  静态槽位数组: s_jobs[16]       — 最多16个作业
+  并发限制:     CAP_LUA_ASYNC_MAX_CONCURRENT = 4
+  作业状态机:   QUEUED → RUNNING → DONE/FAILED/TIMEOUT/STOPPED
+  每个槽位独立信号量: s_slot_terminal_sem[16] (用于同步等待)
+```
+
+| API | 功能 |
+|-----|------|
+| `lua_run_script_async` | 提交异步作业，返回 job_id |
+| `lua_list_jobs` | 按状态过滤作业列表 |
+| `lua_get_job` | 获取作业详情(含日志尾部) |
+| `lua_stop_job` | 协作式停止(设置 stop_requested 标志) |
+| `lua_tail_job_log` | 获取作业实时日志(支持 since_seq 增量) |
+
+**槽位复用策略**:
+- 优先使用全新空槽位
+- 否则复用最旧的已终止作业槽位（不含同步等待者）
+- 同步等待者 (sync_waiter) 防止其槽位被回收
+
+**名称与排他性**:
+- `name`: 作业的友好名称（用于查询和停止）
+- `exclusive`: 排他性分组，启动时会检查同组是否有活跃作业
+- `replace`: 为 true 时，自动停止同名的活跃作业后替换
+
+### 8.5 构建系统自动化 (`lua_module_builder`)
+
+CMake 工具链自动处理：
+
+```
+构建时自动执行：
+  1. sync_lua_module_resources.py   → 将各模块的 skills/scripts 复制到
+                                       builtin_lua_modules 技能目录
+  2. sync_lua_module_docs.py        → 生成各模块的 API 文档 Markdown
+  3. generate_builtin_modules_skill.py → 生成一个特殊的 SKILL.md，
+      列出所有可用的 Lua 模块和函数，让 LLM 了解可用的 Lua API
+```
+
+这样 LLM 可以通过 `activate_skill("builtin_lua_modules")` 获得所有 Lua API 文档。
+
+### 8.6 Skill + Script 协作模式
+
+以 `take_picture` 为例说明 Skill 和 Lua Script 的完整协作：
+
+```
+1. LLM 在技能目录中看到 "take_picture" 技能
+2. LLM 调用 activate_skill("take_picture")
+   → cap_groups={"cap_lua"} 被设为 session 可见
+   → SKILL.md 正文被注入到会话上下文
+3. LLM 阅读 SKILL.md 中的示例，调用：
+   lua_run_script({
+     "path": "{CUR_SKILL_DIR}/scripts/take_picture.lua",
+     "args": {"filename": "photo.jpg"}
+   })
+4. cap_lua 执行 take_picture.lua：
+   → require("board_manager") → 读取板级硬件信息
+   → require("camera") → 操作摄像头硬件
+   → require("image") → 处理图像
+   → require("storage") → 保存文件
+5. 输出结果返回给 LLM
+```
+
+**SKILL.md 的关键设计** (`take_picture/SKILL.md`):
+- frontmatter 中声明 `cap_groups: ["cap_lua"]` — 激活此 Skill 后开放 `lua_run_script` 工具
+- 使用 `{CUR_SKILL_DIR}` 占位符引用脚本路径 → 运行时由 `claw_skill_read_document` 处动态替换
+- 提供完整的参数 schema 和调用示例 → LLM 可直接生成正确的工具调用请求
+- 包含错误处理指导 → "If lua_run_script returns an error, report that error directly"
+
+### 8.7 关键设计理念总结
+
+| 设计点 | 实现 | 优势 |
+|-------|------|------|
+| **每次新建 VM** | `luaL_newstate()` + `lua_close()` | 完全隔离，内存泄漏不影响后续执行 |
+| **extraspace 存上下文** | `lua_getextraspace` | 脚本无法访问/篡改超时和停止机制 |
+| **print 通过 upvalue 获取 ctx** | `lua_pushlightuserdata` 作为 upvalue | 脚本无法伪造执行上下文 |
+| **100条指令钩子** | `LUA_MASKCOUNT` | 在性能和超时精度间平衡 |
+| **主动注册无隐式暴露** | `cap_lua_register_module` | 安全白名单，控制脚本可用的 C API |
+| **JSON深度限制** | `64层递归上限` | 防止恶意嵌套导致 Lua 栈溢出 |
+| **异步作业队列** | `16槽位 + 4并发` | 支持并发执行，自动槽位回收 |
+| **脚本目录优先** | `package.path` 插入脚本自身目录 | 支持 `require` 脚本内分模块 |
+
+---
+
+> 整个系统以 `claw_core`(LLM循环)为"大脑"、`claw_event_router`(事件路由)为"神经系统"、`claw_memory`(记忆)为"海马体"、`claw_skill`(技能)为"知识库"、`claw_cap`(能力)为"四肢"、**`cap_lua`(Lua运行时)为"反射弧"**，构成了一套完整的边缘AI Agent运行时。
