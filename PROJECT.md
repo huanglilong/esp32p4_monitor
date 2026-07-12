@@ -865,7 +865,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 | # | 组件 | 上游路径 | 优先级 | 说明 |
 |---|------|----------|:------:|------|
 | G1 | **cap_im_local** | `claw_capabilities/cap_im_local/` | ✅ 已完成 | 本地 IM 通道, 支持不依赖外部 IM 平台的 Web/Flutter Agent 对话。实现: `cap_im_local.c` (IM gateway + send_message capability) + `web_config_server.cpp` (outbound callback → ring buffer → `/api/agent/messages` polling) + `main.cpp` (cold-init registration) + `agent_chat_screen.dart` (Flutter UI) |
-| G2 | **cap_llm_inspect** | `claw_capabilities/cap_llm_inspect/` | 中 | LLM 请求/响应检查, 用于调试 Agent 行为 |
+| G2 | **cap_llm_inspect** | `claw_capabilities/cap_llm_inspect/` | ✅ 已完成 | LLM 请求/响应检查, 用于调试 Agent 行为。实现: `cap_llm_inspect.c` (inspect_image capability — 通过 LLM Vision 分析本地图片) + `cmd_cap_llm_inspect.c` (CLI `llm_inspect` 命令) + `SKILL.md` (Agent skill 文档)
 | G3 | **wifi_manager** | `common/wifi_manager/` | ✅ 已完成 | 独立 WiFi 管理组件, AP+STA 模式 + 自动重连。实现: 移植自 esp-claw 上游 → `components/common/wifi_manager/`，C++ facade `WifiService` (main/wifi_service.hpp/cpp) 封装 wifi_manager C API + uORB wifi_state 发布 + SNTP 启动 + NVS 持久化。PhoneAppSettings 和 web_config_server 重构为使用 WifiService，消除 ~200 行内联 WiFi 代码 |
 | G4 | **captive_dns** | `common/captive_dns/` | ✅ 已完成 | Captive Portal DNS + HTTP (port 80), 配合 wifi_manager 实现无屏配网。移植自 esp-claw 上游 → `components/common/captive_dns/`。WifiService::start() 自动启动: 劫持所有 DNS 查询到 AP IP (192.168.4.1), DHCP 通告 AP 为 DNS 服务器, HTTP port 80 重定向到 Web Config。STA 连接后自动停止 DNS + HTTP (释放 port 80 给 CameraStream)。手机连接 AP 后自动弹出 Web Config 页面
 | G5 | **app_claw** | `common/app_claw/` | 中 | 应用 Shell, 模块化 capability/lua 注册 (替代 main.cpp 内联初始化) |

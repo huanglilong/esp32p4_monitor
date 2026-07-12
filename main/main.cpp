@@ -80,6 +80,7 @@
 #include "cap_agent_mgr.h"
 #include "cap_router_mgr.h"
 #include "cap_skill_mgr.h"
+#include "cap_llm_inspect.h"
 // KV Backend
 #include "claw_kv_nvs.h"
 #endif
@@ -774,6 +775,7 @@ extern "C" void app_main(void)
             cap_agent_mgr_register_group();
             cap_router_mgr_register_group();
             cap_skill_mgr_register_group("/sdcard/claw/skills");
+            cap_llm_inspect_register_group();
 
             /* ── Phase 1: MCP Server — expose device tools via MCP ── */
             {
