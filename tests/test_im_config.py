@@ -8,6 +8,7 @@ Tests gracefully handle this with pytest.xfail.
 
 import time
 import pytest
+import requests
 
 
 def _try_post(client, base_url, path, json=None, timeout=10):
@@ -20,7 +21,7 @@ def _try_post(client, base_url, path, json=None, timeout=10):
                 pytest.xfail(f"Feature not compiled in (endpoint {path} returned 404)")
             r.raise_for_status()
             return r.json()
-        except (ConnectionResetError, ConnectionError) as e:
+        except (requests.exceptions.ConnectionError, ConnectionResetError) as e:
             if attempt == 0:
                 time.sleep(3)
             else:
