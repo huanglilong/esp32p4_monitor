@@ -83,7 +83,9 @@
 ```bash
 source ~/.espressif/v6.x/esp-idf/export.sh            # Setup environment (required for both build and test)
 idf.py build                                          # Build
-pytest tests --base-url=http://esp-web.local:8080 -v  # Run tests (if build succeeds; requires device + WiFi)
+idf.py flash monitor                                  # Flash firmware & reboot device
+# In another terminal (same source), once device connects to WiFi:
+pytest tests --base-url=http://esp-web.local:8080 -v  # Run tests (requires device + WiFi)
 idf.py fullclean                                      # Full clean (only when config changed)
 ```
 
