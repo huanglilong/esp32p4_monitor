@@ -81,9 +81,10 @@
 ## 4. Build, Flash & Monitor
 
 ```bash
-source ~/.espressif/v6.x/esp-idf/export.sh      # Setup environment
-idf.py build                                    # Build
-idf.py fullclean                                # Full clean (only when config changed)
+source ~/.espressif/v6.x/esp-idf/export.sh            # Setup environment (required for both build and test)
+idf.py build                                          # Build
+pytest tests --base-url=http://esp-web.local:8080 -v  # Run tests (if build succeeds; requires device + WiFi)
+idf.py fullclean                                      # Full clean (only when config changed)
 ```
 
 **macOS**: `idf.py flash -b 1500000 -p $(ls /dev/cu.usbmodem*) monitor`
@@ -116,7 +117,7 @@ This must pass before committing Flutter app changes.
 2. **git push is forbidden** — never push without explicit request
 3. **One issue, one commit** — each commit addresses exactly ONE issue/feature/bugfix
 4. **Commit messages**: clear, concise, in English, with **root cause and summary of what was done and why**
-5. **Before committing**: verify build passes (`idf.py build` for firmware, `cd flutter_app && flutter build macos` for Flutter app)
+5. **Before committing**: verify build passes (`idf.py build`) and tests pass (`pytest tests --base-url=http://esp-web.local:8080 -v` under `source ~/.espressif/v6.x/esp-idf/export.sh`), plus `cd flutter_app && flutter build macos` for Flutter app changes
 
 ---
 
