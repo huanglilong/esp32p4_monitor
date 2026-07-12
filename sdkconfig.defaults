@@ -136,7 +136,9 @@ CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=5
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # Lower threshold for internal-only allocation: only tiny chunks (<4KB) go to internal SRAM.
 # LWIP pbufs (~1.5KB) and other small WiFi buffers will go to PSRAM, saving ~20-30KB internal SRAM.
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
+# NOTE: must be >= 4096. At 2048, audio GMF/I2S small buffer allocations (<2KB) are
+# routed to PSRAM, whose higher latency causes I2S DMA underrun → music playback stutter.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 # C6 reset
 CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=54
 CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH=y

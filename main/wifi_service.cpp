@@ -33,56 +33,9 @@ static const char *TAG = "wifi_service";
  * portal (port 8080). This enables automatic captive portal detection
  * on phones (Android: connectivitycheck.gstatic.com, iOS: captive.apple.com).
  * The DNS hijacking (captive_dns) redirects all domain lookups here,
- * and this HTTP handler completes the captive portal detection flow.
- *
- * IMPORTANT: httpd_stop() is a blocking call that waits for the httpd
- * thread to exit. It MUST NOT be called from the default event loop
- * task (where wifi_event_handler runs), or it will block the event
- * loop and cause esp_event_post() timeouts for other httpd instances.
- * Use _captive_httpd_stop_deferred() instead, which schedules the
- * stop on a one-shot timer context. */
+ * and this HTTP handler completes the captive portal detection flow. */
 
 static httpd_handle_t s_captive_httpd = nullptr;
-static esp_timer_handle_t s_captive_stop_timer = nullptr;
-
-/* Deferred stop: called from esp_timer callback (not event loop task).
- * httpd_stop() blocks until the httpd thread exits, so it must not
- * be called from the event loop task where _state_callback runs. */
-static void _captive_httpd_stop_cb(void *arg)
-{
-    (void)arg;
-    if (s_captive_httpd) {
-        httpd_stop(s_captive_httpd);
-        s_captive_httpd = nullptr;
-        ESP_LOGI(TAG, "Captive portal HTTP server stopped (STA connected, freeing port 80)");
-    }
-}
-
-static void _captive_httpd_stop_deferred(void)
-{
-    if (!s_captive_httpd) return;
-
-    /* Create one-shot timer on first call */
-    if (!s_captive_stop_timer) {
-        const esp_timer_create_args_t timer_args = {
-            .callback = _captive_httpd_stop_cb,
-            .name = "captive_stop",
-        };
-        esp_err_t err = esp_timer_create(&timer_args, &s_captive_stop_timer);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to create captive stop timer (err=%d), falling back to direct stop", err);
-            /* Fallback: call httpd_stop directly. This blocks the current
-             * task briefly but is safe as a last resort — _state_callback
-             * runs in the default event loop task, and blocking it briefly
-             * is better than never stopping the captive HTTP server. */
-            _captive_httpd_stop_cb(nullptr);
-            return;
-        }
-    }
-
-    /* Stop from timer context (0ms = ASAP but not on event loop task) */
-    esp_timer_start_once(s_captive_stop_timer, 0);
-}
 
 static esp_err_t _captive_handler(httpd_req_t *req)
 {
@@ -287,15 +240,11 @@ void WifiService::_state_callback(bool connected, void *user_ctx) {
 
     /* Stop captive portal once STA is connected — no longer needed.
      * Prevents background app traffic (WeChat mmtls, push notifications,
-     * etc.) from flooding the captive HTTP server with 404 errors.
-     * Also frees port 80 for CameraStream HTTP server. */
+     * etc.) from flooding the captive HTTP server with 404 errors. */
     if (connected && self->_captive_dns_started.load(std::memory_order_acquire)) {
         captive_dns_stop();
         self->_captive_dns_started.store(false, std::memory_order_release);
         ESP_LOGI(TAG, "Captive portal DNS stopped (STA connected)");
-    }
-    if (connected && s_captive_httpd) {
-        _captive_httpd_stop_deferred();
     }
 
     int8_t rssi = 0;
