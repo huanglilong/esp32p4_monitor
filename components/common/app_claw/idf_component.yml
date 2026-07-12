@@ -1,0 +1,228 @@
+dependencies:
+  cap_boards:
+    path: ../../claw/claw_capabilities/cap_boards
+
+  cap_files:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_FILES} == True
+    path: ../../claw/claw_capabilities/cap_files
+
+  cap_agent_mgr:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_AGENT_MGR} == True
+    path: ../../claw/claw_capabilities/cap_agent_mgr
+
+  cap_im_platform:
+    rules:
+      - if: >-
+          $CONFIG{APP_CLAW_CAP_IM_FEISHU} == True || $CONFIG{APP_CLAW_CAP_IM_QQ} == True ||
+          $CONFIG{APP_CLAW_CAP_IM_TG} == True || $CONFIG{APP_CLAW_CAP_IM_WECHAT} == True
+    path: ../../claw/claw_capabilities/cap_im_platform
+
+  cap_im_local:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_IM_LOCAL} == True
+    path: ../../claw/claw_capabilities/cap_im_local
+
+  cap_llm_inspect:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LLM_INSPECT} == True
+    path: ../../claw/claw_capabilities/cap_llm_inspect
+
+  cap_llm_config:
+    path: ../../claw/claw_capabilities/cap_llm_config
+
+  cap_lua:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+    path: ../../claw/claw_capabilities/cap_lua
+
+  cap_mcp_client:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_MCP_CLIENT} == True
+    path: ../../claw/claw_capabilities/cap_mcp_client
+
+  mcp_mdns:
+    rules:
+      - if: >-
+          $CONFIG{APP_CLAW_CAP_MCP_CLIENT} == True ||
+          $CONFIG{APP_CLAW_CAP_MCP_SERVER} == True
+    path: ../../claw/common/mcp_mdns
+
+  cap_mcp_server:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_MCP_SERVER} == True
+    path: ../../claw/claw_capabilities/cap_mcp_server
+
+  cap_router_mgr:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_ROUTER_MGR} == True
+    path: ../../claw/claw_capabilities/cap_router_mgr
+
+  cap_scheduler:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_SCHEDULER} == True
+    path: ../../claw/claw_capabilities/cap_scheduler
+
+  cap_session_mgr:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_SESSION_MGR} == True
+    path: ../../claw/claw_capabilities/cap_session_mgr
+
+  cap_skill_mgr:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_SKILL_MGR} == True
+    path: ../../claw/claw_capabilities/cap_skill_mgr
+
+  cap_system:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_SYSTEM} == True
+    path: ../../claw/claw_capabilities/cap_system
+
+  cap_http_request:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_HTTP_REQUEST} == True
+    path: ../../claw/claw_capabilities/cap_http_request
+
+  cap_web_search:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_WEB_SEARCH} == True
+    path: ../../claw/claw_capabilities/cap_web_search
+
+  claw_cap:
+    path: ../../claw/claw_modules/claw_cap
+
+  claw_core:
+    path: ../../claw/claw_modules/claw_core
+
+  claw_event_router:
+    path: ../../claw/claw_modules/claw_event_router
+
+  claw_manager:
+    path: ../../claw/claw_modules/claw_manager
+
+  claw_memory:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_MEMORY} == True
+    path: ../../claw/claw_modules/claw_memory
+
+  claw_skill:
+    path: ../../claw/claw_modules/claw_skill
+
+  claw_utils:
+    path: ../../claw/claw_modules/claw_utils
+
+  skill_builder:
+    path: ../../common/skill_builder
+
+  lua_module_builder:
+    path: ../../common/lua_module_builder
+
+  # --- lua_driver (hardware peripheral drivers) ---
+  lua_driver_gpio:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_DRIVER_GPIO} == True
+    path: ../../lua_modules/lua_driver_gpio
+
+  # --- lua_module (higher-level modules) ---
+  lua_module_audio:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_AUDIO} == True
+      - if: $CONFIG{ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT} == True
+    path: ../../lua_modules/lua_module_audio
+
+  
+
+  lua_module_button:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_BUTTON} == True
+    path: ../../lua_modules/lua_module_button
+
+
+  lua_module_call_capability:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_CAPABILITY} == True
+    path: ../../lua_modules/lua_module_call_capability
+
+  lua_module_camera:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_CAMERA} == True
+      - if: $CONFIG{ESP_BOARD_DEV_CAMERA_SUPPORT} == True
+    path: ../../lua_modules/lua_module_camera
+
+  lua_module_delay:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_DELAY} == True
+    path: ../../lua_modules/lua_module_delay
+
+  lua_module_display:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_DISPLAY} == True
+    path: ../../lua_modules/lua_module_display
+
+  
+
+  lua_module_event_publisher:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_EVENT_PUBLISHER} == True
+    path: ../../lua_modules/lua_module_event_publisher
+
+  lua_module_http_server:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_HTTP_SERVER} == True
+    path: ../../lua_modules/lua_module_http_server
+
+  lua_module_json:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_JSON} == True
+    path: ../../lua_modules/lua_module_json
+
+  lua_module_thread:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_THREAD} == True
+    path: ../../lua_modules/lua_module_thread
+
+  lua_module_image:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_IMAGE} == True
+    path: ../../lua_modules/lua_module_image
+
+  lua_module_lcd_touch:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_LCD_TOUCH} == True
+      - if: $CONFIG{ESP_BOARD_DEV_LCD_TOUCH_SUPPORT} == True
+      - if: $CONFIG{ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT} == True
+    path: ../../lua_modules/lua_module_lcd_touch
+
+  lua_module_led_strip:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_LED_STRIP} == True
+    path: ../../lua_modules/lua_module_led_strip
+
+  
+
+  lua_module_storage:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_STORAGE} == True
+    path: ../../lua_modules/lua_module_storage
+
+  lua_module_system:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+      - if: $CONFIG{APP_CLAW_LUA_MODULE_SYSTEM} == True
+    path: ../../lua_modules/lua_module_system

@@ -204,7 +204,12 @@ CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT=85
 # ESP-Claw IM Channels
 CONFIG_APP_CLAW_CAP_IM_LOCAL=y
 CONFIG_APP_CLAW_CAP_IM_WECHAT=y
-CONFIG_APP_CLAW_CAP_IM_TG=y
+
+# Override app_claw Kconfig defaults for modules not yet ported
+CONFIG_APP_CLAW_CAP_CORE=n
+CONFIG_APP_CLAW_CAP_SCHEDULER=n
+CONFIG_APP_CLAW_ENABLE_CLI=n
+CONFIG_APP_CLAW_CAP_MEMORY=n
 
 # MbedTLS — allocate from PSRAM to avoid SRAM exhaustion on HTTPS connections
 # (WeChat iLink Bot, LLM API, etc. need TLS; default internal alloc fails

@@ -868,13 +868,13 @@ idf.py -p /dev/ttyUSB0 flash monitor
 | G2 | **cap_llm_inspect** | `claw_capabilities/cap_llm_inspect/` | ✅ 已完成 | LLM 请求/响应检查, 用于调试 Agent 行为。实现: `cap_llm_inspect.c` (inspect_image capability — 通过 LLM Vision 分析本地图片) + `cmd_cap_llm_inspect.c` (CLI `llm_inspect` 命令) + `SKILL.md` (Agent skill 文档)
 | G3 | **wifi_manager** | `common/wifi_manager/` | ✅ 已完成 | 独立 WiFi 管理组件, AP+STA 模式 + 自动重连。实现: 移植自 esp-claw 上游 → `components/common/wifi_manager/`，C++ facade `WifiService` (main/wifi_service.hpp/cpp) 封装 wifi_manager C API + uORB wifi_state 发布 + SNTP 启动 + NVS 持久化。PhoneAppSettings 和 web_config_server 重构为使用 WifiService，消除 ~200 行内联 WiFi 代码 |
 | G4 | **captive_dns** | `common/captive_dns/` | ✅ 已完成 | Captive Portal DNS + HTTP (port 80), 配合 wifi_manager 实现无屏配网。移植自 esp-claw 上游 → `components/common/captive_dns/`。WifiService::start() 自动启动: 劫持所有 DNS 查询到 AP IP (192.168.4.1), DHCP 通告 AP 为 DNS 服务器, HTTP port 80 重定向到 Web Config。STA 连接后自动停止 DNS + HTTP (释放 port 80 给 CameraStream)。手机连接 AP 后自动弹出 Web Config 页面
-| G5 | **app_claw** | `common/app_claw/` | 中 | 应用 Shell, 模块化 capability/lua 注册 (替代 main.cpp 内联初始化) |
-| G6 | **lua_modules** | `lua_modules/` | 中 | Lua 脚本子系统, 35 个模块 (硬件驱动 + 高层模块), 支持"对话即创建" |
-| G7 | **lua_module_builder** | `common/lua_module_builder/` | 低 | Lua 模块文档/测试构建工具 |
-| G8 | **skill_builder** | `common/skill_builder/` | 低 | Skill 编译工具 |
-| G9 | **display_arbiter** | `common/display_arbiter/` | 低 | 多显示客户端仲裁 |
+| G5 | **app_claw** | `common/app_claw/` | ✅ 已完成 | 应用 Shell, 模块化 capability/lua 注册 (替代 main.cpp 内联初始化)。移植自 esp-claw 上游 → `components/common/app_claw/`，含 app_claw.c (start/update_config/get_core), app_capabilities.c (模块化能力注册), app_lua_modules.c (模块化 lua 注册), app_claw_cli.c (CLI REPL), Kconfig (完整配置菜单) |
+| G6 | **lua_modules** | `lua_modules/` | ✅ 已完成 | Lua 脚本子系统 — 按需移植 18 个模块: core (system, json, thread, storage, delay, event_publisher, call_capability, http_server), hardware (gpio, audio, camera, display, image, lcd_touch, button, led_strip), board_manager。未移植: ble, ble_hid, environmental_sensor, fuel_gauge, imu, ir, knob, lcd, magnetometer, sci, vision, adc, i2c, mcpwm, pcnt, rmt, touch, uart |
+| G7 | **lua_module_builder** | `common/lua_module_builder/` | ✅ 已完成 | Lua 模块文档/测试构建工具。移植自 esp-claw 上游 → `components/common/lua_module_builder/`，含 cmake/lua_sync.cmake + Python 工具 (sync_lua_module_resources.py, sync_lua_module_docs.py, generate_builtin_modules_skill.py) |
+| G8 | **skill_builder** | `common/skill_builder/` | ✅ 已完成 | Skill 编译工具。作为 app_claw 的必要依赖项同步移植 |
+| G9 | **display_arbiter** | `common/display_arbiter/` | ✅ 已完成 | 多显示客户端仲裁。作为 lua_module_display/lua_module_lvgl 的必要依赖项同步移植 |
 | G10 | **emote** | `common/emote/` | 低 | 表情/情绪系统 |
-| G11 | **esp_painter** | `common/esp_painter/` | 低 | 图形绘画库 |
+| G11 | **esp_painter** | `common/esp_painter/` | ✅ 已完成 | 图形绘画库。作为 lua_module_display 的必要依赖项同步移植 |
 | G12 | **esp_video** | `common/esp_video/` | 低 | 视频捕获组件 (当前使用 example_video_common) |
 | G13 | **Board Manager** | `application/edge_agent/boards/` | 低 | 结构化多板元数据 + 外设 YAML (当前用 GT911 I2C 探测) |
 | G14 | **FATFS Images** | `application/edge_agent/fatfs_image/` | 中 | 构建时 FATFS 镜像 (SYSTEM 只读 + DATA 种子), 用于 bundle skills/router_rules/recovery |
