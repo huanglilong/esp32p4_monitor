@@ -687,6 +687,7 @@ static void writer_task_func(void *arg)
     }
     size_t data_buf_size = ULOG_MSG_HEADER_LEN + sizeof(uint16_t) + max_payload;
     uint8_t *data_buf = (uint8_t *)heap_caps_malloc(data_buf_size, MALLOC_CAP_SPIRAM);
+    bool data_buf_is_caps = (data_buf != nullptr);
     if (!data_buf) {
         /* Fallback to internal RAM (may fail for very large topics) */
         data_buf = (uint8_t *)malloc(data_buf_size);
@@ -803,7 +804,11 @@ static void writer_task_func(void *arg)
     }
 
     /* Free heap-allocated data buffer before task exit */
-    heap_caps_free(data_buf);
+    if (data_buf_is_caps) {
+        heap_caps_free(data_buf);
+    } else {
+        free(data_buf);
+    }
 
     /* Task self-delete — set exited flag first for clean teardown */
     writer->task_exited.store(true, std::memory_order_release);
