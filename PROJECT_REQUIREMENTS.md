@@ -298,6 +298,12 @@
 | S240 | **PhoneAppAudio _stop_recording UAF** | `_stop_recording()` 用 `vTaskDelay(200ms)` 等待音频任务退出录制块后释放 `_pcm_buffer`/`_encoder`，但系统负载高时任务可能被抢占超过 200ms，导致 use-after-free。修复: 新增 `_recording_ops_in_flight` 原子计数器，任务进入录制块递增/退出递减，`_stop_recording()` 轮询等待计数归零 (最长 1s)，匹配 AudioDriver `_codec_ops_in_flight` 模式 (S182) | ✅ |
 | S241 | **uORB 订阅者槽位泄漏 (xQueueCreate 失败)** | `orb_subscribe()` 消耗槽位后若 `xQueueCreate()` 失败 (OOM)，槽位永久丢失。修复: 失败时将槽位归还 free-list 或回退 `s_num_subs`，防止内存压力下耗尽 ORB_MAX_SUBS 池 | ✅ |
 | S242 | **ULog 订阅泄漏 (start 失败)** | `ulog_writer_start()` 订阅所有 topic 后若写入/task 创建失败，订阅永不释放；`stop()` 仅处理 RUNNING 态，重试循环可耗尽 256 订阅者槽位。修复: `stop()` 改为仅跳过 IDLE 态，ERROR 态也执行完整清理 (unsubscribe + close + free) | ✅ |
+| S243 | **msg_gen.py sys 导入缺失** | `tools/msg_gen.py` 调用 `sys.exit(1)` 但 `sys` 未导入，无输出标志运行时 NameError 崩溃。修复: 添加 `import sys` | ✅ |
+| S244 | **ULog data_buf alloc/free 不匹配** | `data_buf` 可用 `heap_caps_malloc()` (PSRAM) 或 `malloc()` (fallback) 分配，但清理总是 `heap_caps_free()`，`malloc()` 指针传入为 UB。修复: 跟踪 `data_buf_is_caps` 标志，匹配 drain buffer 模式 | ✅ |
+| S245 | **uORB orb_init() 失败后 NULL mutex 解引用** | `orb_init()` PSRAM 分配失败时删除 `s_mutex` 并设为 NULL，但所有 6 个公共 API 的 `lock()` 直接 `xSemaphoreTake(s_mutex)` 无 NULL 检查 → 崩溃。修复: 每个公共 API 入口添加 `is_initialized()` 检查 | ✅ |
+| S246 | **device_mcp JSON 转义缺失** | `tool_audio_record_start()` / `tool_audio_play()` 将用户传入文件名通过 `snprintf` 直接插入 JSON，`"` 或 `\` 产生无效 JSON。修复: 改用 `cJSON_CreateObject` + `cJSON_PrintUnformatted` 安全构造 | ✅ |
+| S247 | **uORB s_num_subs 数据竞争 + generation 截断** | `s_num_subs` 在 `orb_unsubscribe()`/`orb_copy()`/`orb_check()` 中无锁读取 (mutex 外)，存在数据竞争；`generation` 字段为 `int` 但读取为 `uint16_t`，65535+ 次订阅后截断导致 ABA 假阳性。修复: `handle >= s_num_subs` 移入锁内；`gen` 改为 `int` | ✅ |
+| S248 | **uORB assert.h 包含** | `<assert.h>` 包含但未使用，违反项目禁止 `assert()` 的约定 (ESP-IDF release 构建中移除)。修复: 移除 include | ✅ |
 | S243 | **orb_publish 无锁投递 use-after-free** | `orb_publish()` 快照订阅者后释放锁，并发 `orb_unsubscribe()` 可 `vQueueDelete` 释放队列，投递时写入已释放内存。修复: 整个 publish (查找 topic + 投递) 全程持锁，xQueue 操作非阻塞锁时间极短 | ✅ |
 | S244 | **AudioDriver codec I2C 控制句柄 NULL** | `audio_codec_new_i2c_ctrl()` 分配失败可返回 NULL，但三个调用点 (DAC ctrl/ADC ctrl/WIFI6 ES8311 ctrl) 均未检查，传入 codec 构造函数导致崩溃。修复: 三处均添加 NULL 检查，失败时设 `init_ok=false` 跳过 codec 创建 | ✅ |
 | S245 | **CameraStream PSRAM 缓冲区 free/alloc 不匹配** | 析构函数用 `free()` 释放 `_shared_jpeg_buf` (由 `heap_caps_realloc(..., MALLOC_CAP_SPIRAM)` 分配)，API 不匹配。修复: 改用 `heap_caps_free()` 匹配分配 API，避免分配器实现变更风险 | ✅ |
