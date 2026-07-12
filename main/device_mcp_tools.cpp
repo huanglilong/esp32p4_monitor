@@ -17,6 +17,7 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "cJSON.h"
 
 #include "peripherals.hpp"
 #include "camera_driver.hpp"
@@ -157,34 +158,36 @@ static esp_mcp_value_t tool_device_restart(const esp_mcp_property_list_t *props)
 /* ── Tool: audio.record_start ─────────────────────────────────── */
 static esp_mcp_value_t tool_audio_record_start(const esp_mcp_property_list_t *props)
 {
-    const char *filename = esp_mcp_property_list_get_property_string(props, "filename");
-    if (!filename || !filename[0]) {
-        filename = "mcp_recording.mp3";
-    }
+    (void)props;
     /* Recording is initiated via web_config_server API.
      * This tool provides the API endpoint for programmatic access. */
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-        "{\"message\":\"Use POST /api/audio/record/start?filename=%s on port 8080 to start recording.\","
-        "\"endpoint\":\"/api/audio/record/start\"}",
-        filename);
-    return esp_mcp_value_create_string(buf);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "message",
+        "Use POST /api/audio/record/start?filename=<filename> on port 8080 to start recording.");
+    cJSON_AddStringToObject(root, "endpoint", "/api/audio/record/start");
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json_str) return mcp_respond_str("{\"error\":\"JSON allocation failed\"}");
+    esp_mcp_value_t result = esp_mcp_value_create_string(json_str);
+    cJSON_free(json_str);
+    return result;
 }
 
 /* ── Tool: audio.play ─────────────────────────────────────────── */
 static esp_mcp_value_t tool_audio_play(const esp_mcp_property_list_t *props)
 {
-    const char *filename = esp_mcp_property_list_get_property_string(props, "filename");
-    if (!filename || !filename[0]) {
-        return mcp_respond_str("{\"error\":\"filename parameter required\"}");
-    }
+    (void)props;
     /* Playback is initiated via web_config_server API. */
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-        "{\"message\":\"Use POST /api/audio/play?file=%s on port 8080 to play audio.\","
-        "\"endpoint\":\"/api/audio/play\"}",
-        filename);
-    return esp_mcp_value_create_string(buf);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "message",
+        "Use POST /api/audio/play?file=<filename> on port 8080 to play audio.");
+    cJSON_AddStringToObject(root, "endpoint", "/api/audio/play");
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json_str) return mcp_respond_str("{\"error\":\"JSON allocation failed\"}");
+    esp_mcp_value_t result = esp_mcp_value_create_string(json_str);
+    cJSON_free(json_str);
+    return result;
 }
 
 /* ── Tool: brightness.get ─────────────────────────────────────── */
