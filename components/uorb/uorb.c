@@ -178,6 +178,10 @@ orb_advert_t orb_advertise(orb_id_t meta)
     if (meta == NULL) {
         return -1;
     }
+    if (!is_initialized()) {
+        ESP_LOGE("uORB", "orb_advertise: uORB not initialized");
+        return -1;
+    }
 
     lock();
     int idx = topic_find_or_create(meta);
@@ -192,6 +196,10 @@ orb_advert_t orb_advertise(orb_id_t meta)
 orb_sub_t orb_subscribe(orb_id_t meta)
 {
     if (meta == NULL) {
+        return -1;
+    }
+    if (!is_initialized()) {
+        ESP_LOGE("uORB", "orb_subscribe: uORB not initialized");
         return -1;
     }
 
@@ -253,6 +261,10 @@ int orb_unsubscribe(orb_sub_t handle)
     if (handle < 0 || handle >= s_num_subs) {
         return -1;
     }
+    if (!is_initialized()) {
+        ESP_LOGE("uORB", "orb_unsubscribe: uORB not initialized");
+        return -1;
+    }
 
     lock();
 
@@ -299,6 +311,10 @@ int orb_publish(orb_id_t meta, orb_advert_t handle, const void *data)
     if (meta == NULL || data == NULL) {
         return -1;
     }
+    if (!is_initialized()) {
+        ESP_LOGE("uORB", "orb_publish: uORB not initialized");
+        return -1;
+    }
 
     /* Hold the lock for the entire publish: find topic + deliver to
      * all subscribers. This prevents a race with orb_unsubscribe()
@@ -342,6 +358,10 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
     if (handle < 0 || handle >= s_num_subs || buffer == NULL) {
         return -1;
     }
+    if (!is_initialized()) {
+        ESP_LOGE("uORB", "orb_copy: uORB not initialized");
+        return -1;
+    }
 
     /* Hold the lock while checking topic_idx and getting the queue pointer.
      * Without the lock, a concurrent orb_unsubscribe() could delete the queue
@@ -375,6 +395,10 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
 int orb_check(orb_sub_t handle, bool *updated)
 {
     if (handle < 0 || handle >= s_num_subs || updated == NULL) {
+        return -1;
+    }
+    if (!is_initialized()) {
+        ESP_LOGE("uORB", "orb_check: uORB not initialized");
         return -1;
     }
 
