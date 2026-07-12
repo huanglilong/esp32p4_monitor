@@ -68,7 +68,16 @@ static void _captive_httpd_stop_deferred(void)
             .callback = _captive_httpd_stop_cb,
             .name = "captive_stop",
         };
-        esp_timer_create(&timer_args, &s_captive_stop_timer);
+        esp_err_t err = esp_timer_create(&timer_args, &s_captive_stop_timer);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create captive stop timer (err=%d), falling back to direct stop", err);
+            /* Fallback: call httpd_stop directly. This blocks the current
+             * task briefly but is safe as a last resort — _state_callback
+             * runs in the default event loop task, and blocking it briefly
+             * is better than never stopping the captive HTTP server. */
+            _captive_httpd_stop_cb(nullptr);
+            return;
+        }
     }
 
     /* Stop from timer context (0ms = ASAP but not on event loop task) */

@@ -184,6 +184,31 @@ esp_err_t captive_dns_start(const captive_dns_config_t *config)
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    /* If a DNS task handle exists but the task is no longer running
+     * (stopped by captive_dns_stop()), wait for it to exit and clear
+     * the handle. Without this, a rapid stop-then-start sequence (e.g.
+     * STA connect → DNS stop → STA disconnect → DNS start within the
+     * 1-second recvfrom timeout) would see s_dns_task still non-null
+     * and silently return, leaving the captive portal permanently
+     * broken. */
+    if (atomic_load_explicit(&s_dns_task, memory_order_acquire) &&
+        !atomic_load_explicit(&s_running, memory_order_acquire)) {
+        /* Poll with short back-off until the old task clears its handle.
+         * The DNS task uses recvfrom with 1-second timeout, so worst-case
+         * wait is ~1s. Using 10ms ticks keeps the event loop responsive. */
+        int retries = 0;
+        const int max_retries = 120; /* 120 * 10ms = 1.2s */
+        while (atomic_load_explicit(&s_dns_task, memory_order_acquire) && retries < max_retries) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            retries++;
+        }
+        if (atomic_load_explicit(&s_dns_task, memory_order_acquire)) {
+            ESP_LOGW(TAG, "Timed out waiting for old DNS task to exit");
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+
     if (atomic_load_explicit(&s_dns_task, memory_order_acquire)) {
         return ESP_OK;
     }
