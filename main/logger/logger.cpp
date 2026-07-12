@@ -267,15 +267,19 @@ static int _logger_vprintf(const char *format, va_list args)
         return ret;
     }
 
-    /* ESP-IDF v6.x passes the fully-formatted log line via the vprintf hook
-     * (with ANSI codes, level char, timestamp, and tag already embedded).
-     * Using vsnprintf on this line would cause undefined behavior if the
-     * message contains '%' characters (e.g. "CPU: 50%") — strlcpy is
-     * sufficient since no re-formatting is needed (S262). */
+    /* ESP-IDF LOG_VERSION=1 passes the vprintf hook the full format string
+     * with header ("I (%u) %s: format\n") and ANSI color codes, plus the
+     * actual args (timestamp, tag, user args).  We must call vsnprintf to
+     * substitute the format specifiers with their real values — strlcpy
+     * would copy the format string literally (e.g. "%u" and "%s" would
+     * appear verbatim in the log file). */
     char raw[MAX_LINE_LEN];
-    strlcpy(raw, format, sizeof(raw));
-    int raw_len = (int)strlen(raw);
-    if (raw_len <= 0) return ret;
+    va_list sd_args;
+    va_copy(sd_args, args);
+    int raw_len = vsnprintf(raw, sizeof(raw), format, sd_args);
+    va_end(sd_args);
+    if (raw_len < 0) return ret;
+    if (raw_len >= (int)sizeof(raw)) raw_len = (int)sizeof(raw) - 1;
 
     int clean_len = _strip_ansi(raw, raw_len);
     while (clean_len > 0 && (raw[clean_len - 1] == '\n' ||
