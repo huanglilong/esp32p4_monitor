@@ -29,7 +29,7 @@
 │   ├── generated/           # ⚠️ AUTO-GENERATED — DO NOT EDIT
 │   └── compat/              # Third-party compatibility shims
 ├── proto/                   # uORB .msg definitions
-├── tools/                   # Code generators (e.g., msg_gen.py)
+├── tools/                   # Code generators (e.g., msg_gen.py) + debug scripts
 ├── components/              # ⚠️ Local/BSP components — edit with caution
 ├── managed_components/      # ⚠️ ESP-IDF managed — DO NOT EDIT
 ├── sdkconfig.defaults       # Default Kconfig — edit this, NOT sdkconfig
@@ -100,6 +100,18 @@ cd flutter_app && flutter build macos
 ```
 This must pass before committing Flutter app changes.
 
+### 4.2 Debug Workflow (no TTY)
+
+When `idf.py monitor` is unavailable, use the automated debug script:
+
+```bash
+./tools/esp32_debug.sh              # Build → Flash → Capture → Analyze
+./tools/esp32_debug.sh capture      # Capture logs only
+./tools/esp32_debug.sh filter -k wifi,audio  # Filter saved logs
+```
+
+See [esp32_debug_workflow.md](.github/esp32_debug_workflow.md) for full documentation, including pytest integration during capture.
+
 ---
 
 ## 5. Protected Files
@@ -130,7 +142,7 @@ This must pass before committing Flutter app changes.
 3. After fixing, run another review; repeat up to **2 rounds max**
 4. If issues remain after 2 rounds, report to user
 5. Update all relevant `*.md` docs
-6. Flash to device and monitor logs to verify
+6. Flash to device and monitor logs to verify (use `./tools/esp32_debug.sh` for no-TTY environments)
 
 ---
 
