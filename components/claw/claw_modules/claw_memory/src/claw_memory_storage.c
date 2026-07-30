@@ -784,7 +784,7 @@ esp_err_t claw_memory_export_markdown_internal(char **out_markdown,
                         updated_at_text,
                         item->access_count,
                         labels_json ? labels_json : "[]");
-        free(labels_json);
+        cJSON_free(labels_json);
         cJSON_Delete(item_json);
     }
 

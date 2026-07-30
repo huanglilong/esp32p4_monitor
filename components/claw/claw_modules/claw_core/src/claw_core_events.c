@@ -179,7 +179,7 @@ void claw_core_publish_out_message_if_requested(const claw_core_request_item_t *
                  esp_err_to_name(err));
     }
 
-    free(payload_json);
+    cJSON_free(payload_json);
 }
 
 esp_err_t claw_core_publish_stage_text(const claw_core_request_t *request, const char *text)

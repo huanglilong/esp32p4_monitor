@@ -7,6 +7,7 @@
 
 #include "lua_module_lvgl.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -191,7 +192,7 @@ typedef struct {
     bool lvgl_initialized;
     bool runtime_initialized;
     bool display_owner_acquired;
-    volatile bool task_stop;
+    atomic_bool task_stop;
     TaskHandle_t task_handle;
     TaskHandle_t task_waiter;
     esp_timer_handle_t tick_timer;
@@ -208,7 +209,7 @@ typedef struct {
     void *draw_buf;
     size_t draw_buf_size;
     bool flush_callbacks_registered;
-    volatile bool flush_pending;
+    atomic_bool flush_pending;
     lua_State *runtime_owner;
     lua_lvgl_obj_record_t *records;
     lua_lvgl_event_sub_t *event_queue_head;

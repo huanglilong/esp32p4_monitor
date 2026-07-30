@@ -523,7 +523,7 @@ static esp_err_t claw_cap_tools_collect_for_caller(const claw_core_request_t *re
 
     tools_json = claw_cap_build_llm_tools_json(&ctx, true);
     if (!tools_json || !tools_json[0] || strcmp(tools_json, "[]") == 0) {
-        free(tools_json);
+        cJSON_free(tools_json);
         return ESP_ERR_NOT_FOUND;
     }
 

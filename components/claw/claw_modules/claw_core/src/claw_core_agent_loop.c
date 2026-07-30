@@ -241,7 +241,7 @@ void claw_core_agent_loop_task(void *arg)
         while (true) {
             claw_core_llm_response_free(&llm_response);
             free(system_prompt);
-            free(tools_json);
+            cJSON_free(tools_json);
             cJSON_Delete(messages);
             system_prompt = NULL;
             tools_json = NULL;
@@ -501,7 +501,7 @@ finish_request:
         cJSON_Delete(runtime_messages);
         cJSON_Delete(messages);
         free(system_prompt);
-        free(tools_json);
+        cJSON_free(tools_json);
         claw_core_free_cached_contexts(request_start_contexts, request_start_context_count);
         claw_core_free_request_item(&request);
     }

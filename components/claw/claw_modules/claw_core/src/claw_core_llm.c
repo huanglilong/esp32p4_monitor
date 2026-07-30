@@ -211,7 +211,7 @@ esp_err_t claw_core_llm_chat_messages(claw_core_handle_t core,
         ESP_LOGI(TAG, "llm_request system_prompt=%s", system_prompt);
         ESP_LOGI(TAG, "llm_request messages=%s", messages_json);
         ESP_LOGI(TAG, "llm_request tools=%s", tools_json ? tools_json : "[]");
-        free(messages_json);
+        cJSON_free(messages_json);
     } else {
         ESP_LOGE(TAG, "failed to render full LLM request messages");
     }
