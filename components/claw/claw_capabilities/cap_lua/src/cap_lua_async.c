@@ -7,6 +7,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ typedef struct {
     TaskHandle_t task_handle;
     bool sync_waiter;
     /* Cooperative cancellation flag, polled from the Lua hook. */
-    volatile bool stop_requested;
+    atomic_bool stop_requested;
 } cap_lua_job_record_t;
 
 typedef struct {
@@ -55,7 +56,7 @@ typedef struct {
     char path[CAP_LUA_JOB_PATH_MAX];
     char *args_json;
     uint32_t timeout_ms;
-    volatile bool *stop_requested;
+    atomic_bool *stop_requested;
 } cap_lua_job_ctx_t;
 
 static SemaphoreHandle_t s_job_lock;

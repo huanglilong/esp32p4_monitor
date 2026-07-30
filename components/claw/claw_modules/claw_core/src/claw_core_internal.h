@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -77,7 +78,7 @@ typedef enum {
 struct claw_core_state {
     bool initialized;
     bool started;
-    volatile bool stop_requested;
+    atomic_bool stop_requested;
     uint32_t instance_id;
     char log_tag[32];
     char *system_prompt;
@@ -112,7 +113,7 @@ struct claw_core_state {
     uint32_t inflight_request_id;
     char inflight_session_id[CLAW_CORE_INFLIGHT_SESSION_ID_SIZE];
     claw_core_agent_loop_phase_t agent_loop_phase;
-    volatile bool inflight_abort;
+    atomic_bool inflight_abort;
     claw_core_control_abort_reason_t inflight_abort_reason;
     claw_core_request_item_t insert_queue[CLAW_CORE_INSERT_QUEUE_LEN];
     size_t insert_queue_head;

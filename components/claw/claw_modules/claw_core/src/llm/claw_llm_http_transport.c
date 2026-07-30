@@ -26,7 +26,7 @@ typedef struct {
 
 typedef struct {
     response_buffer_t *buffer;
-    volatile bool *abort_flag;
+    atomic_bool *abort_flag;
 } http_request_context_t;
 
 static inline bool abort_requested(const http_request_context_t *ctx)

@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,12 +100,12 @@ typedef struct {
     TaskHandle_t ws_task;
     TaskHandle_t inbound_task;
     QueueHandle_t inbound_queue;
-    volatile int heartbeat_interval_ms;
-    volatile int last_seq;
-    volatile bool ws_connected;
-    volatile bool ws_identify_pending;
-    volatile bool ws_should_reconnect;
-    volatile bool stop_requested;
+    atomic_int heartbeat_interval_ms;
+    atomic_int last_seq;
+    atomic_bool ws_connected;
+    atomic_bool ws_identify_pending;
+    atomic_bool ws_should_reconnect;
+    atomic_bool stop_requested;
     int msg_type;
     cap_im_qq_ws_assembly_t ws_assembly;
     uint64_t seen_msg_keys[CAP_IM_QQ_DEDUP_CACHE_SIZE];

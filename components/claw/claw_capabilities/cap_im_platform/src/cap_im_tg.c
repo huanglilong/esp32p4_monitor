@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +77,7 @@ typedef struct {
     TaskHandle_t poll_task;
     TaskHandle_t attachment_task;
     QueueHandle_t attachment_queue;
-    volatile bool stop_requested;
+    atomic_bool stop_requested;
     int64_t next_update_id;
     uint64_t seen_update_keys[CAP_IM_TG_DEDUP_CACHE_SIZE];
     size_t seen_update_idx;

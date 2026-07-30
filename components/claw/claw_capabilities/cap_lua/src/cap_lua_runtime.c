@@ -26,7 +26,7 @@ typedef struct {
     bool truncated;
     /* deadline_us == 0 means "no wall-clock deadline" (cancel-only mode). */
     int64_t deadline_us;
-    volatile bool *stop_requested;
+    atomic_bool *stop_requested;
     cap_lua_runtime_log_fn_t log_fn;
     void *log_ctx;
 } cap_lua_exec_ctx_t;
@@ -384,7 +384,7 @@ esp_err_t cap_lua_runtime_init(void)
 esp_err_t cap_lua_runtime_execute_file(const char *path,
                                        const char *args_json,
                                        uint32_t timeout_ms,
-                                       volatile bool *stop_requested,
+                                       atomic_bool *stop_requested,
                                        cap_lua_runtime_log_fn_t log_fn,
                                        void *log_ctx,
                                        char *output,
