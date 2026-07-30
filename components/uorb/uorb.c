@@ -372,7 +372,14 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
      * Without the lock, a concurrent orb_unsubscribe() could delete the queue
      * between the topic_idx check and xQueueReceive, causing use-after-free.
      * We use a non-blocking receive inside the lock, then retry outside if empty. */
-    while (1) {
+    /* Retry with bounded iterations to avoid infinite spinning on
+     * rapid subscriber recycling (unsubscribe + resubscribe).
+     * Each iteration waits for a message via xQueueReceive, so in
+     * practice the loop is bounded by the queue depth. The retry
+     * limit is a safety net against generation mismatch livelock. */
+    int retries = 0;
+    const int MAX_RETRIES = 3;
+    while (retries < MAX_RETRIES) {
         lock();
         orb_sub_entry_t *sub = &s_subs[handle];
         if (sub->topic_idx < 0) {
@@ -394,7 +401,10 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
         unlock();
         if (valid) return 0;
         /* Subscriber was recycled — discard this message and retry */
+        retries++;
     }
+    ESP_LOGE("uORB", "orb_copy: generation mismatch after %d retries", MAX_RETRIES);
+    return -1;
 }
 
 int orb_check(orb_sub_t handle, bool *updated)
