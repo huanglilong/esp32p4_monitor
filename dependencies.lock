@@ -719,7 +719,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 6.1.0
+    version: 6.2.0
   lua_module_builder:
     dependencies: []
     source:
