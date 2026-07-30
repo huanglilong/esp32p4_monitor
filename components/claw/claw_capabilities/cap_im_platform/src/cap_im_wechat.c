@@ -748,7 +748,7 @@ static esp_err_t cap_im_wechat_api_post(const char *endpoint,
                                      true,
                                      true,
                                      response);
-    free(body_json);
+    cJSON_free(body_json);
     return err;
 }
 

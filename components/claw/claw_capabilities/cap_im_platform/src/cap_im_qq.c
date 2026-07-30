@@ -416,7 +416,7 @@ static esp_err_t cap_im_qq_get_access_token(void)
     resp.buf = calloc(1, CAP_IM_QQ_HTTP_RESP_INIT);
     resp.cap = CAP_IM_QQ_HTTP_RESP_INIT;
     if (!resp.buf) {
-        free(json_str);
+        cJSON_free(json_str);
         return ESP_ERR_NO_MEM;
     }
 
@@ -636,7 +636,7 @@ static esp_err_t cap_im_qq_ws_send_identify(void)
     }
 
     err = cap_im_qq_ws_send_json(json_str);
-    free(json_str);
+    cJSON_free(json_str);
     return err;
 }
 
@@ -664,7 +664,7 @@ static esp_err_t cap_im_qq_ws_send_heartbeat(void)
     }
 
     err = cap_im_qq_ws_send_json(json_str);
-    free(json_str);
+    cJSON_free(json_str);
     return err;
 }
 
@@ -1360,13 +1360,13 @@ static esp_err_t cap_im_qq_send_media_message(const char *chat_id,
 
     path = cap_im_qq_build_message_path(chat_id);
     if (!path) {
-        free(json_str);
+        cJSON_free(json_str);
         return ESP_ERR_INVALID_ARG;
     }
 
     err = cap_im_qq_api_post(path, json_str, NULL);
     free(path);
-    free(json_str);
+    cJSON_free(json_str);
     return err;
 }
 
@@ -1428,7 +1428,7 @@ static esp_err_t cap_im_qq_upload_media(const char *chat_id,
 
     path_buf = cap_im_qq_build_file_path(chat_id);
     if (!path_buf) {
-        free(json_str);
+        cJSON_free(json_str);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -1562,12 +1562,12 @@ static esp_err_t cap_im_qq_send_message_chunk(const char *chat_id, const char *m
 
     path = cap_im_qq_build_message_path(chat_id);
     if (!path) {
-        free(json_str);
+        cJSON_free(json_str);
         return ESP_ERR_INVALID_ARG;
     }
 
     err = cap_im_qq_api_post(path, json_str, NULL);
-    free(json_str);
+    cJSON_free(json_str);
     free(path);
     return err;
 }

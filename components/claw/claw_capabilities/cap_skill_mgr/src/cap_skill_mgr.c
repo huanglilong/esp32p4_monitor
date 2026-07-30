@@ -100,7 +100,7 @@ static void cap_skill_write_error(char *output,
     rendered = cJSON_PrintUnformatted(root);
     if (rendered) {
         snprintf(output, output_size, "%s", rendered);
-        free(rendered);
+        cJSON_free(rendered);
     } else {
         snprintf(output,
                  output_size,
@@ -328,7 +328,7 @@ static esp_err_t cap_skill_build_catalog_result(const char *action,
     }
 
     snprintf(output, output_size, "%s", rendered);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 

@@ -359,7 +359,7 @@ static esp_err_t cap_im_feishu_get_tenant_token(void)
     }
 
     err = cap_im_feishu_http_json(CAP_IM_FEISHU_AUTH_URL, "POST", NULL, json_str, &response, &status);
-    free(json_str);
+    cJSON_free(json_str);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Feishu token request failed: %s", esp_err_to_name(err));
         return err;
@@ -621,7 +621,7 @@ static esp_err_t cap_im_feishu_pull_ws_config(void)
     }
 
     err = cap_im_feishu_http_json(CAP_IM_FEISHU_WS_CONFIG_URL, "POST", NULL, json_str, &response, &status);
-    free(json_str);
+    cJSON_free(json_str);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Feishu WS config request failed: %s", esp_err_to_name(err));
         return err;
@@ -2591,7 +2591,7 @@ static esp_err_t cap_im_feishu_send_message_content(const char *chat_id,
     }
 
     err = cap_im_feishu_api_call(url, "POST", body_str, &response);
-    free(body_str);
+    cJSON_free(body_str);
     if (err != ESP_OK) {
         return err;
     }
@@ -2683,7 +2683,7 @@ static esp_err_t cap_im_feishu_build_markdown_card_content(const char *message,
     content_str = NULL;
 
 cleanup:
-    free(content_str);
+    cJSON_free(content_str);
     cJSON_Delete(element);
     cJSON_Delete(elements);
     cJSON_Delete(body);
@@ -2967,7 +2967,7 @@ static esp_err_t cap_im_feishu_send_media_internal(const char *chat_id,
     err = cap_im_feishu_send_message_content(chat_id,
                                              is_image ? "image" : "file",
                                              content_str);
-    free(content_str);
+    cJSON_free(content_str);
     if (err != ESP_OK) {
         return err;
     }
@@ -3382,7 +3382,7 @@ esp_err_t cap_im_feishu_send_text(const char *chat_id, const char *text)
         }
 
         err = cap_im_feishu_send_message_content(chat_id, "text", content_str);
-        free(content_str);
+        cJSON_free(content_str);
         if (err != ESP_OK) {
             return err;
         }

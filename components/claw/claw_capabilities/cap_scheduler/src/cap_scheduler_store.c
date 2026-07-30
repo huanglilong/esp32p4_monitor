@@ -688,7 +688,7 @@ static void cap_scheduler_parse_item_json(const cJSON *node, cap_scheduler_item_
 
         if (rendered) {
             strlcpy(item->payload_json, rendered, sizeof(item->payload_json));
-            free(rendered);
+            cJSON_free(rendered);
         }
     }
     value = cJSON_GetObjectItemCaseSensitive(node, "max_runs");
@@ -890,7 +890,7 @@ esp_err_t cap_scheduler_save_items(const char *path, const cap_scheduler_entry_t
         return ESP_ERR_NO_MEM;
     }
     err = cap_scheduler_write_file(path, rendered);
-    free(rendered);
+    cJSON_free(rendered);
     return err;
 }
 
@@ -1000,6 +1000,6 @@ esp_err_t cap_scheduler_save_state(const char *path, const cap_scheduler_entry_t
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Save runtime state failed path=%s err=%s", path, esp_err_to_name(err));
     }
-    free(rendered);
+    cJSON_free(rendered);
     return err;
 }

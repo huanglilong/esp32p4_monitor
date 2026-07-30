@@ -843,7 +843,7 @@ esp_err_t cap_lua_run_script(const char *path,
     }
 
     err = cap_lua_run_script_execute(input_json, NULL, output, output_size);
-    free(input_json);
+    cJSON_free(input_json);
     return err;
 }
 
@@ -906,7 +906,7 @@ esp_err_t cap_lua_run_script_async(const char *path,
     }
 
     err = cap_lua_run_script_async_execute(input_json, NULL, output, output_size);
-    free(input_json);
+    cJSON_free(input_json);
     return err;
 }
 

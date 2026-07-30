@@ -1185,7 +1185,7 @@ static esp_err_t save_active_skill_ids_to_disk(const char *session_id,
 cleanup:
     free(path);
     cJSON_Delete(root);
-    free(json_text);
+    cJSON_free(json_text);
     return err;
 }
 
@@ -1390,12 +1390,12 @@ esp_err_t claw_skill_render_catalog_json(char *buf, size_t size)
         return ESP_ERR_NO_MEM;
     }
     if (strlen(rendered) >= size) {
-        free(rendered);
+        cJSON_free(rendered);
         return ESP_ERR_INVALID_SIZE;
     }
 
     snprintf(buf, size, "%s", rendered);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 

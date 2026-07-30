@@ -328,12 +328,12 @@ static int lua_module_capability_call(lua_State *L)
 
     output = calloc(1, output_size);
     if (!output) {
-        free(payload_json);
+        cJSON_free(payload_json);
         return luaL_error(L, "out of memory");
     }
 
     err = claw_cap_call(cap_name, payload_json, &ctx, output, output_size);
-    free(payload_json);
+    cJSON_free(payload_json);
 
     if (err == ESP_OK) {
         lua_pushboolean(L, 1);

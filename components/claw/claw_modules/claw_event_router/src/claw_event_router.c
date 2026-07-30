@@ -1683,7 +1683,7 @@ static esp_err_t claw_event_router_execute_cap_action(
 
     output = calloc(1, s_runtime->cap_output_size);
     if (!output) {
-        free(input_json);
+        cJSON_free(input_json);
         return ESP_ERR_NO_MEM;
     }
 
@@ -1694,7 +1694,7 @@ static esp_err_t claw_event_router_execute_cap_action(
     err = claw_event_router_prepare_session_id(event, session_id, sizeof(session_id), &session_id_len);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to build cap action session id: %s", esp_err_to_name(err));
-        free(input_json);
+        cJSON_free(input_json);
         free(output);
         return err;
     }
@@ -1710,7 +1710,7 @@ static esp_err_t claw_event_router_execute_cap_action(
                         &call_ctx,
                         output,
                         s_runtime->cap_output_size);
-    free(input_json);
+    cJSON_free(input_json);
 
     claw_event_router_update_last_output(ctx,
                                          "cap",

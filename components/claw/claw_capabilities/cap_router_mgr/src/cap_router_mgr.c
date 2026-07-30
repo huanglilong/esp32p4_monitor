@@ -53,7 +53,7 @@ static void cap_router_mgr_write_error(char *output,
     rendered = cJSON_PrintUnformatted(root);
     if (rendered) {
         snprintf(output, output_size, "%s", rendered);
-        free(rendered);
+        cJSON_free(rendered);
     } else {
         snprintf(output,
                  output_size,
@@ -126,7 +126,7 @@ static esp_err_t cap_router_mgr_write_action_result(const char *action,
     }
 
     snprintf(output, output_size, "%s", rendered);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 

@@ -254,7 +254,7 @@ static esp_err_t cap_system_render_json(cJSON *root, char *output, size_t output
     }
 
     snprintf(output, output_size, "%s", rendered);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 

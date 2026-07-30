@@ -113,7 +113,7 @@ static esp_err_t cap_memory_render_invalid_summary_labels(const char *invalid_la
     }
 
     snprintf(output, output_size, "%s", rendered);
-    free(rendered);
+    cJSON_free(rendered);
     return err;
 }
 
@@ -140,7 +140,7 @@ static esp_err_t cap_memory_render_error(const char *error,
         return ESP_ERR_NO_MEM;
     }
     snprintf(output, output_size, "%s", rendered);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 

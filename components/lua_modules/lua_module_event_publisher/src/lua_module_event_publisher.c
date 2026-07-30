@@ -320,7 +320,7 @@ static int lua_event_publisher_publish_trigger(lua_State *L)
                                             event_type,
                                             event_key,
                                             payload_json);
-    free(payload_json);
+        cJSON_free(payload_json);
     if (err != ESP_OK) {
         lua_module_event_publisher_raise_publish_error(L, err);
     }
@@ -400,7 +400,7 @@ static int lua_event_publisher_publish(lua_State *L)
     event.payload_json = payload_json;
 
     err = claw_event_router_publish(&event);
-    free(payload_json);
+    cJSON_free(payload_json);
     if (err != ESP_OK) {
         lua_module_event_publisher_raise_publish_error(L, err);
     }

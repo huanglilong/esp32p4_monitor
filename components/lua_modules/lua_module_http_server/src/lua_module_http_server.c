@@ -467,7 +467,7 @@ static void lua_http_set_response_from_lua(lua_State *L, lua_http_request_t *req
             return;
         }
         lua_http_complete_request(req, ESP_OK, status, "application/json", payload);
-        free(payload);
+        cJSON_free(payload);
         return;
     }
     lua_pop(L, 1);

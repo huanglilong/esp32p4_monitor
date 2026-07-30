@@ -419,7 +419,7 @@ static esp_err_t cap_scheduler_build_payload_json(const cap_scheduler_entry_t *e
     }
 
     strlcpy(buf, rendered, buf_size);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 
@@ -736,7 +736,7 @@ static esp_err_t cap_scheduler_write_snapshot_json(const cap_scheduler_snapshot_
         return ESP_ERR_NO_MEM;
     }
     strlcpy(output, rendered, output_size);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 
@@ -1162,7 +1162,7 @@ esp_err_t cap_scheduler_list_json(char *buf, size_t size)
         return ESP_ERR_NO_MEM;
     }
     strlcpy(buf, rendered, size);
-    free(rendered);
+    cJSON_free(rendered);
     return ESP_OK;
 }
 

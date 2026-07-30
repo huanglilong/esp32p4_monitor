@@ -745,7 +745,7 @@ static esp_err_t cap_im_tg_poll_once(void)
     }
 
     err = cap_im_tg_api_call("getUpdates", body_json, &resp);
-    free(body_json);
+    cJSON_free(body_json);
     if (err != ESP_OK) {
         return err;
     }
@@ -792,7 +792,7 @@ static esp_err_t cap_im_tg_send_text_chunk(const char *chat_id, const char *mess
     }
 
     err = cap_im_tg_api_call("sendMessage", body_json, &resp);
-    free(body_json);
+    cJSON_free(body_json);
     free(resp);
     return err;
 }

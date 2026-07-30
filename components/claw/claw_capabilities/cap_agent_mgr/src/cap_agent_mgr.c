@@ -253,11 +253,11 @@ static esp_err_t cap_agent_mgr_list_execute(const char *input_json,
         return ESP_ERR_NO_MEM;
     }
     if (strlcpy(output, json, output_size) >= output_size) {
-        free(json);
+        cJSON_free(json);
         snprintf(output, output_size, "Error: agent list is too large.");
         return ESP_ERR_INVALID_SIZE;
     }
-    free(json);
+    cJSON_free(json);
     return ESP_OK;
 }
 
