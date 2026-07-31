@@ -143,9 +143,8 @@ static std::atomic<bool>  s_mdns_running{false};
 
 static std::atomic<bool> s_audio_inited{false};
 static std::atomic<TaskHandle_t> s_audio_task{nullptr};
-static StackType_t   *s_audio_stack = NULL;   /* 12KB, PSRAM (saves internal SRAM) */
-static StaticTask_t  *s_audio_tcb = NULL;     /* small, internal SRAM */
 static std::atomic<bool>  s_audio_running{false};
+static std::atomic<bool>  s_audio_task_exited{true}; /* true initially (no task running) */
 static std::atomic<bool>  s_is_recording{false};
 static shine_t        s_shine = NULL;
 static int16_t       *s_pcm_buf = NULL;
@@ -186,27 +185,43 @@ static void audio_unlock(void)
     }
 }
 
+/* Stop the audio task: set s_audio_running=false and wait briefly for exit.
+ * Used by web_config_server_stop() during graceful shutdown.
+ * NEVER vTaskDelete the audio task — it may hold the FAT VFS mutex. */
 static void _stop_audio_task_if_running(void)
 {
     if (!s_audio_task.load(std::memory_order_acquire) && !s_audio_running) {
         return;
     }
 
+    ESP_LOGI(TAG, "Stopping audio task...");
     s_audio_running = false;
-    for (int i = 0; i < 10 && s_audio_task.load(std::memory_order_acquire); ++i) {
+
+    /* Wait up to 1.5s for the audio task to exit cleanly.
+     * The task checks s_audio_running on each i2s_channel_read return
+     * (max 100ms block) and skips fwrite when the flag is false.
+     * 1.5s covers: one i2s_channel_read timeout (100ms) + margin.
+     * If the task doesn't exit in time, we continue anyway — the task
+     * will self-delete shortly after.  Crucially, we NEVER vTaskDelete
+     * the audio task: it may hold the FAT VFS mutex mid-fwrite, and
+     * force-deleting it permanently deadlocks all file I/O and the
+     * single-threaded httpd. */
+    int waited_ms = 0;
+    for (int i = 0; i < 30 && !s_audio_task_exited.load(std::memory_order_acquire); ++i) {
         vTaskDelay(pdMS_TO_TICKS(50));
+        waited_ms += 50;
     }
 
-    if (s_audio_task.load(std::memory_order_acquire)) {
-        ESP_LOGW(TAG, "Audio task did not exit in time, force deleting");
-        vTaskDelete(s_audio_task.exchange(nullptr, std::memory_order_acq_rel));
+    if (!s_audio_task_exited.load(std::memory_order_acquire)) {
+        ESP_LOGW(TAG, "Audio task did not exit in %dms, continuing without force-delete", waited_ms);
+    } else {
+        ESP_LOGI(TAG, "Audio task exited cleanly after %dms", waited_ms);
     }
 
-    /* Free PSRAM-allocated stack (xTaskCreateStaticPinnedToCore does not free it).
-     * TCB is pre-allocated and reused — not freed here.
-     * Stack is safe to free immediately: FreeRTOS doesn't reference it
-     * after the task exits (idle task only reclaims the TCB). */
-    if (s_audio_stack) { heap_caps_free(s_audio_stack); s_audio_stack = NULL; }
+    /* Clear task handle.  The task sets s_audio_task = nullptr before
+     * vTaskDelete(self), so if it exits later the handle is already cleared.
+     * Stack is freed automatically by the kernel (xTaskCreatePinnedToCore). */
+    s_audio_task.store(nullptr, std::memory_order_release);
 }
 
 /* Audio recording task: I2S RX → shine MP3 → SD card */
@@ -214,34 +229,60 @@ static void audio_task(void *arg)
 {
     (void)arg;
     int16_t *buf = (int16_t *)heap_caps_calloc(1, REC_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) { s_audio_running = false; s_audio_task.store(nullptr, std::memory_order_release); vTaskDelete(NULL); return; }
+    if (!buf) { s_audio_running = false; s_audio_task.store(nullptr, std::memory_order_release); s_audio_task_exited.store(true, std::memory_order_release); vTaskDelete(NULL); return; }
+    int loop_count = 0;
     while (s_audio_running) {
         /* Guard: if audio driver was deinitialized (e.g., by PhoneAppAudio::close()),
          * rx_handle() returns nullptr and i2s_channel_read would crash. */
         i2s_chan_handle_t rx = PeripheralManager::instance().rx_handle();
         if (!rx) {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         size_t n = 0;
-        if (i2s_channel_read(rx, buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(100)) != ESP_OK || n == 0) continue;
+        esp_err_t read_ret = i2s_channel_read(rx, buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(10));
+        if (read_ret != ESP_OK || n == 0) continue;
         int32_t spc = n / (2 * sizeof(int16_t));
         if (s_is_recording && s_pcm_buf && s_shine) {
             for (int32_t i = 0; i < spc; i++) {
+                /* Break out of PCM processing if stop was requested */
+                if (!s_audio_running) break;
                 int idx = s_pcm_count.load(std::memory_order_relaxed);
                 s_pcm_buf[idx * 2]     = buf[i * 2];
                 s_pcm_buf[idx * 2 + 1] = buf[i * 2 + 1];
                 if (s_pcm_count.fetch_add(1, std::memory_order_relaxed) + 1 >= ENC_SAMPLES_PER_CH) {
                     int wr = 0;
                     unsigned char *mp3 = shine_encode_buffer_interleaved(s_shine, s_pcm_buf, &wr);
-                    if (mp3 && wr > 0 && s_rec_file) s_rec_bytes.fetch_add(fwrite(mp3, 1, wr, s_rec_file), std::memory_order_relaxed);
+                    /* Skip fwrite if stop was requested — avoids holding VFS mutex
+                     * when the caller is waiting for this task to exit. */
+                    if (mp3 && wr > 0 && s_rec_file && s_audio_running) {
+                        s_rec_bytes.fetch_add(fwrite(mp3, 1, wr, s_rec_file), std::memory_order_relaxed);
+                    }
                     s_pcm_count.store(0, std::memory_order_relaxed);
                 }
             }
         }
+        loop_count++;
     }
+    ESP_LOGI(TAG, "Audio task exiting after %d loops", loop_count);
     heap_caps_free(buf);
+
+    /* Deferred cleanup: flush/close the recording file and free resources.
+     * This is done in the audio task context (core 1, priority 1) so it
+     * doesn't block the single-threaded httpd.  fclose on SDSPI can take
+     * ~10s due to FAT table updates. */
+    if (s_shine) {
+        int wr = 0;
+        unsigned char *d = shine_flush(s_shine, &wr);
+        FILE *f = s_rec_file; s_rec_file = NULL;
+        if (d && wr > 0 && f) fwrite(d, 1, wr, f);
+        shine_close(s_shine); s_shine = NULL;
+        if (f) fclose(f);
+    }
+    if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf = NULL; }
+
     s_audio_task.store(nullptr, std::memory_order_release);
+    s_audio_task_exited.store(true, std::memory_order_release);
     vTaskDelete(NULL);
 }
 
@@ -1199,12 +1240,6 @@ static bool __audio_init(void) {
     if (s_audio_inited.load(std::memory_order_acquire)) return true;
     if (!PeripheralManager::instance().init_sdcard()) { ESP_LOGE(TAG,"SD init fail"); return false; }
     PeripheralManager::instance().init_audio();
-    /* Pre-allocate TCB for audio task — reused across start/stop cycles.
-     * ~340B internal SRAM, avoids TCB use-after-free race with idle task. */
-    if (!s_audio_tcb) {
-        s_audio_tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (!s_audio_tcb) { ESP_LOGE(TAG, "Failed to allocate audio TCB"); return false; }
-    }
     s_audio_inited.store(true, std::memory_order_release);
     return true;
 }
@@ -1278,30 +1313,36 @@ static bool __path_sanitize(const char *user_path, char *out, size_t out_len) {
 /* GET /api/audio/record_start */
 static esp_err_t h_rec_start(httpd_req_t *req) {
     audio_lock();
+    /* If already recording, return ok immediately (idempotent). */
     if (s_is_recording)   { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":1}"); return ESP_OK; }
+    /* If previous audio task is still cleaning up (fclose on SDSPI takes ~10s),
+     * return retry hint immediately — never block the single-threaded httpd. */
+    if (s_audio_task.load(std::memory_order_acquire) && !s_audio_task_exited.load(std::memory_order_acquire)) {
+        audio_unlock();
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Previous recording cleanup in progress\",\"retry_after\":10}");
+        return ESP_OK;
+    }
     if (s_fm_busy)        { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     if (!__audio_init())  { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
-    if (!s_audio_task.load(std::memory_order_acquire)) {
+    if (!s_audio_task.load(std::memory_order_acquire) && s_audio_task_exited.load(std::memory_order_acquire)) {
         s_audio_running = true;
-        /* xTaskCreateStaticPinnedToCore depth (12*1024) is in StackType_t words;
-         * buffer must be depth * sizeof(StackType_t) bytes. */
-        s_audio_stack = (StackType_t *)heap_caps_malloc(12 * 1024 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_audio_stack) {
-            ESP_LOGE(TAG, "Failed to allocate audio task stack");
-            s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
-        }
-        TaskHandle_t h = xTaskCreateStaticPinnedToCore(audio_task, "w_audio", 12 * 1024, NULL, 1, s_audio_stack, s_audio_tcb, 1);  /* Core 1 (mutually exclusive with Music) */
+        s_audio_task_exited.store(false, std::memory_order_release);
+        /* Use xTaskCreatePinnedToCore with dynamic stack allocation.
+         * The kernel automatically frees the stack on vTaskDelete(NULL),
+         * avoiding the race condition where h_rec_start (core 0) frees
+         * s_audio_stack while the audio task (core 1) is still exiting. */
+        TaskHandle_t h = NULL;
+        BaseType_t ret = xTaskCreatePinnedToCore(audio_task, "w_audio", 12 * 1024, NULL, 1, &h, 1);  /* Core 1 (mutually exclusive with Music) */
         s_audio_task.store(h, std::memory_order_release);
-        if (h == NULL) {
+        if (ret != pdPASS || h == NULL) {
             ESP_LOGE(TAG, "Failed to create audio task");
-            heap_caps_free(s_audio_stack); s_audio_stack = NULL;
-            s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK;
+            s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Task create fail\"}"); return ESP_OK;
         }
     }
     s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!s_pcm_buf) {
+        s_audio_running = false;
         audio_unlock();
-        _stop_audio_task_if_running();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
     }
@@ -1312,8 +1353,8 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     if (!s_shine) {
         heap_caps_free(s_pcm_buf);
         s_pcm_buf = NULL;
+        s_audio_running = false;
         audio_unlock();
-        _stop_audio_task_if_running();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
     }
@@ -1330,7 +1371,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     }
     s_rec_file = fopen(s_rec_path, "wb");
     if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; heap_caps_free(s_pcm_buf); s_pcm_buf = NULL;
-        audio_unlock(); _stop_audio_task_if_running();
+        s_audio_running = false; audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms.store((uint32_t)(esp_timer_get_time() / 1000), std::memory_order_relaxed);
     s_is_recording = true;
@@ -1389,16 +1430,15 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
 static esp_err_t h_rec_stop(httpd_req_t *req) {
     audio_lock();
     if (!s_is_recording) {
-        /* Recover from stale state if a previous record_start failed mid-way. */
-        _stop_audio_task_if_running();
-        if (s_shine) { shine_close(s_shine); s_shine = NULL; }
-        if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf = NULL; }
-        if (s_rec_file) { fclose(s_rec_file); s_rec_file = NULL; }
+        /* Not recording — just ensure audio task stops and respond immediately.
+         * The audio task will clean up (fclose) in its own context. */
+        s_audio_running = false;
         audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":1}");
         return ESP_OK;
     }
     s_is_recording = false;
+    s_audio_running = false;
 
     /* Publish recording_state.active=false so PhoneAppMusic can resume playback */
     {
@@ -1413,22 +1453,17 @@ static esp_err_t h_rec_stop(httpd_req_t *req) {
         }
     }
 
-    /* Stop audio task to release I2S RX before cleaning up resources.
-     * _stop_audio_task_if_running() blocks up to 500ms waiting for the
-     * audio task to exit — acceptable for an HTTP handler.
-     * Keep the lock held throughout: preventing a concurrent h_rec_start
-     * from creating a new recording between stopping and cleanup. */
-    _stop_audio_task_if_running();
-    FILE *f = s_rec_file; s_rec_file = NULL;
-    if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine, &wr); if(d&&wr>0&&f) fwrite(d,1,wr,f); shine_close(s_shine); s_shine=NULL; }
-    if (f) fclose(f);
-    if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
+    /* Capture response data before the audio task cleans up the file.
+     * The audio task will flush + close the file and free resources
+     * after exiting its main loop — this runs in the audio task context
+     * so it doesn't block the single-threaded httpd. */
     char saved_path[128];
     strlcpy(saved_path, s_rec_path, sizeof(saved_path));
     uint32_t saved_bytes = s_rec_bytes.load(std::memory_order_relaxed);
     audio_unlock();
+
+    ESP_LOGI(TAG,"Stopping: %s (%lu bytes)", saved_path, (unsigned long)saved_bytes);
     char r[256]; snprintf(r,sizeof(r),"{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}", saved_path, (unsigned long)saved_bytes);
-    ESP_LOGI(TAG,"Saved: %s (%lu)", saved_path, (unsigned long)saved_bytes);
     httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -3571,11 +3606,9 @@ void web_config_server_stop(void)
 {
     if (!s_running) return;
 
-    /* Stop audio */
-    audio_lock();
-    s_is_recording = false; s_audio_running = false;
-    audio_unlock();
-    vTaskDelay(pdMS_TO_TICKS(300));
+    /* Stop audio — signal task to stop, don't block waiting for it */
+    s_audio_running = false;
+    s_is_recording = false;
     audio_lock();
     if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine,&wr); if(d&&wr>0&&s_rec_file) fwrite(d,1,wr,s_rec_file); shine_close(s_shine); s_shine=NULL; }
     if (s_rec_file) { fclose(s_rec_file); s_rec_file=NULL; }

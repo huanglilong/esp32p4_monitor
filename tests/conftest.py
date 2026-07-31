@@ -1,6 +1,7 @@
 """Shared fixtures and helpers for ESP32 web config integration tests."""
 
 import os
+import time
 import pytest
 import requests
 from urllib.parse import urlparse, urlunparse
@@ -125,10 +126,20 @@ def api(client: requests.Session, base_url: str):
             return r.json()
 
         @staticmethod
-        def record_start():
-            r = client.get(f"{base_url}/api/audio/record_start", timeout=10)
-            r.raise_for_status()
-            return r.json()
+        def record_start(timeout=30):
+            """Start recording, retrying if previous recording cleanup is in progress."""
+            deadline = time.time() + timeout
+            while True:
+                r = client.get(f"{base_url}/api/audio/record_start", timeout=10)
+                r.raise_for_status()
+                j = r.json()
+                if j.get("ok") in (1, True):
+                    return j
+                retry = j.get("retry_after", 0)
+                if retry > 0 and time.time() + retry < deadline:
+                    time.sleep(min(retry, 2))
+                    continue
+                return j  # return error response
 
         @staticmethod
         def record_stop():
