@@ -3,9 +3,9 @@
 Extract camera JPEG frames from ULog (.ulg) files and optionally create video.
 
 This script parses ULog binary format directly to extract JPEG frames
-from camera_frame topics. It handles the ULog format correctly,
-including topics where the ULog writer omits trailing _padding bytes
-(PX4 o_size_no_padding convention).
+from camera_frame_chunk (chunked format) or camera_frame (legacy format)
+topics. It handles the ULog format correctly, including topics where the
+ULog writer omits trailing _padding bytes (PX4 o_size_no_padding convention).
 
 Usage:
     python3 ulog_extract_frames.py input.ulg [--output-dir frames/] [--verbose]
@@ -72,24 +72,33 @@ def extract_camera_frames(ulg_path, output_dir, verbose=False):
             break
         pos = next_pos
 
-    # Find camera_frame msg_id
+    # Find camera_frame_chunk or camera_frame msg_id
     camera_frame_msg_id = None
+    is_chunked = False
     for msg_id, name in subscriptions.items():
-        if name == 'camera_frame':
+        if name == 'camera_frame_chunk':
+            camera_frame_msg_id = msg_id
+            is_chunked = True
+            break
+        elif name == 'camera_frame':
             camera_frame_msg_id = msg_id
             break
 
     if camera_frame_msg_id is None:
-        print("No camera_frame topic found in ULog file")
+        print("No camera_frame/camera_frame_chunk topic found in ULog file")
         return 0
 
     if verbose:
-        print(f"camera_frame msg_id = {camera_frame_msg_id}")
-        if camera_frame_msg_id in formats or 'camera_frame' in formats:
-            fmt = formats.get('camera_frame', '')
-            print(f"camera_frame format: {fmt[:100]}...")
+        print(f"{'camera_frame_chunk' if is_chunked else 'camera_frame'} msg_id = {camera_frame_msg_id}")
+        topic_name = 'camera_frame_chunk' if is_chunked else 'camera_frame'
+        if topic_name in formats:
+            fmt = formats.get(topic_name, '')
+            print(f"{topic_name} format: {fmt[:100]}...")
 
-    # Parse entire file for camera_frame DATA messages
+    # Chunk reassembly buffer (for camera_frame_chunk format)
+    chunk_buffers = {}  # frame_index -> {chunks: {idx: data}, chunks_total, width, height, timestamp}
+
+    # Parse entire file for camera_frame / camera_frame_chunk DATA messages
     # (skip definition section by scanning for DATA messages directly)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -113,50 +122,99 @@ def extract_camera_frames(ulg_path, output_dir, verbose=False):
             msg_id = struct.unpack('<H', data[scan_pos+3:scan_pos+5])[0]
 
             if msg_id == camera_frame_msg_id:
-                # Parse camera_frame payload
-                # Layout (after msg_id, i.e. starting at scan_pos+5):
-                #   uint64_t timestamp     (offset 0, 8 bytes)
-                #   uint32_t frame_index   (offset 8, 4 bytes)
-                #   uint16_t width         (offset 12, 2 bytes)
-                #   uint16_t height        (offset 14, 2 bytes)
-                #   uint16_t jpeg_size     (offset 16, 2 bytes)
-                #   uint8_t  format        (offset 18, 1 byte)
-                #   uint8_t  jpeg_data[15360] (offset 19, up to 15360 bytes)
-                # Note: ULog writer uses o_size_no_padding, so trailing
-                # _padding bytes are NOT written to the file.
                 payload = data[scan_pos+5:scan_pos+3+msg_size]
 
-                if len(payload) < 19:
-                    scan_pos = next_pos
-                    continue
+                if is_chunked:
+                    # ── camera_frame_chunk format ──
+                    # Layout: timestamp(8) + frame_index(4) + chunk_index(2) +
+                    #         chunks_total(2) + chunk_size(2) + width(2) +
+                    #         height(2) + format(1) + chunk_data(1024)
+                    if len(payload) < 21:
+                        scan_pos = next_pos
+                        continue
 
-                timestamp = struct.unpack('<Q', payload[0:8])[0]
-                frame_index = struct.unpack('<I', payload[8:12])[0]
-                width = struct.unpack('<H', payload[12:14])[0]
-                height = struct.unpack('<H', payload[14:16])[0]
-                jpeg_size = struct.unpack('<H', payload[16:18])[0]
-                fmt_type = payload[18]
+                    frame_idx = struct.unpack('<I', payload[8:12])[0]
+                    chunk_idx = struct.unpack('<H', payload[12:14])[0]
+                    chunks_total = struct.unpack('<H', payload[14:16])[0]
+                    chunk_size = struct.unpack('<H', payload[16:18])[0]
+                    width = struct.unpack('<H', payload[18:20])[0]
+                    height = struct.unpack('<H', payload[20:22])[0]
 
-                # Extract JPEG data
-                if jpeg_size > 0 and 19 + jpeg_size <= len(payload):
-                    jpeg_data = payload[19:19+jpeg_size]
+                    if chunk_size == 0 or chunks_total == 0:
+                        scan_pos = next_pos
+                        continue
 
-                    # Verify JPEG magic
-                    if jpeg_data[:2] == b'\xff\xd8':
-                        # Use sequential numbering for FFmpeg compatibility
-                        filename = f"frame_{frame_count:06d}.jpg"
-                        filepath = os.path.join(output_dir, filename)
-                        with open(filepath, 'wb') as f:
-                            f.write(jpeg_data)
+                    chunk_data = payload[22:22+chunk_size]
 
-                        if verbose or frame_count <= 5:
-                            print(f"  Frame {frame_index}: {width}x{height}, {jpeg_size} bytes, ts={timestamp}")
+                    if frame_idx not in chunk_buffers:
+                        chunk_buffers[frame_idx] = {
+                            'chunks': {},
+                            'chunks_total': chunks_total,
+                            'width': width,
+                            'height': height,
+                            'timestamp': struct.unpack('<Q', payload[0:8])[0],
+                        }
+                    buf = chunk_buffers[frame_idx]
+                    buf['chunks'][chunk_idx] = chunk_data
 
-                        frame_count += 1
-                        total_bytes += jpeg_size
-                    else:
-                        if verbose:
-                            print(f"  Frame {frame_index}: invalid JPEG magic ({jpeg_data[:4].hex()}), skipping")
+                    # Check if all chunks received
+                    if len(buf['chunks']) == buf['chunks_total']:
+                        jpeg_data = b''
+                        for i in range(buf['chunks_total']):
+                            jpeg_data += buf['chunks'][i]
+
+                        if jpeg_data[:2] == b'\xff\xd8':
+                            filename = f"frame_{frame_count:06d}.jpg"
+                            filepath = os.path.join(output_dir, filename)
+                            with open(filepath, 'wb') as f:
+                                f.write(jpeg_data)
+
+                            if verbose or frame_count <= 5:
+                                print(f"  Frame {frame_idx}: {buf['width']}x{buf['height']}, {len(jpeg_data)} bytes, ts={buf['timestamp']}")
+
+                            frame_count += 1
+                            total_bytes += len(jpeg_data)
+
+                        chunk_buffers.pop(frame_idx, None)
+
+                else:
+                    # ── camera_frame (old single-buffer format) ──
+                    # Layout (after msg_id, i.e. starting at scan_pos+5):
+                    #   uint64_t timestamp     (offset 0, 8 bytes)
+                    #   uint32_t frame_index   (offset 8, 4 bytes)
+                    #   uint16_t width         (offset 12, 2 bytes)
+                    #   uint16_t height        (offset 14, 2 bytes)
+                    #   uint16_t jpeg_size     (offset 16, 2 bytes)
+                    #   uint8_t  format        (offset 18, 1 byte)
+                    #   uint8_t  jpeg_data[15360] (offset 19, up to 15360 bytes)
+                    if len(payload) < 19:
+                        scan_pos = next_pos
+                        continue
+
+                    timestamp = struct.unpack('<Q', payload[0:8])[0]
+                    frame_index = struct.unpack('<I', payload[8:12])[0]
+                    width = struct.unpack('<H', payload[12:14])[0]
+                    height = struct.unpack('<H', payload[14:16])[0]
+                    jpeg_size = struct.unpack('<H', payload[16:18])[0]
+                    fmt_type = payload[18]
+
+                    if jpeg_size > 0 and 19 + jpeg_size <= len(payload):
+                        jpeg_data = payload[19:19+jpeg_size]
+
+                        if jpeg_data[:2] == b'\xff\xd8':
+                            filename = f"frame_{frame_count:06d}.jpg"
+                            filepath = os.path.join(output_dir, filename)
+                            with open(filepath, 'wb') as f:
+                                f.write(jpeg_data)
+
+                            if verbose or frame_count <= 5:
+                                print(f"  Frame {frame_index}: {width}x{height}, {jpeg_size} bytes, ts={timestamp}")
+
+                            frame_count += 1
+                            total_bytes += jpeg_size
+                        else:
+                            if verbose:
+                                print(f"  Frame {frame_index}: invalid JPEG magic ({jpeg_data[:4].hex()}), skipping")
 
         scan_pos = next_pos
 
