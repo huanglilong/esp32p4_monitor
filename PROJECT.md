@@ -167,7 +167,8 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 | `volume_state` | `volume_state_s` | 1 | AudioDriver (via PeripheralManager) | Music Playback |
 | `system_stats` | `system_stats_s` | 3 | SystemMonitor | ULog, Web API (/api/system_stats) |
 | `system_alert` | `system_alert_s` | 5 | SystemMonitor | ULog, Web API (/api/system_alerts) |
-| `camera_frame` | `camera_frame_s` | 2 | CameraStream | ULog (camera JPEG frame recording) |
+| `camera_frame_chunk` | `camera_frame_chunk_s` | 32 | CameraStream | ULog (camera JPEG chunked recording) |
+| `audio_frame` | `audio_frame_s` | 4 | AudioUlogRecorder | ULog (AAC audio frame recording) |
 
 ## Driver 模块架构 (Phase 3 重构)
 
@@ -622,7 +623,7 @@ Camera Stream 通过 Settings App 的开关控制, 退出 Settings App 不会停
 - **LWIP_MAX_SOCKETS 扩容**: 22→28, 3 个 httpd 实例内部占用 17 个 socket, 加 WiFi/mDNS/SNTP 后 22 不足导致 `accept()` 返回 `ENOTSOCK`。
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器在 start() 时直接初始化 (capture task 需要立即使用, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护, 防止并发初始化。
-- **独立 capture task 架构**: 帧采集/编码/uORB 发布从 stream_handler 分离到独立 `_capture_task` (FreeRTOS task)。即使无 HTTP 客户端连接, capture task 仍持续运行 → DQBUF → encode → publish (`fps_stats`, `camera_frame`) → store shared JPEG, 确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: 等待 `_frame_ready_sem` → 从 `_shared_jpeg_buf` 读取最新 JPEG → 发送 MJPEG part。
+- **独立 capture task 架构**: 帧采集/编码/uORB 发布从 stream_handler 分离到独立 `_capture_task` (FreeRTOS task)。即使无 HTTP 客户端连接, capture task 仍持续运行 → DQBUF → encode → publish (`fps_stats`, `camera_frame_chunk`) → store shared JPEG, 确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: 等待 `_frame_ready_sem` → 从 `_shared_jpeg_buf` 读取最新 JPEG → 发送 MJPEG part。
 - **PPA 分辨率优化**: CameraStream 使用 PPA 硬件将 800×800 RGB565 resize 到 300×300 BGR24, JPEG 编码器直接消费 PPA 输出, 编码时间从 ~200ms 降至 ~30ms, JPEG 体积从 ~30-50KB 降至 ~5-8KB。V4L2 buffer 在 PPA 处理后立即归还 (~1ms), 不再持有到编码完成。
 - **V4L2 QBUF 延迟 (JPEG sensor)**: JPEG sensor 路径中 `jpeg_data` 直接指向 V4L2 mmap buffer，QBUF 必须延迟至所有消费者 (`_publish_camera_frame`/`_store_shared_jpeg`) 完成后。PPA 路径 (PPA 输出独立) 和 CPU fallback 路径 (编码后 `jpeg_data` 指向 `_jpeg_out_buf`) 可安全提前 QBUF。
 - **start()/stop() 竞态条件**: Settings App 的 cam_start/cam_stop 在独立 FreeRTOS task 中运行。若 stop() 尚未完成清理 (释放 CameraDriver、停止 httpd、释放 V4L2/PPA/SPI 资源) 时 start() 被调用, start() 的 `_running` CAS 成功 (stop 已将其设 false), CameraDriver re-entrant claim 成功 (同 owner "stream"), 但 httpd 端口 80 仍被旧实例占用 → EADDRINUSE → start() 失败 → 部分清理与 stop() 的清理并发 → V4L2/PPA/SPI 资源 double-free → SPI DMA memcpy 空指针 → Guru Meditation (Load access fault)。修复: 添加 `_start_stop_mutex` 互斥锁, 确保 start()/stop() 串行执行。
@@ -752,7 +753,8 @@ GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 | **Settings 配置** | WiFi/音量/Camera Stream 开关 + 恢复出厂设置 |
 | **音频录制** | 调用 8080 API 远程录制 MP3 到 SD 卡 |
 | **音频播放** | 远程播放 SD 卡上已录制的 MP3 文件 |
-| **ULog 视频查看** | 下载/解析 .ulg 文件，camera_frame JPEG 帧缩略图 + 幻灯片 + 保存 |
+| **ULog 音频录制** | 持续 AAC 音频通过 `audio_frame` uORB topic 写入 `.ulg` 文件 (16kHz 立体声 64kbps ADTS，~512B/帧，~15.6fps) |
+| **ULog 视频查看** | 下载/解析 .ulg 文件，camera_frame_chunk JPEG 帧缩略图 + 幻灯片 + 保存 |
 | **平台支持** | macOS, iOS, Linux, Android |
 
 **核心文件** (`flutter_app/lib/`):
@@ -765,7 +767,7 @@ screens/
 services/
 ├── http_service.dart        # 8080/81 API 封装
 ├── device_discovery.dart    # mDNS + HTTP 发现
-├── ulog_parser.dart         # ULog 二进制解析器 (camera_frame JPEG 提取)
+├── ulog_parser.dart         # ULog 二进制解析器 (camera_frame_chunk JPEG 提取)
 └── connected_device_store.dart
 providers/
 └── app_state.dart           # 全局状态管理
