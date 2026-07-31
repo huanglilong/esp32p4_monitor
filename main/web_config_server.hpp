@@ -21,6 +21,18 @@ void web_config_server_start(void);
  */
 void web_config_server_stop(void);
 
+/**
+ * @brief Check if AAC file recording is active.
+ * Used by AudioUlogRecorder for mutual exclusion.
+ */
+bool web_config_is_aac_recording(void);
+
+/**
+ * @brief Check if audio playback is active.
+ * Used by AudioUlogRecorder for mutual exclusion.
+ */
+bool web_config_is_playing(void);
+
 #ifdef __cplusplus
 }
 #endif

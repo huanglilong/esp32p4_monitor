@@ -54,6 +54,9 @@
 #include "ff.h"
 #include <sys/time.h>
 
+/* Audio ULog recording */
+#include "audio_ulog_recorder.hpp"
+
 /* ESP-Claw IM — WeChat QR login API */
 #ifdef CONFIG_APP_CLAW_CAP_IM_WECHAT
 #include "cap_im_wechat.h"
@@ -184,6 +187,10 @@ static void audio_unlock(void)
         xSemaphoreGive(s_audio_mutex);
     }
 }
+
+/* ── Audio state accessors (for AudioUlogRecorder mutual exclusion) ── */
+bool web_config_is_aac_recording(void) { return s_is_recording.load(std::memory_order_acquire); }
+bool web_config_is_playing(void) { return s_playing.load(std::memory_order_acquire); }
 
 /* Stop the audio task: set s_audio_running=false and wait briefly for exit.
  * Used by web_config_server_stop() during graceful shutdown.
@@ -2063,6 +2070,13 @@ static esp_err_t ulog_start_handler(httpd_req_t *req)
     }
     ulog_writer_t *ulog = ulog_writer_get();
     esp_err_t err = ulog_writer_start(ulog);
+    if (err == ESP_OK) {
+        /* Start continuous audio recording to ULog */
+        esp_err_t audio_err = AudioUlogRecorder::instance().start();
+        if (audio_err != ESP_OK) {
+            ESP_LOGW(TAG, "Audio ULog recorder start failed: %s", esp_err_to_name(audio_err));
+        }
+    }
     httpd_resp_set_type(req, "application/json");
     if (err == ESP_OK) {
         httpd_resp_sendstr(req, "{\"ok\":1}");
@@ -2074,6 +2088,8 @@ static esp_err_t ulog_start_handler(httpd_req_t *req)
 
 static esp_err_t ulog_stop_handler(httpd_req_t *req)
 {
+    /* Stop audio recording before stopping ULog */
+    AudioUlogRecorder::instance().stop();
     ulog_writer_t *ulog = ulog_writer_get();
     ulog_writer_stop(ulog);
     httpd_resp_set_type(req, "application/json");

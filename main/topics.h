@@ -13,6 +13,7 @@
 #include "generated/fps_stats.h"
 #include "generated/wifi_state.h"
 #include "generated/audio_level.h"
+#include "generated/audio_frame.h"
 #include "generated/camera_state.h"
 #include "generated/recording_state.h"
 #include "generated/volume_state.h"
@@ -33,6 +34,7 @@
 ORB_TOPIC_DECLARE(fps_stats);
 ORB_TOPIC_DECLARE(wifi_state);
 ORB_TOPIC_DECLARE(audio_level);
+ORB_TOPIC_DECLARE(audio_frame);
 ORB_TOPIC_DECLARE(camera_state);
 ORB_TOPIC_DECLARE(recording_state);
 ORB_TOPIC_DECLARE(volume_state);

@@ -91,6 +91,7 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/git_info.h
 idf_component_register(
     SRCS "wifi_service.cpp" "main.cpp" "peripherals.cpp"
          "drivers/audio/audio_driver.cpp"
+         "drivers/audio/audio_ulog_recorder.cpp"
          "drivers/sdcard/sdcard_driver.cpp"
          "drivers/camera/camera_driver.cpp"
          "drivers/system_monitor/system_monitor.cpp"
@@ -103,6 +104,7 @@ idf_component_register(
          "generated/fps_stats.cpp"
          "generated/wifi_state.cpp"
          "generated/audio_level.cpp"
+         "generated/audio_frame.cpp"
          "generated/camera_state.cpp"
          "generated/recording_state.cpp"
          "generated/volume_state.cpp"
