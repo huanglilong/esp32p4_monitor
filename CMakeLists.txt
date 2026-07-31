@@ -42,6 +42,7 @@ file(GLOB UORB_MSG_FILES  ${UORB_MSG_DIR}/*.msg)
 # List every generated output file explicitly
 set(UORB_GEN_FILES
     ${UORB_GEN_DIR}/audio_level.h         ${UORB_GEN_DIR}/audio_level.cpp
+    ${UORB_GEN_DIR}/camera_frame_chunk.h  ${UORB_GEN_DIR}/camera_frame_chunk.cpp
     ${UORB_GEN_DIR}/camera_state.h        ${UORB_GEN_DIR}/camera_state.cpp
     ${UORB_GEN_DIR}/fps_stats.h           ${UORB_GEN_DIR}/fps_stats.cpp
     ${UORB_GEN_DIR}/recording_state.h     ${UORB_GEN_DIR}/recording_state.cpp

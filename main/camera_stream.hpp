@@ -4,7 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "uorb.h"
-#include "generated/camera_frame.h"
+#include "generated/camera_frame_chunk.h"
 #include <time.h>
 #include <atomic>
 
@@ -56,8 +56,8 @@ public:
     bool isRunning(void) const { return _running.load(std::memory_order_acquire); }
 
     /** Enable/disable camera frame recording to ULog.
-     *  Frames are published as camera_frame uORB topic when recording is enabled.
-     *  ULogWriter must be configured to subscribe to camera_frame for this to take effect. */
+     *  Frames are published as camera_frame_chunk uORB topic when recording is enabled.
+     *  ULogWriter must be configured to subscribe to camera_frame_chunk for this to take effect. */
     void set_recording(bool enabled);
     bool is_recording(void) const { return _recording_enabled.load(std::memory_order_acquire); }
 
@@ -102,7 +102,7 @@ public:
     bool _send_mjpeg_part(httpd_req_t *req, uint8_t *jpeg_data, uint32_t jpeg_size,
                           char *part_buf, size_t part_buf_size);  /* Send MJPEG boundary+part, return false on error */
     void _update_fps_stats(uint32_t jpeg_size);   /* Update FPS counters and publish uORB */
-    void _publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Publish camera_frame uORB topic for ULog recording */
+    void _publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Publish camera_frame_chunk uORB topics for ULog recording */
     void _store_shared_jpeg(uint8_t *jpeg_data, uint32_t jpeg_size);  /* Copy JPEG to shared buffer + signal _frame_ready_sem */
 
     /* PPA output dimensions — accessed by camera_info_handler */
@@ -145,9 +145,9 @@ private:
                                                     * cam_stop task hasn't finished cleanup and cam_start
                                                     * task begins re-initialization (EADDRINUSE, double-free) */
 
-    /* Camera frame recording to ULog */
+    /* Camera frame recording to ULog (chunked JPEG) */
     std::atomic<bool>          _recording_enabled;  /* True when camera frame recording is active */
-    std::atomic<orb_advert_t>  _frame_pub;          /* uORB publisher for camera_frame — atomic for lazy advertise CAS */
+    std::atomic<orb_advert_t>  _chunk_pub;          /* uORB publisher for camera_frame_chunk — atomic for lazy advertise CAS */
 
     /* mDNS */
     bool                   _mdns_running;

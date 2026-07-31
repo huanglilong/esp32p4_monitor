@@ -11,7 +11,7 @@ static constexpr size_t ORB_TOPICS_COUNT { 10 };
 
 enum class ORB_ID : uint8_t {
     audio_level = 0,
-    camera_frame = 1,
+    camera_frame_chunk = 1,
     camera_state = 2,
     fps_stats = 3,
     recording_state = 4,

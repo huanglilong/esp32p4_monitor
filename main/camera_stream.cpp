@@ -136,7 +136,7 @@ CameraStream::CameraStream() :
     _running(false),
     _start_stop_mutex(nullptr),
     _recording_enabled(false),
-    _frame_pub(ORB_ADVERT_INVALID),
+    _chunk_pub(ORB_ADVERT_INVALID),
     _mdns_running(false)
 {
     _shared_jpeg_mutex = xSemaphoreCreateMutex();
@@ -409,8 +409,8 @@ void CameraStream::stop(void)
     /* Reset FPS publisher handle — will be re-created on next start() */
     _fps_pub = ORB_ADVERT_INVALID;
 
-    /* Reset camera frame publisher handle */
-    _frame_pub = ORB_ADVERT_INVALID;
+    /* Reset camera frame chunk publisher handle */
+    _chunk_pub = ORB_ADVERT_INVALID;
     _recording_enabled.store(false, std::memory_order_release);
 
     ESP_LOGI(TAG, "Stream stopped");
@@ -861,41 +861,41 @@ void CameraStream::_publish_camera_frame(uint8_t *jpeg_data, uint32_t jpeg_size)
     if (!_recording_enabled.load(std::memory_order_acquire)) return;
     if (!jpeg_data || jpeg_size == 0) return;
 
-    /* JPEG size must fit in camera_frame_s.jpeg_data[15360] */
-    if (jpeg_size > sizeof(((camera_frame_s *)0)->jpeg_data)) {
-        ESP_LOGW(TAG, "JPEG frame too large for ULog (%u > %u), skipping",
-                 (unsigned)jpeg_size, (unsigned)sizeof(((camera_frame_s *)0)->jpeg_data));
-        return;
-    }
-
-    /* Lazy-init publisher (atomic CAS prevents double-advertise) */
-    if (_frame_pub.load(std::memory_order_relaxed) < 0) {
-        orb_advert_t new_pub = orb_advertise(ORB_ID(camera_frame));
+    /* Lazy-init chunk publisher (atomic CAS prevents double-advertise) */
+    if (_chunk_pub.load(std::memory_order_relaxed) < 0) {
+        orb_advert_t new_pub = orb_advertise(ORB_ID(camera_frame_chunk));
         orb_advert_t expected = ORB_ADVERT_INVALID;
-        _frame_pub.compare_exchange_strong(expected, new_pub,
+        _chunk_pub.compare_exchange_strong(expected, new_pub,
                 std::memory_order_acq_rel, std::memory_order_acquire);
     }
-    if (_frame_pub.load(std::memory_order_relaxed) < 0) return;
+    if (_chunk_pub.load(std::memory_order_relaxed) < 0) return;
 
-    /* camera_frame_s is ~15KB — too large for httpd task stack (4KB default).
-     * Allocate from PSRAM heap to avoid stack overflow. */
-    camera_frame_s *frame = (camera_frame_s *)heap_caps_malloc(sizeof(camera_frame_s), MALLOC_CAP_SPIRAM);
-    if (!frame) {
-        ESP_LOGW(TAG, "Failed to allocate camera_frame_s, skipping publish");
-        return;
+    /* ── Split JPEG data into chunks and publish ── */
+    static constexpr uint16_t CHUNK_SIZE = 1024;
+    uint16_t chunks_total = (uint16_t)((jpeg_size + CHUNK_SIZE - 1) / CHUNK_SIZE);
+    const uint8_t *src = jpeg_data;
+    uint32_t remaining = jpeg_size;
+    uint32_t frame_idx = _frame_count.load(std::memory_order_relaxed);
+
+    /* stack-allocate chunk message (small, ~1KB) */
+    camera_frame_chunk_s chunk;
+    memset(&chunk, 0, sizeof(chunk));
+    chunk.timestamp    = (uint64_t)esp_timer_get_time();
+    chunk.frame_index  = frame_idx;
+    chunk.chunks_total = chunks_total;
+    chunk.width        = (uint16_t)_stream_enc_width;
+    chunk.height       = (uint16_t)_stream_enc_height;
+    chunk.format       = 0;  /* 0 = JPEG */
+
+    for (uint16_t i = 0; i < chunks_total; i++) {
+        uint16_t chunk_sz = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : (uint16_t)remaining;
+        chunk.chunk_index = i;
+        chunk.chunk_size  = chunk_sz;
+        memcpy(chunk.chunk_data, src, chunk_sz);
+        orb_publish(ORB_ID(camera_frame_chunk), _chunk_pub, &chunk);
+        src += chunk_sz;
+        remaining -= chunk_sz;
     }
-
-    memset(frame, 0, sizeof(*frame));
-    frame->timestamp   = esp_timer_get_time();
-    frame->frame_index = _frame_count.load(std::memory_order_relaxed);
-    frame->width       = _stream_enc_width;
-    frame->height      = _stream_enc_height;
-    frame->format      = 0;  /* 0 = JPEG */
-    frame->jpeg_size   = (uint16_t)jpeg_size;
-    memcpy(frame->jpeg_data, jpeg_data, jpeg_size);
-
-    orb_publish(ORB_ID(camera_frame), _frame_pub, frame);
-    heap_caps_free(frame);
 }
 
 /*============================================================================
