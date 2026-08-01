@@ -81,7 +81,7 @@ void AudioUlogRecorder::_task_func(void *arg)
         return;
     }
 
-    /* Open AAC encoder */
+    /* Open AAC encoder using direct API (no registration needed) */
     esp_aac_enc_config_t aac_cfg = ESP_AAC_ENC_CONFIG_DEFAULT();
     aac_cfg.sample_rate = AAC_SAMPLE_RATE;
     aac_cfg.channel = AAC_CHANNEL;
@@ -89,13 +89,8 @@ void AudioUlogRecorder::_task_func(void *arg)
     aac_cfg.bitrate = AAC_BITRATE;
     aac_cfg.adts_used = true;
 
-    esp_audio_enc_config_t enc_cfg = {};
-    enc_cfg.type = ESP_AUDIO_TYPE_AAC;
-    enc_cfg.cfg = &aac_cfg;
-    enc_cfg.cfg_sz = sizeof(aac_cfg);
-
     esp_audio_enc_handle_t encoder = nullptr;
-    if (esp_audio_enc_open(&enc_cfg, &encoder) != ESP_AUDIO_ERR_OK || !encoder) {
+    if (esp_aac_enc_open(&aac_cfg, sizeof(aac_cfg), &encoder) != ESP_AUDIO_ERR_OK || !encoder) {
         ESP_LOGE(TAG, "AAC encoder open failed");
         heap_caps_free(pcm_buf);
         self->_running.store(false, std::memory_order_release);
@@ -106,10 +101,10 @@ void AudioUlogRecorder::_task_func(void *arg)
 
     int enc_in_size = 0;
     int enc_out_size = 0;
-    if (esp_audio_enc_get_frame_size(encoder, &enc_in_size, &enc_out_size) != ESP_AUDIO_ERR_OK
+    if (esp_aac_enc_get_frame_size(encoder, &enc_in_size, &enc_out_size) != ESP_AUDIO_ERR_OK
         || enc_in_size <= 0) {
         ESP_LOGE(TAG, "AAC get_frame_size failed");
-        esp_audio_enc_close(encoder);
+        esp_aac_enc_close(encoder);
         heap_caps_free(pcm_buf);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
@@ -127,7 +122,7 @@ void AudioUlogRecorder::_task_func(void *arg)
         ESP_LOGE(TAG, "Encoder buffer alloc failed");
         if (enc_in_buf) heap_caps_free(enc_in_buf);
         if (enc_out_buf) heap_caps_free(enc_out_buf);
-        esp_audio_enc_close(encoder);
+        esp_aac_enc_close(encoder);
         heap_caps_free(pcm_buf);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
@@ -145,7 +140,7 @@ void AudioUlogRecorder::_task_func(void *arg)
         ESP_LOGE(TAG, "Failed to advertise audio_frame topic");
         heap_caps_free(enc_in_buf);
         heap_caps_free(enc_out_buf);
-        esp_audio_enc_close(encoder);
+        esp_aac_enc_close(encoder);
         heap_caps_free(pcm_buf);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
@@ -203,7 +198,7 @@ void AudioUlogRecorder::_task_func(void *arg)
                     .len = (uint32_t)enc_out_size
                 };
 
-                if (esp_audio_enc_process(encoder, &in_frame, &out_frame) == ESP_AUDIO_ERR_OK
+                if (esp_aac_enc_process(encoder, &in_frame, &out_frame) == ESP_AUDIO_ERR_OK
                     && out_frame.encoded_bytes > 0) {
                     /* Publish audio_frame uORB topic */
                     audio_frame_s af = {};
@@ -254,7 +249,7 @@ void AudioUlogRecorder::_task_func(void *arg)
          * the handle is lightweight and doesn't need cleanup */
     }
 
-    esp_audio_enc_close(encoder);
+    esp_aac_enc_close(encoder);
     heap_caps_free(enc_in_buf);
     heap_caps_free(enc_out_buf);
     heap_caps_free(pcm_buf);

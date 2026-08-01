@@ -1330,6 +1330,8 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         return ESP_OK;
     }
     if (s_fm_busy)        { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
+    /* Stop AudioUlogRecorder if running — it shares the I2S RX channel */
+    AudioUlogRecorder::instance().stop();
     if (!__audio_init())  { audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
     if (!s_audio_task.load(std::memory_order_acquire) && s_audio_task_exited.load(std::memory_order_acquire)) {
         s_audio_running = true;
@@ -1580,6 +1582,8 @@ static esp_err_t h_play(httpd_req_t *req) {
     if (s_fm_busy) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"File manager busy\"}"); return ESP_OK; }
     /* Refuse playback while web recording is active — recording and playback share I2S hardware */
     if (s_is_recording) { audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Recording in progress\"}"); return ESP_OK; }
+    /* Stop AudioUlogRecorder if running — it shares the I2S RX channel */
+    AudioUlogRecorder::instance().stop();
     /* Stop + destroy previous player for clean state (matching Music App lifecycle).
      * Release audio_lock during stop/destroy to avoid blocking other audio handlers
      * and to prevent deadlock if GMF output callback needs codec access.
@@ -2068,6 +2072,10 @@ static esp_err_t ulog_start_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD card not available\"}");
         return ESP_OK;
     }
+
+    /* Ensure audio driver is initialized for AudioUlogRecorder */
+    PeripheralManager::instance().init_audio();
+
     ulog_writer_t *ulog = ulog_writer_get();
     esp_err_t err = ulog_writer_start(ulog);
     if (err == ESP_OK) {
@@ -3493,6 +3501,14 @@ static void web_config_task(void *arg)
                 esp_err_t err = ulog_writer_start(ulog);
                 if (err == ESP_OK) {
                     ESP_LOGI(TAG, "ULog auto-started after SNTP sync");
+                    /* Ensure audio driver is initialized for AudioUlogRecorder */
+                    PeripheralManager::instance().init_audio();
+                    /* Start continuous audio recording to ULog (same as manual start handler) */
+                    esp_err_t audio_err = AudioUlogRecorder::instance().start();
+                    if (audio_err != ESP_OK) {
+                        ESP_LOGW(TAG, "Audio ULog recorder auto-start failed: %s",
+                                 esp_err_to_name(audio_err));
+                    }
                 } else {
                     ESP_LOGW(TAG, "ULog auto-start failed: %s", esp_err_to_name(err));
                 }

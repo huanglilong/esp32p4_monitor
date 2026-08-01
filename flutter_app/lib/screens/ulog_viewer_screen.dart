@@ -374,12 +374,16 @@ class _UlogViewerScreenState extends State<UlogViewerScreen> {
     }
 
     // No frames
-    if (_result == null || !_result!.isSuccess || _result!.frames.isEmpty) {
+    if (_result == null || !_result!.isSuccess) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Icon(Icons.videocam_off, size: 64, color: Colors.grey[400]),
           const SizedBox(height: 16),
-          Text(_result?.error ?? 'No camera frames found'),
+          Text(_result?.error ?? 'No data found'),
+          if (_result != null && _result!.audioFrameCount > 0) ...[
+            const SizedBox(height: 8),
+            Text('${_result!.audioFrameCount} AAC audio frames found (${_fmtBytes(_result!.audioTotalBytes)})'),
+          ],
         ]),
       );
     }
@@ -399,6 +403,15 @@ class _UlogViewerScreenState extends State<UlogViewerScreen> {
             '${frames.length} frames · ${frames.first.width}×${frames.first.height} · ${_fmtBytes(_result!.totalBytes)}',
             style: tt.bodySmall,
           ),
+          if (_result!.audioFrameCount > 0) ...[
+            const SizedBox(width: 12),
+            Icon(Icons.audiotrack, size: 16, color: cs.primary),
+            const SizedBox(width: 4),
+            Text(
+              '${_result!.audioFrameCount} AAC · ${_fmtBytes(_result!.audioTotalBytes)}',
+              style: tt.bodySmall,
+            ),
+          ],
           const Spacer(),
           Text('${_framerate.toStringAsFixed(1)} fps', style: tt.bodySmall),
           SizedBox(

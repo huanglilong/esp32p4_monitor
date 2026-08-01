@@ -1,13 +1,16 @@
-/// ULog binary format parser — extracts camera JPEG frames from .ulg files.
+/// ULog binary format parser — extracts camera JPEG frames and AAC audio from .ulg files.
 ///
-/// Ported from tools/ulog_extract_frames.py.
 /// Handles PX4 ULog format including o_size_no_padding convention
 /// where trailing _padding bytes are omitted from DATA messages.
+/// Supports:
+///   - camera_frame_chunk (chunked JPEG frames, reassembled by frame_index)
+///   - audio_frame (AAC-ADTS audio frames)
+///   - camera_frame (legacy non-chunked format)
 
 import 'dart:io';
 import 'dart:typed_data';
 
-/// A single extracted camera frame.
+/// A single extracted camera frame (reassembled from chunks if needed).
 class UlogFrame {
   final int frameIndex;
   final int width;
@@ -28,23 +31,47 @@ class UlogFrame {
   });
 }
 
+/// A single extracted AAC audio frame.
+class UlogAudioFrame {
+  final int frameIndex;
+  final int timestamp;
+  final int sampleRate;
+  final int channel;
+  final int bitsPerSample;
+  final int aacSize;
+  final Uint8List aacData;
+
+  const UlogAudioFrame({
+    required this.frameIndex,
+    required this.timestamp,
+    required this.sampleRate,
+    required this.channel,
+    required this.bitsPerSample,
+    required this.aacSize,
+    required this.aacData,
+  });
+}
+
 /// Result of ULog parsing.
 class UlogParseResult {
   final List<UlogFrame> frames;
+  final List<UlogAudioFrame> audioFrames;
   final String? error;
 
-  const UlogParseResult({required this.frames, this.error});
+  const UlogParseResult({required this.frames, this.audioFrames = const [], this.error});
 
   bool get isSuccess => error == null;
   int get count => frames.length;
   int get totalBytes => frames.fold(0, (sum, f) => sum + f.jpegSize);
+  int get audioFrameCount => audioFrames.length;
+  int get audioTotalBytes => audioFrames.fold(0, (sum, f) => sum + f.aacSize);
 }
 
-/// Parses ULog binary format to extract camera_frame JPEG data.
+/// Parses ULog binary format to extract camera JPEG frames and AAC audio.
 class UlogParser {
   static const _ulogMagic = [0x55, 0x4C, 0x6F, 0x67, 0x01, 0x12, 0x35, 0x01];
 
-  /// Parse a ULog file and extract all camera_frame JPEG data.
+  /// Parse a ULog file and extract all camera JPEG frames + AAC audio.
   static UlogParseResult parseFile(String path) {
     final file = File(path);
     if (!file.existsSync()) {
@@ -61,7 +88,7 @@ class UlogParser {
     return parseBytes(data);
   }
 
-  /// Parse ULog binary data and extract all camera_frame JPEG data.
+  /// Parse ULog binary data and extract all camera JPEG frames + AAC audio.
   static UlogParseResult parseBytes(Uint8List data) {
     if (data.length < 16) {
       return UlogParseResult(frames: [], error: 'File too small (${data.length} bytes)');
@@ -84,7 +111,7 @@ class UlogParser {
       );
     }
 
-    // Parse definitions section — find camera_frame subscription
+    // Parse definitions section — find topic subscriptions
     final subscriptions = <int, String>{};
     int pos = 16;
 
@@ -109,24 +136,34 @@ class UlogParser {
       pos = nextPos;
     }
 
-    // Find camera_frame msg_id
-    int? cameraFrameMsgId;
+    // Find topic msg_ids
+    int? cameraFrameMsgId;       // legacy camera_frame
+    int? cameraFrameChunkMsgId;  // camera_frame_chunk
+    int? audioFrameMsgId;        // audio_frame
     for (final entry in subscriptions.entries) {
       if (entry.value == 'camera_frame') {
         cameraFrameMsgId = entry.key;
-        break;
+      } else if (entry.value == 'camera_frame_chunk') {
+        cameraFrameChunkMsgId = entry.key;
+      } else if (entry.value == 'audio_frame') {
+        audioFrameMsgId = entry.key;
       }
     }
 
-    if (cameraFrameMsgId == null) {
+    if (cameraFrameMsgId == null && cameraFrameChunkMsgId == null && audioFrameMsgId == null) {
       return const UlogParseResult(
         frames: [],
-        error: 'No camera_frame topic found in ULog file',
+        error: 'No camera_frame, camera_frame_chunk, or audio_frame topic found in ULog file',
       );
     }
 
-    // Scan entire file for camera_frame DATA messages
+    // Scan entire file for DATA messages
     final frames = <UlogFrame>[];
+    final audioFrames = <UlogAudioFrame>[];
+
+    // For chunk reassembly: frame_index -> list of (chunk_index, chunk_data)
+    final chunkMap = <int, Map<int, Uint8List>>{};
+
     int scanPos = 16;
 
     while (scanPos + 3 <= data.length) {
@@ -141,58 +178,168 @@ class UlogParser {
       if (msgType == 0x44 && msgSize >= 5) {
         // 'D' — data message
         final msgId = _readUint16(data, scanPos + 3);
+        final payloadStart = scanPos + 5;
+        final payloadEnd = scanPos + 3 + msgSize;
+        final payloadLength = payloadEnd - payloadStart;
 
-        if (msgId == cameraFrameMsgId) {
-          // camera_frame payload (after msg_id, starting at scanPos+5):
+        if (msgId == cameraFrameMsgId && payloadLength >= 19) {
+          // Legacy camera_frame format (non-chunked):
           //   uint64_t timestamp     (offset 0, 8 bytes)
           //   uint32_t frame_index   (offset 8, 4 bytes)
           //   uint16_t width         (offset 12, 2 bytes)
           //   uint16_t height        (offset 14, 2 bytes)
           //   uint16_t jpeg_size     (offset 16, 2 bytes)
           //   uint8_t  format        (offset 18, 1 byte)
-          //   uint8_t  jpeg_data[]   (offset 19, up to jpeg_size bytes)
-          final payloadStart = scanPos + 5;
-          final payloadEnd = scanPos + 3 + msgSize;
-          final payloadLength = payloadEnd - payloadStart;
-
-          if (payloadLength < 19) {
-            scanPos = nextPos;
-            continue;
-          }
-
-          final timestamp = _readUint64(data, payloadStart);
-          final frameIndex = _readUint32(data, payloadStart + 8);
-          final width = _readUint16(data, payloadStart + 12);
-          final height = _readUint16(data, payloadStart + 14);
-          final jpegSize = _readUint16(data, payloadStart + 16);
-          final format = data[payloadStart + 18];
-
-          if (jpegSize > 0 && 19 + jpegSize <= payloadLength) {
-            final jpegStart = payloadStart + 19;
-            final jpegData = data.sublist(jpegStart, jpegStart + jpegSize);
-
-            // Verify JPEG magic (FFD8)
-            if (jpegData.length >= 2 &&
-                jpegData[0] == 0xFF &&
-                jpegData[1] == 0xD8) {
-              frames.add(UlogFrame(
-                frameIndex: frameIndex,
-                width: width,
-                height: height,
-                jpegSize: jpegSize,
-                format: format,
-                timestamp: timestamp,
-                jpegData: Uint8List.fromList(jpegData),
-              ));
-            }
-          }
+          //   uint8_t  jpeg_data[]   (offset 19)
+          _parseLegacyCameraFrame(data, payloadStart, payloadLength, frames);
+        } else if (msgId == cameraFrameChunkMsgId && payloadLength >= 19) {
+          // camera_frame_chunk format:
+          //   uint64_t timestamp     (offset 0, 8 bytes)
+          //   uint32_t frame_index   (offset 8, 4 bytes)
+          //   uint16_t width         (offset 12, 2 bytes)
+          //   uint16_t height        (offset 14, 2 bytes)
+          //   uint16_t chunk_size    (offset 16, 2 bytes)
+          //   uint8_t  chunk_data[]  (offset 18, up to 1024 bytes)
+          _parseCameraFrameChunk(data, payloadStart, payloadLength, chunkMap);
+        } else if (msgId == audioFrameMsgId && payloadLength >= 14) {
+          // audio_frame format:
+          //   uint64_t timestamp       (offset 0, 8 bytes)
+          //   uint32_t frame_index     (offset 8, 4 bytes)
+          //   uint16_t sample_rate     (offset 12, 2 bytes)
+          //   uint8_t  channel         (offset 14, 1 byte)
+          //   uint8_t  bits_per_sample (offset 15, 1 byte)
+          //   uint16_t aac_size        (offset 16, 2 bytes)
+          //   uint8_t  aac_data[]      (offset 18, up to 1536 bytes)
+          _parseAudioFrame(data, payloadStart, payloadLength, audioFrames);
         }
       }
 
       scanPos = nextPos;
     }
 
-    return UlogParseResult(frames: frames);
+    // Reassemble camera_frame_chunk into full frames
+    _reassembleChunks(chunkMap, frames);
+
+    return UlogParseResult(frames: frames, audioFrames: audioFrames);
+  }
+
+  /// Parse legacy camera_frame (non-chunked) format.
+  static void _parseLegacyCameraFrame(
+      Uint8List data, int payloadStart, int payloadLength, List<UlogFrame> frames) {
+    final timestamp = _readUint64(data, payloadStart);
+    final frameIndex = _readUint32(data, payloadStart + 8);
+    final width = _readUint16(data, payloadStart + 12);
+    final height = _readUint16(data, payloadStart + 14);
+    final jpegSize = _readUint16(data, payloadStart + 16);
+    final format = data[payloadStart + 18];
+
+    final remaining = payloadLength - 19;
+    final size = jpegSize > 0 && jpegSize <= remaining ? jpegSize : remaining;
+    if (size > 0) {
+      final jpegData = data.sublist(payloadStart + 19, payloadStart + 19 + size);
+      // Verify JPEG magic (FFD8)
+      if (jpegData.length >= 2 && jpegData[0] == 0xFF && jpegData[1] == 0xD8) {
+        frames.add(UlogFrame(
+          frameIndex: frameIndex,
+          width: width,
+          height: height,
+          jpegSize: size,
+          format: format,
+          timestamp: timestamp,
+          jpegData: Uint8List.fromList(jpegData),
+        ));
+      }
+    }
+  }
+
+  /// Parse camera_frame_chunk — store in chunk map for reassembly.
+  static void _parseCameraFrameChunk(
+      Uint8List data, int payloadStart, int payloadLength, Map<int, Map<int, Uint8List>> chunkMap) {
+    final frameIndex = _readUint32(data, payloadStart + 8);
+    final width = _readUint16(data, payloadStart + 12);
+    final height = _readUint16(data, payloadStart + 14);
+    final chunkSize = _readUint16(data, payloadStart + 16);
+
+    if (chunkSize <= 0 || chunkSize > 1024) return;
+    final chunkDataStart = payloadStart + 18;
+    if (chunkDataStart + chunkSize > payloadStart + payloadLength) return;
+
+    final chunkData = data.sublist(chunkDataStart, chunkDataStart + chunkSize);
+
+    // Store with width/height encoded in a special entry
+    chunkMap.putIfAbsent(frameIndex, () => {});
+    // Use -1 as key for frame metadata (width, height)
+    chunkMap[frameIndex]![-1] = Uint8List.fromList([width & 0xFF, (width >> 8) & 0xFF, height & 0xFF, (height >> 8) & 0xFF]);
+    // Use chunk index as key (we don't have explicit chunk_index, so we use sequential order)
+    chunkMap[frameIndex]![chunkMap[frameIndex]!.length] = Uint8List.fromList(chunkData);
+  }
+
+  /// Reassemble camera_frame_chunk chunks into full JPEG frames.
+  static void _reassembleChunks(
+      Map<int, Map<int, Uint8List>> chunkMap, List<UlogFrame> frames) {
+    for (final entry in chunkMap.entries) {
+      final frameIndex = entry.key;
+      final chunks = entry.value;
+
+      // Extract frame metadata
+      final meta = chunks[-1];
+      if (meta == null || meta.length < 4) continue;
+      final width = meta[0] | (meta[1] << 8);
+      final height = meta[2] | (meta[3] << 8);
+
+      // Concatenate all chunks in order (skip metadata at -1)
+      final keys = chunks.keys.where((k) => k >= 0).toList()..sort();
+      final allData = <int>[];
+      for (final k in keys) {
+        allData.addAll(chunks[k]!);
+      }
+
+      if (allData.isEmpty) continue;
+
+      final jpegData = Uint8List.fromList(allData);
+      // Verify JPEG magic (FFD8)
+      if (jpegData.length >= 2 && jpegData[0] == 0xFF && jpegData[1] == 0xD8) {
+        frames.add(UlogFrame(
+          frameIndex: frameIndex,
+          width: width,
+          height: height,
+          jpegSize: allData.length,
+          format: 0,
+          timestamp: 0,
+          jpegData: jpegData,
+        ));
+      }
+    }
+  }
+
+  /// Parse audio_frame — extract AAC-ADTS data.
+  static void _parseAudioFrame(
+      Uint8List data, int payloadStart, int payloadLength, List<UlogAudioFrame> audioFrames) {
+    final timestamp = _readUint64(data, payloadStart);
+    final frameIndex = _readUint32(data, payloadStart + 8);
+    final sampleRate = _readUint16(data, payloadStart + 12);
+    final channel = data[payloadStart + 14];
+    final bitsPerSample = data[payloadStart + 15];
+    final aacSize = _readUint16(data, payloadStart + 16);
+
+    if (aacSize <= 0 || aacSize > 1536) return;
+    final aacDataStart = payloadStart + 18;
+    if (aacDataStart + aacSize > payloadStart + payloadLength) return;
+
+    final aacData = data.sublist(aacDataStart, aacDataStart + aacSize);
+
+    // Verify ADTS sync word (0xFFF)
+    if (aacData.length >= 2 && (aacData[0] & 0xFF) == 0xFF && (aacData[1] & 0xF0) == 0xF0) {
+      audioFrames.add(UlogAudioFrame(
+        frameIndex: frameIndex,
+        timestamp: timestamp,
+        sampleRate: sampleRate,
+        channel: channel,
+        bitsPerSample: bitsPerSample,
+        aacSize: aacSize,
+        aacData: Uint8List.fromList(aacData),
+      ));
+    }
   }
 
   static int _readUint16(Uint8List data, int offset) =>

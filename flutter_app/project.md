@@ -66,7 +66,7 @@
 |------|------|------|
 | `lib/services/http_service.dart` | HTTP 通信层 | MJPEG 流解析 + capture/save/setQuality；所有 HttpClient 添加 `findProxy = 'DIRECT'` 绕过 Linux 系统代理 |
 | `lib/services/device_discovery.dart` | 设备发现 | mDNS `_http._tcp` + HTTP 端口探测；添加 `joinMulticast()` 修复 Linux 组播接收；添加 `_detectLocalSubnet()` 回退探测本机网段 |
-| `lib/services/ulog_parser.dart` | ULog 解析器 | 解析 PX4 ULog 二进制格式，提取 camera_frame JPEG 帧（移植自 tools/ulog_extract_frames.py），支持 o_size_no_padding |
+| `lib/services/ulog_parser.dart` | ULog 解析器 | 解析 PX4 ULog 二进制格式，提取 camera_frame JPEG 帧 + audio_frame AAC 数据，支持 o_size_no_padding |
 | `lib/providers/app_state.dart` | 全局状态 | 帧限流、save/setQuality 委托 |
 | `lib/screens/camera_screen.dart` | 摄像头画面 | API 按钮、Quality 滑块（300ms防抖）、文件保存到系统临时目录 |
 | `lib/screens/ulog_viewer_screen.dart` | ULog 视频查看 | 下载/解析 .ulg 文件，帧缩略图网格 + 自动滚动，幻灯片播放，键盘箭头导航，InteractiveViewer 缩放，单帧/全帧保存 |
