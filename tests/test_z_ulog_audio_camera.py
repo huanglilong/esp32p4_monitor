@@ -13,6 +13,7 @@ It verifies:
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -206,6 +207,8 @@ class TestUlogAudioCamera:
 
     def test_ulog_info_tool_output(self, _ulog_path):
         """ulog_info CLI tool should report both audio_frame and camera_frame_chunk topics."""
+        if not shutil.which("ulog_info"):
+            pytest.skip("ulog_info CLI tool not installed (pip install pyulog)")
         result = subprocess.run(
             ["ulog_info", _ulog_path],
             capture_output=True, text=True, timeout=10
