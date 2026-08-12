@@ -2094,14 +2094,20 @@ static void _register_web_config_uris(httpd_handle_t hd)
 static bool web_config_self_probe(void)
 {
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (!sta) return false;
+    if (!sta) { ESP_LOGW(TAG, "probe: no STA netif"); return false; }
     esp_netif_ip_info_t ip;
-    if (esp_netif_get_ip_info(sta, &ip) != ESP_OK || ip.ip.addr == 0) return false;
+    if (esp_netif_get_ip_info(sta, &ip) != ESP_OK || ip.ip.addr == 0) {
+        ESP_LOGW(TAG, "probe: no STA IP");
+        return false;
+    }
 
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (fd < 0) return false;
+    if (fd < 0) { ESP_LOGW(TAG, "probe: socket() failed errno=%d", errno); return false; }
 
-    struct timeval to = { .tv_sec = 3, .tv_usec = 0 };
+    /* 5s timeout — generous enough to avoid false positives when Core 0
+     * is busy (httpd is pinned there).  The old 3s timeout caused
+     * unnecessary httpd restarts under ~60% Core 0 load. */
+    struct timeval to = { .tv_sec = 5, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
 
@@ -2138,8 +2144,16 @@ static bool web_config_self_probe(void)
              * socket, which makes LWIP emit an RST and the server logs
              * ECONNRESET/ENOTSOCK. Draining avoids that self-inflicted noise. */
             while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) got_any = true;
-            if (got_any) ok = true;
+            if (got_any) {
+                ok = true;
+            } else {
+                ESP_LOGW(TAG, "probe: connected but no response (recv errno=%d)", errno);
+            }
+        } else {
+            ESP_LOGW(TAG, "probe: send incomplete (%zd/%zd), errno=%d", sent, total, errno);
         }
+    } else {
+        ESP_LOGW(TAG, "probe: connect failed errno=%d", errno);
     }
     close(fd);
     return ok;
@@ -2355,12 +2369,17 @@ static void web_config_task(void *arg)
             health_log_counter = 0;
             if (web_config_self_probe()) {
                 probe_fail_count = 0;
-            } else if (++probe_fail_count >= 2) {  /* ~30s of failures */
+            } else if (++probe_fail_count >= 3) {  /* ~45s of failures (3 × 15s) */
                 ESP_LOGW(TAG, "httpd probe FAILED %d times — restarting httpd to recover",
                          probe_fail_count);
                 httpd_stop(s_httpd);
                 s_httpd = NULL;
                 probe_fail_count = 0;
+                /* Allow LWIP time to fully close the listen socket and free
+                 * TCP PCBs before restarting httpd.  Without this delay,
+                 * httpd_start() may race with the old socket teardown and
+                 * produce ENOTCONN (errno 128) errors on accept(). */
+                vTaskDelay(pdMS_TO_TICKS(2000));
             }
         }
     }
