@@ -124,50 +124,6 @@ target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
 
-# ─────────────────────────────────────────────────────────────────
-#  ESP-Claw IM Platform: conditional dependency
-#  When any IM channel is enabled, link cap_im_platform so main.cpp
-#  can include its headers and call its APIs.
-# ─────────────────────────────────────────────────────────────────
-if(CONFIG_APP_CLAW_CAP_IM_WECHAT OR CONFIG_APP_CLAW_CAP_IM_FEISHU OR
-   CONFIG_APP_CLAW_CAP_IM_QQ OR CONFIG_APP_CLAW_CAP_IM_TG OR
-   CONFIG_APP_CLAW_CAP_IM_LOCAL)
-    target_link_libraries(${COMPONENT_LIB} PRIVATE
-        idf::cap_im_platform
-        idf::claw_core
-        idf::claw_cap
-        idf::claw_event_router
-        idf::claw_manager
-        idf::claw_memory
-        idf::claw_skill
-        idf::cap_llm_config
-        idf::cap_session_mgr
-        idf::cap_scheduler
-        # Phase 1: Tool capabilities
-        idf::cap_system
-        idf::cap_files
-        idf::cap_http_request
-        # Phase 1: MCP server/client + mDNS discovery
-        idf::cap_mcp_server
-        idf::cap_mcp_client
-        idf::mcp_mdns
-        # Phase 2: Extended capabilities
-        idf::cap_lua
-        idf::cap_web_search
-        idf::cap_agent_mgr
-        idf::cap_router_mgr
-        idf::cap_skill_mgr
-        idf::cap_llm_inspect
-        idf::claw_kv_nvs
-    )
-    # Device-specific MCP tools (depends on claw + peripheral drivers)
-    target_sources(${COMPONENT_LIB} PRIVATE "device_mcp_tools.cpp")
-endif()
-
-if(CONFIG_APP_CLAW_CAP_IM_LOCAL)
-    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::cap_im_local)
-endif()
-
 # Get LVGL component library to suppress warnings
 function(get_component_library component_name output_var)
     idf_build_get_property(build_components BUILD_COMPONENTS)

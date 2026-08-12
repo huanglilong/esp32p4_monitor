@@ -151,7 +151,6 @@ See [esp32_debug_workflow.md](.github/esp32_debug_workflow.md) for full document
 | Project | Reference |
 |---------|-----------|
 | [PX4-Autopilot](https://github.com/PX4/PX4-Autopilot) | uORB, ULog, architecture |
-| [ESP-Claw](https://github.com/espressif/esp-claw) | AI agent, IM, LLM, MCP |
 
 When modifying `components/` code, follow its existing coding style and architecture.
 

@@ -28,7 +28,7 @@ static const char *TAG = "wifi_manager";
 #define WIFI_CONNECTED_BIT BIT0
 
 #ifndef CONFIG_APP_WIFI_AP_SSID_PREFIX
-#define CONFIG_APP_WIFI_AP_SSID_PREFIX "esp-claw"
+#define CONFIG_APP_WIFI_AP_SSID_PREFIX "esp-web"
 #endif
 #ifndef CONFIG_APP_WIFI_AP_CHANNEL
 #define CONFIG_APP_WIFI_AP_CHANNEL 1

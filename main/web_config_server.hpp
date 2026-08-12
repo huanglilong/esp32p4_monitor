@@ -37,14 +37,3 @@ bool web_config_is_playing(void);
 }
 #endif
 
-#ifdef CONFIG_APP_CLAW_CAP_IM_LOCAL
-/**
- * @brief Bind cap_im_local outbound callback to the agent response buffer.
- *
- * Call after cap_im_local_start() to connect the local IM channel's
- * outbound path to the web agent chat response buffer. Agent responses
- * routed through the "web_chat" channel will be stored and made
- * available via the /api/agent/messages polling endpoint.
- */
-void bind_agent_outbound(void);
-#endif

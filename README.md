@@ -108,6 +108,6 @@
 - **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
 - **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible, auto-start on WiFi+SNTP)
 - **System Monitor** Per-core CPU busy%, heap/PSRAM tracking, resource alerts (uORB + ULog + Web API)
-- **ESP-Claw AI Agent** 16 capabilities + 7 modules (claw_core/event_router/memory/skill), 15 device MCP tools, WeChat/Feishu/QQ/Telegram IM, Web+Flutter Agent Chat, LLM Vision (ref: [esp-claw](https://github.com/espressif/esp-claw))
+- **AI Agent** 16 capabilities, 15 device MCP tools, WeChat/Feishu/QQ/Telegram IM, Web+Flutter Agent Chat, LLM Vision
 - **Multi-board** Auto-detect LCD-4B / WIFI6 via GT911 I2C probe, single firmware
 - **Driver Architecture** PeripheralManager facade → AudioDriver + SDCardDriver + CameraDriver

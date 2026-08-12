@@ -203,19 +203,7 @@ CONFIG_ULOG_ENABLE=y
 # System Monitor
 CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT=85
 
-# ESP-Claw IM Channels
-CONFIG_APP_CLAW_CAP_IM_LOCAL=y
-CONFIG_APP_CLAW_CAP_IM_WECHAT=y
-
-# Override app_claw Kconfig defaults for modules not yet ported
-CONFIG_APP_CLAW_CAP_CORE=n
-CONFIG_APP_CLAW_CAP_SCHEDULER=n
-CONFIG_APP_CLAW_ENABLE_CLI=n
-CONFIG_APP_CLAW_CAP_MEMORY=n
-
 # MbedTLS — allocate from PSRAM to avoid SRAM exhaustion on HTTPS connections
-# (WeChat iLink Bot, LLM API, etc. need TLS; default internal alloc fails
-#  with MBEDTLS_ERR_SSL_ALLOC_FAILED -0x008D)
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # Dynamic TX/RX buffer: allocates large buffer during TLS handshake (needed
 # for large cert chains like WeChat/Tencent ~5.7KB), then frees after handshake.
@@ -229,7 +217,7 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
 # MBEDTLS_ERR_SSL_INVALID_RECORD on WeChat ilinkai.weixin.qq.com.
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
-# Disable hardware AES — cap_im_wechat uses software AES (esp_aes.h)
+# Disable hardware AES — software AES works with external mem alloc on P4
 # and enabling hardware AES conflicts with external mem alloc on P4
 CONFIG_MBEDTLS_HARDWARE_AES=n
 # Cross-signed cert verification needed for IDF 6.x
