@@ -215,6 +215,14 @@ static void audio_task(void *arg)
                 /* Break out of PCM processing if stop was requested */
                 if (!s_audio_running) break;
                 int idx = s_pcm_count.load(std::memory_order_relaxed);
+                /* Bounds check: if idx is out of range (e.g. stale value from
+                 * a previous recording session), reset to 0 to prevent OOB write.
+                 * Normally s_pcm_count is reset in h_rec_start() under audio_lock
+                 * before s_is_recording is set, so this is defensive. */
+                if (idx < 0 || idx >= ENC_SAMPLES_PER_CH) {
+                    s_pcm_count.store(0, std::memory_order_relaxed);
+                    idx = 0;
+                }
                 s_pcm_buf[idx * 2]     = buf[i * 2];
                 s_pcm_buf[idx * 2 + 1] = buf[i * 2 + 1];
                 if (s_pcm_count.fetch_add(1, std::memory_order_relaxed) + 1 >= ENC_SAMPLES_PER_CH) {
@@ -2439,13 +2447,23 @@ void web_config_server_stop(void)
 {
     if (!s_running) return;
 
-    /* Stop audio — signal task to stop, don't block waiting for it */
+    /* Stop audio task first — wait for it to exit cleanly so it can
+     * flush/close recording resources in its own context (avoids holding
+     * the FAT VFS mutex in httpd context, and prevents use-after-free
+     * on s_shine/s_pcm_buf/s_rec_file which the audio task uses
+     * without audio_lock). */
     s_audio_running = false;
     s_is_recording = false;
+    _stop_audio_task_if_running();
+
+    /* Clean up any resources the audio task didn't handle (e.g. if it
+     * didn't exit cleanly, or if recording was started but the audio
+     * task wasn't created yet). The audio task's deferred cleanup
+     * nulls these out, so the null checks are safe. */
     audio_lock();
-    if (s_shine) { int wr=0; unsigned char *d=shine_flush(s_shine,&wr); if(d&&wr>0&&s_rec_file) fwrite(d,1,wr,s_rec_file); shine_close(s_shine); s_shine=NULL; }
-    if (s_rec_file) { fclose(s_rec_file); s_rec_file=NULL; }
-    if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf=NULL; }
+    if (s_shine) { shine_close(s_shine); s_shine = NULL; }
+    if (s_rec_file) { fclose(s_rec_file); s_rec_file = NULL; }
+    if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf = NULL; }
     s_playing = false;
     if (s_asp) { esp_audio_simple_player_stop(s_asp); esp_audio_simple_player_destroy(s_asp); s_asp=NULL; }
     if (s_audio_inited.load(std::memory_order_acquire)) { PeripheralManager::instance().deinit_audio(); s_audio_inited.store(false, std::memory_order_release); }
