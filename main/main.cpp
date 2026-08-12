@@ -360,8 +360,12 @@ static void boot_sdcard_wifi_config(void)
     } else {
         char ssid[33] = {};
         size_t len = sizeof(ssid);
-        nvs_get_str(nvs_h, "ssid", ssid, &len);
+        esp_err_t nvs_err = nvs_get_str(nvs_h, "ssid", ssid, &len);
         nvs_close(nvs_h);
+        if (nvs_err != ESP_OK && nvs_err != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "NVS read ssid failed: %s", esp_err_to_name(nvs_err));
+            return;
+        }
         if (strlen(ssid) > 0) {
             ESP_LOGI(TAG, "WiFi SSID already in NVS (%s), skip SD wifi.txt", ssid);
             return;
@@ -560,6 +564,7 @@ extern "C" void app_main(void)
         uint8_t mac[6];
         if (esp_read_mac(mac, ESP_MAC_BASE) != ESP_OK) {
             memset(mac, 0, sizeof(mac));
+            ESP_LOGW(TAG, "MAC read failed, ULog UUID will be zeros");
         }
         char sys_uuid[24];
         snprintf(sys_uuid, sizeof(sys_uuid), "%02X%02X%02X%02X%02X%02X",
