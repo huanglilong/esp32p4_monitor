@@ -61,7 +61,16 @@ AudioUlogRecorder& AudioUlogRecorder::instance()
 }
 
 AudioUlogRecorder::AudioUlogRecorder() = default;
-AudioUlogRecorder::~AudioUlogRecorder() = default;
+AudioUlogRecorder::~AudioUlogRecorder()
+{
+    /* Free TCB if allocated (stack is freed in stop() on clean exit).
+     * On embedded devices the static singleton destructor never runs,
+     * but this ensures correctness if the object is ever stack-allocated. */
+    if (_task_tcb) {
+        heap_caps_free(_task_tcb);
+        _task_tcb = nullptr;
+    }
+}
 
 /* ── Background task ── */
 
