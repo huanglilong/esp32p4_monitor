@@ -192,16 +192,13 @@ class UlogParser {
           //   uint8_t  format        (offset 18, 1 byte)
           //   uint8_t  jpeg_data[]   (offset 19)
           _parseLegacyCameraFrame(data, payloadStart, payloadLength, frames);
-        } else if (msgId == cameraFrameChunkMsgId && payloadLength >= 19) {
-          // camera_frame_chunk format:
-          //   uint64_t timestamp     (offset 0, 8 bytes)
-          //   uint32_t frame_index   (offset 8, 4 bytes)
-          //   uint16_t width         (offset 12, 2 bytes)
-          //   uint16_t height        (offset 14, 2 bytes)
-          //   uint16_t chunk_size    (offset 16, 2 bytes)
-          //   uint8_t  chunk_data[]  (offset 18, up to 1024 bytes)
+        } else if (msgId == cameraFrameChunkMsgId && payloadLength >= 23) {
+          // camera_frame_chunk format (see _parseCameraFrameChunk for full layout):
+          //   uint64_t timestamp, uint32_t frame_index, uint16_t chunk_index,
+          //   uint16_t chunks_total, uint16_t chunk_size, uint16_t width,
+          //   uint16_t height, uint8_t format, uint8_t[1024] chunk_data
           _parseCameraFrameChunk(data, payloadStart, payloadLength, chunkMap);
-        } else if (msgId == audioFrameMsgId && payloadLength >= 14) {
+        } else if (msgId == audioFrameMsgId && payloadLength >= 18) {
           // audio_frame format:
           //   uint64_t timestamp       (offset 0, 8 bytes)
           //   uint32_t frame_index     (offset 8, 4 bytes)
@@ -253,25 +250,39 @@ class UlogParser {
   }
 
   /// Parse camera_frame_chunk — store in chunk map for reassembly.
+  ///
+  /// Binary layout (matches camera_frame_chunk_s):
+  ///   offset  0: uint64 timestamp      (8 bytes)
+  ///   offset  8: uint32 frame_index     (4 bytes)
+  ///   offset 12: uint16 chunk_index     (2 bytes)
+  ///   offset 14: uint16 chunks_total    (2 bytes)
+  ///   offset 16: uint16 chunk_size      (2 bytes)
+  ///   offset 18: uint16 width           (2 bytes)
+  ///   offset 20: uint16 height          (2 bytes)
+  ///   offset 22: uint8  format          (1 byte)
+  ///   offset 23: uint8[1024] chunk_data (variable, up to 1024)
   static void _parseCameraFrameChunk(
       Uint8List data, int payloadStart, int payloadLength, Map<int, Map<int, Uint8List>> chunkMap) {
     final frameIndex = _readUint32(data, payloadStart + 8);
-    final width = _readUint16(data, payloadStart + 12);
-    final height = _readUint16(data, payloadStart + 14);
+    final chunkIndex = _readUint16(data, payloadStart + 12);
+    final width = _readUint16(data, payloadStart + 18);
+    final height = _readUint16(data, payloadStart + 20);
     final chunkSize = _readUint16(data, payloadStart + 16);
 
     if (chunkSize <= 0 || chunkSize > 1024) return;
-    final chunkDataStart = payloadStart + 18;
+    final chunkDataStart = payloadStart + 23;
     if (chunkDataStart + chunkSize > payloadStart + payloadLength) return;
 
     final chunkData = data.sublist(chunkDataStart, chunkDataStart + chunkSize);
 
-    // Store with width/height encoded in a special entry
+    // Store with width/height/format encoded in a special entry at key -1
     chunkMap.putIfAbsent(frameIndex, () => {});
-    // Use -1 as key for frame metadata (width, height)
-    chunkMap[frameIndex]![-1] = Uint8List.fromList([width & 0xFF, (width >> 8) & 0xFF, height & 0xFF, (height >> 8) & 0xFF]);
-    // Use chunk index as key (we don't have explicit chunk_index, so we use sequential order)
-    chunkMap[frameIndex]![chunkMap[frameIndex]!.length] = Uint8List.fromList(chunkData);
+    chunkMap[frameIndex]![-1] = Uint8List.fromList([
+      width & 0xFF, (width >> 8) & 0xFF,
+      height & 0xFF, (height >> 8) & 0xFF,
+    ]);
+    // Use chunk_index from the message as key for correct reassembly order
+    chunkMap[frameIndex]![chunkIndex] = Uint8List.fromList(chunkData);
   }
 
   /// Reassemble camera_frame_chunk chunks into full JPEG frames.
