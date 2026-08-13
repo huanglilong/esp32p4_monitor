@@ -246,6 +246,7 @@ bool CameraStream::start(void)
     /* Start independent capture task — runs DQBUF/encode/publish loop
      * regardless of HTTP client connections.
      * Use static task creation with PSRAM stack to save ~32KB internal SRAM. */
+    _capture_task_exited.store(false, std::memory_order_release);
     StackType_t *capture_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     _capture_stack.store(capture_stack, std::memory_order_release);
     if (!capture_stack || !_capture_tcb) {
@@ -290,11 +291,11 @@ bool CameraStream::start(void)
         }
         /* Wait for capture task to finish (with timeout) */
         int wait_ms = 0;
-        while (_capture_task.load(std::memory_order_acquire) != nullptr && wait_ms < 3000) {
+        while (!_capture_task_exited.load(std::memory_order_acquire) && wait_ms < 3000) {
             vTaskDelay(pdMS_TO_TICKS(10));
             wait_ms += 10;
         }
-        if (_capture_task.load(std::memory_order_acquire) != nullptr) {
+        if (!_capture_task_exited.load(std::memory_order_acquire)) {
             ESP_LOGW(TAG, "Capture task did not exit after 3s in start() failure path, force-killing");
             TaskHandle_t t = _capture_task.exchange(nullptr, std::memory_order_acq_rel);
             if (t) vTaskDelete(t);
@@ -369,11 +370,11 @@ void CameraStream::stop(void)
         xSemaphoreGive(_frame_ready_sem);
         xSemaphoreGive(_frame_ready_sem);
         int wait_ms = 0;
-        while (_capture_task.load(std::memory_order_acquire) != nullptr && wait_ms < 5000) {
+        while (!_capture_task_exited.load(std::memory_order_acquire) && wait_ms < 5000) {
             vTaskDelay(pdMS_TO_TICKS(10));
             wait_ms += 10;
         }
-        if (_capture_task.load(std::memory_order_acquire) != nullptr) {
+        if (!_capture_task_exited.load(std::memory_order_acquire)) {
             ESP_LOGW(TAG, "Capture task did not exit after 5s, force-killing (may corrupt heap)");
             /* Claim the handle atomically so only one caller can kill it, even
              * if the task already self-deleted (handle would be nullptr then). */
@@ -719,12 +720,13 @@ void CameraStream::_deinit_encoder(void)
         _encoder_sem = nullptr;
     }
 
-    if (_encoder_lock) xSemaphoreGive(_encoder_lock);
-
-    /* Reset both flags — init-in-progress must be cleared so next start()
-     * can re-enter _init_encoder() without seeing stale progress state. */
+    /* Reset both flags BEFORE releasing lock — prevents HTTP handlers from
+     * seeing stale _encoder_initialized=true while resources are already freed.
+     * The lock ensures no handler is mid-check during the transition. */
     _encoder_initialized.store(false, std::memory_order_release);
     _encoder_init_in_progress.store(false, std::memory_order_release);
+
+    if (_encoder_lock) xSemaphoreGive(_encoder_lock);
 }
 
 /*============================================================================
@@ -1034,7 +1036,12 @@ capture_done:
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    /* Task is exiting — clear handle so stop() knows we're done */
+    /* Task is exiting — signal exit then clear handle so stop() knows we're done.
+     * _capture_task_exited MUST be set before vTaskDelete — stop() on Core 1
+     * waits for this flag before freeing the PSRAM stack. Without it, stop()
+     * could free the stack while this task is still executing between
+     * _capture_task=nullptr and vTaskDelete (cross-core race). */
+    cs->_capture_task_exited.store(true, std::memory_order_release);
     cs->_capture_task.store(nullptr, std::memory_order_release);
     ESP_LOGI(TAG, "Capture task exiting");
     vTaskDelete(nullptr);
@@ -1159,7 +1166,8 @@ static esp_err_t set_quality_handler(httpd_req_t *req)
     if (xSemaphoreTake(cs->_encoder_lock, pdMS_TO_TICKS(100)) == pdPASS) {
         if (cs->_encoder_initialized.load(std::memory_order_acquire) && cs->_encoder_sem) {
             if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
-                example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
+                esp_err_t enc_ret = example_encoder_set_jpeg_quality(cs->_encoder_handle, q);
+                if (enc_ret != ESP_OK) ESP_LOGW(TAG, "set_jpeg_quality failed: %s", esp_err_to_name(enc_ret));
                 xSemaphoreGive(cs->_encoder_sem);
             }
         }
@@ -1200,7 +1208,8 @@ static esp_err_t set_camera_config_handler(httpd_req_t *req)
         if (xSemaphoreTake(cs->_encoder_lock, pdMS_TO_TICKS(100)) == pdPASS) {
             if (cs->_encoder_initialized.load(std::memory_order_acquire) && cs->_encoder_sem) {
                 if (xSemaphoreTake(cs->_encoder_sem, pdMS_TO_TICKS(100)) == pdPASS) {
-                    example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
+                    esp_err_t enc_ret = example_encoder_set_jpeg_quality(cs->_encoder_handle, quality);
+                    if (enc_ret != ESP_OK) ESP_LOGW(TAG, "set_jpeg_quality failed: %s", esp_err_to_name(enc_ret));
                     xSemaphoreGive(cs->_encoder_sem);
                 }
             }
@@ -1295,11 +1304,11 @@ bool CameraStream::_start_http_server(void)
     httpd_uri_t uri_quality = { .uri = "/api/set_quality", .method = HTTP_GET, .handler = set_quality_handler, .user_ctx = this };
     httpd_uri_t uri_config  = { .uri = "/api/set_camera_config", .method = HTTP_POST, .handler = set_camera_config_handler, .user_ctx = this };
     httpd_uri_t uri_detect  = { .uri = "/api/get_detection_info", .method = HTTP_GET, .handler = detection_info_handler, .user_ctx = this };
-    httpd_register_uri_handler(_httpd_80, &uri_index);
-    httpd_register_uri_handler(_httpd_80, &uri_info);
-    httpd_register_uri_handler(_httpd_80, &uri_quality);
-    httpd_register_uri_handler(_httpd_80, &uri_config);
-    httpd_register_uri_handler(_httpd_80, &uri_detect);
+    if (httpd_register_uri_handler(_httpd_80, &uri_index) != ESP_OK)  ESP_LOGE(TAG, "Failed to register /");
+    if (httpd_register_uri_handler(_httpd_80, &uri_info) != ESP_OK)   ESP_LOGE(TAG, "Failed to register /api/get_camera_info");
+    if (httpd_register_uri_handler(_httpd_80, &uri_quality) != ESP_OK) ESP_LOGE(TAG, "Failed to register /api/set_quality");
+    if (httpd_register_uri_handler(_httpd_80, &uri_config) != ESP_OK)  ESP_LOGE(TAG, "Failed to register /api/set_camera_config");
+    if (httpd_register_uri_handler(_httpd_80, &uri_detect) != ESP_OK)  ESP_LOGE(TAG, "Failed to register /api/get_detection_info");
 
     /* Port 81: MJPEG stream */
     config.server_port += 1;   // 80 → 81 (matches reference: config.server_port += 1)
@@ -1315,7 +1324,7 @@ bool CameraStream::_start_http_server(void)
     }
 
     httpd_uri_t uri_stream = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = this };
-    httpd_register_uri_handler(_httpd_81, &uri_stream);
+    if (httpd_register_uri_handler(_httpd_81, &uri_stream) != ESP_OK) ESP_LOGE(TAG, "Failed to register /stream");
 
     return true;
 }
