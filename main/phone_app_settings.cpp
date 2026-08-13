@@ -116,6 +116,17 @@ PhoneAppSettings::~PhoneAppSettings()
         ESP_LOGW(TAG, "Scan task did not exit in time, force deleting");
         vTaskDelete(scan_h);
     }
+    /* Wait for cam start/stop task to finish — it accesses _is_ui_del and
+     * _sw_cam_stream which become invalid after destruction. */
+    for (int i = 0; i < 40 && _cam_start_stop_task.load(std::memory_order_acquire) != nullptr; i++) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    TaskHandle_t cam_h = _cam_start_stop_task.exchange(nullptr, std::memory_order_acq_rel);
+    if (cam_h != nullptr) {
+        ESP_LOGW(TAG, "Cam start/stop task did not exit in time, force deleting");
+        vTaskDelete(cam_h);
+    }
+
     _wifi_scan_exit.store(false, std::memory_order_release);
     _is_ui_del = true;
 }

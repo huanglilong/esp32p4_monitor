@@ -584,29 +584,32 @@ extern "C" void app_main(void)
         strlcpy(cfg.arch, "esp32p4", sizeof(cfg.arch));
 
         ulog_writer_t *ulog = ulog_writer_get();
-        ulog_writer_init(ulog, "/sdcard", &cfg);
+        esp_err_t ulog_ret = ulog_writer_init(ulog, "/sdcard", &cfg);
+        if (ulog_ret != ESP_OK) {
+            ESP_LOGE(TAG, "ULog writer init failed: %s — skipping topic registration", esp_err_to_name(ulog_ret));
+        } else {
+            /* Pass git version info for ULog Info messages */
+            ulog_git_info_t git = {};
+            strlcpy(git.branch, GIT_BRANCH, sizeof(git.branch));
+            strlcpy(git.commit, GIT_COMMIT, sizeof(git.commit));
+            strlcpy(git.author, GIT_AUTHOR, sizeof(git.author));
+            strlcpy(git.date, GIT_DATE, sizeof(git.date));
+            strlcpy(git.message, GIT_MSG, sizeof(git.message));
+            ulog_writer_set_git_info(ulog, &git);
 
-        /* Pass git version info for ULog Info messages */
-        ulog_git_info_t git = {};
-        strlcpy(git.branch, GIT_BRANCH, sizeof(git.branch));
-        strlcpy(git.commit, GIT_COMMIT, sizeof(git.commit));
-        strlcpy(git.author, GIT_AUTHOR, sizeof(git.author));
-        strlcpy(git.date, GIT_DATE, sizeof(git.date));
-        strlcpy(git.message, GIT_MSG, sizeof(git.message));
-        ulog_writer_set_git_info(ulog, &git);
-
-        ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
-        ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */
-        ulog_writer_add_topic(ulog, ORB_ID(audio_level), 100);    /* same as UI refresh */
-        ulog_writer_add_topic(ulog, ORB_ID(camera_state), 0);     /* default 100ms */
-        ulog_writer_add_topic(ulog, ORB_ID(recording_state), 0);  /* default 100ms */
-        ulog_writer_add_topic(ulog, ORB_ID(volume_state), 0);     /* default 100ms */
-        ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
-        ulog_writer_add_topic(ulog, ORB_ID(system_stats), 500);   /* system CPU/memory every 500ms */
-        ulog_writer_add_topic(ulog, ORB_ID(system_alert), 0);     /* alerts on event */
-        ulog_writer_add_topic(ulog, ORB_ID(camera_frame_chunk), 30);   /* camera JPEG chunks, 30ms to capture all chunks per frame */
-        ulog_writer_add_topic(ulog, ORB_ID(audio_frame), 30);       /* audio AAC frames, 30ms = ~15.6fps */
-        ESP_LOGI(TAG, "ULog writer initialized with %d topics", 12);
+            ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
+            ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */
+            ulog_writer_add_topic(ulog, ORB_ID(audio_level), 100);    /* same as UI refresh */
+            ulog_writer_add_topic(ulog, ORB_ID(camera_state), 0);     /* default 100ms */
+            ulog_writer_add_topic(ulog, ORB_ID(recording_state), 0);  /* default 100ms */
+            ulog_writer_add_topic(ulog, ORB_ID(volume_state), 0);     /* default 100ms */
+            ulog_writer_add_topic(ulog, ORB_ID(ulog_state), 0);       /* log the logger itself */
+            ulog_writer_add_topic(ulog, ORB_ID(system_stats), 500);   /* system CPU/memory every 500ms */
+            ulog_writer_add_topic(ulog, ORB_ID(system_alert), 0);     /* alerts on event */
+            ulog_writer_add_topic(ulog, ORB_ID(camera_frame_chunk), 30);   /* camera JPEG chunks, 30ms to capture all chunks per frame */
+            ulog_writer_add_topic(ulog, ORB_ID(audio_frame), 30);       /* audio AAC frames, 30ms = ~15.6fps */
+            ESP_LOGI(TAG, "ULog writer initialized with %d topics", 12);
+        }
     } else {
         ESP_LOGW(TAG, "SD card not available, skipping ULog writer init");
     }

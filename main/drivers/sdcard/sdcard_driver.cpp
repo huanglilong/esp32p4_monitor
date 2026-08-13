@@ -122,6 +122,7 @@ bool SDCardDriver::init(void)
         .sclk_io_num = (gpio_num_t)SD_SPI_SCLK_GPIO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
+        .data_io_default_level = false,
         .max_transfer_sz = 4000,
     };
     ret = spi_bus_initialize(SD_SPI_HOST, &bus_cfg, SPI_DMA_CH_AUTO);

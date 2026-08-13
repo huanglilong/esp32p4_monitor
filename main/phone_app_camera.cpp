@@ -42,9 +42,22 @@ PhoneAppCamera::PhoneAppCamera(bool use_status_bar, bool use_navigation_bar) :
 
 PhoneAppCamera::~PhoneAppCamera()
 {
-    /* Signal stop and deinit (defensive — close() normally does this) */
-    _cam_running = false;
-    _deinit_camera();
+    /* Defensive cleanup — close() normally handles this, but if the object
+     * is destroyed without close() being called (framework lifecycle edge case),
+     * we must release the CameraDriver claim and deinit the video pipeline
+     * to prevent permanent resource leaks. */
+    if (_cam_running || _video_initialized) {
+        ESP_LOGW(TAG, "Destructor: camera still active, performing emergency cleanup");
+        _cam_running = false;
+        _deinit_camera();
+        CameraDriver::instance().release("camera_app");
+        if (_video_initialized) {
+            example_video_deinit();
+            _video_initialized = false;
+        }
+    } else {
+        _deinit_camera();
+    }
 }
 
 bool PhoneAppCamera::run(void)
@@ -355,8 +368,10 @@ void PhoneAppCamera::_frame_update_timer_cb(lv_timer_t *timer)
         return;
     }
 
-    /* Copy frame to display buffer */
+    /* Copy frame to display buffer — clamp to both display buffer and
+     * mmap'd V4L2 buffer size to prevent over-read from buggy drivers. */
     uint32_t copy_size = buf.bytesused;
+    if (copy_size > app->_v4l2_buf_len[buf.index]) copy_size = app->_v4l2_buf_len[buf.index];
     if (copy_size > app->_cam_buf_size) copy_size = app->_cam_buf_size;
     memcpy(app->_cam_buffer, app->_v4l2_buffers[buf.index], copy_size);
 

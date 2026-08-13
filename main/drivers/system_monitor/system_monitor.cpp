@@ -120,6 +120,15 @@ bool SystemMonitor::start(void)
         return true;
     }
 
+    /* Guard: refuse to start if previous task hasn't fully exited.
+     * After stop() timeout, the old task may still be running — creating
+     * a new task would result in two monitor tasks competing for mutexes. */
+    if (!_task_exited.load(std::memory_order_acquire)) {
+        ESP_LOGW(TAG, "Previous task still exiting, cannot start yet");
+        _running.store(false, std::memory_order_relaxed);
+        return false;
+    }
+
     _task_exited.store(false, std::memory_order_release);
 
     BaseType_t ret = xTaskCreatePinnedToCore(

@@ -1134,7 +1134,9 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         s_audio_task.store(h, std::memory_order_release);
         if (ret != pdPASS || h == NULL) {
             ESP_LOGE(TAG, "Failed to create audio task");
-            s_audio_running = false; audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Task create fail\"}"); return ESP_OK;
+            s_audio_running = false;
+            s_audio_task_exited.store(true, std::memory_order_release);  /* Reset — no task was created */
+            audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Task create fail\"}"); return ESP_OK;
         }
     }
     s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -1228,9 +1230,9 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
 static esp_err_t h_rec_stop(httpd_req_t *req) {
     audio_lock();
     if (!s_is_recording) {
-        /* Not recording — just ensure audio task stops and respond immediately.
-         * The audio task will clean up (fclose) in its own context. */
-        s_audio_running = false;
+        /* Not recording — nothing to do. Don't touch s_audio_running:
+         * it controls the audio task lifecycle and should only be
+         * modified by the caller that created the task. */
         audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":1}");
         return ESP_OK;
@@ -1413,8 +1415,18 @@ static esp_err_t h_play(httpd_req_t *req) {
 /* GET /api/audio/stop */
 static esp_err_t h_stop(httpd_req_t *req) {
     audio_lock();
-    if(s_asp){ esp_audio_simple_player_stop(s_asp); s_playing=false; }
-    audio_unlock();
+    if (s_asp) {
+        /* Release audio_lock during stop to avoid blocking other audio handlers
+         * and to prevent deadlock if GMF output callback needs codec access.
+         * Matches the pattern in h_play(). */
+        esp_asp_handle_t old_asp = s_asp;
+        s_asp = NULL;
+        s_playing = false;
+        audio_unlock();
+        esp_audio_simple_player_stop(old_asp);
+    } else {
+        audio_unlock();
+    }
     httpd_resp_sendstr(req,"{\"ok\":1}"); return ESP_OK;
 }
 
