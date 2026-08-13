@@ -301,6 +301,13 @@ bool CameraStream::start(void)
             if (t) vTaskDelete(t);
             vTaskDelay(pdMS_TO_TICKS(20));
         }
+        /* Free the capture task's PSRAM stack. stop() will NOT free it:
+         * _running is already false, so its CAS guard fails and it returns
+         * immediately — leaking 32KB PSRAM per failed start. */
+        StackType_t *leaked_stack = _capture_stack.exchange(nullptr, std::memory_order_acq_rel);
+        if (leaked_stack) {
+            heap_caps_free(leaked_stack);
+        }
         _deinit_encoder();
         _deinit_video();
         _deinit_ppa();
