@@ -19,6 +19,8 @@
 #include "freertos/event_groups.h"
 #include "sdkconfig.h"
 
+#include <stdatomic.h>
+
 #ifdef CONFIG_IDF_TARGET_ESP32P4
 #include "esp_hosted_misc.h"
 #endif
@@ -56,9 +58,9 @@ typedef enum {
 } wifi_mode_state_t;
 
 static EventGroupHandle_t s_wifi_event_group;
-static bool s_connected;
-static bool s_ap_active;
-static bool s_sta_configured;
+static atomic_bool s_connected;
+static atomic_bool s_ap_active;
+static atomic_bool s_sta_configured;
 static char s_ip_addr[16] = "0.0.0.0";
 static char s_ap_ip[16] = "192.168.4.1";
 static EXT_RAM_BSS_ATTR char s_ap_ssid[33];
@@ -68,15 +70,14 @@ static EXT_RAM_BSS_ATTR char s_ap_ssid_override[33];
 static EXT_RAM_BSS_ATTR char s_ap_password[65];
 static EXT_RAM_BSS_ATTR char s_ap_behavior[16];
 static EXT_RAM_BSS_ATTR char s_ap_ssid_prefix[33];
-static wifi_mode_state_t s_mode = WM_STATE_OFF;
+static _Atomic wifi_mode_state_t s_mode = WM_STATE_OFF;
 static esp_netif_t *s_sta_netif;
 static esp_netif_t *s_ap_netif;
 static wifi_manager_state_cb_t s_state_cb;
 static void *s_state_cb_user_ctx;
 static esp_timer_handle_t s_reconnect_timer;
 static wifi_manager_config_t s_config;
-static bool s_wifi_started;
-
+static atomic_bool s_wifi_started;
 static void notify_state_changed(bool force);
 static esp_err_t configure_sta_mode(const wifi_manager_config_t *config);
 static void reset_sta_runtime_state(void);
@@ -210,7 +211,7 @@ static void refresh_ap_ip_str(void)
 static void reset_sta_runtime_state(void)
 {
     strlcpy(s_ip_addr, "0.0.0.0", sizeof(s_ip_addr));
-    s_connected = false;
+    atomic_store_explicit(&s_connected, false, memory_order_release);
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 }
 
@@ -241,9 +242,11 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
 
     sync_owned_config(config);
     compose_ap_ssid();
-    s_sta_configured = (s_config.sta_ssid && s_config.sta_ssid[0] != '\0');
+    atomic_store_explicit(&s_sta_configured,
+                          (s_config.sta_ssid && s_config.sta_ssid[0] != '\0'),
+                          memory_order_release);
     ESP_LOGI(TAG, "Applying Wi-Fi config: sta_configured=%d sta_ssid_len=%u sta_password_empty=%d ap_password_empty=%d ap_behavior=%s",
-             s_sta_configured,
+             (int)atomic_load_explicit(&s_sta_configured, memory_order_acquire),
              (unsigned)(s_config.sta_ssid ? strlen(s_config.sta_ssid) : 0U),
              wifi_manager_sta_password_is_set() ? 0 : 1,
              (s_config.ap_password && s_config.ap_password[0] != '\0') ? 0 : 1,
@@ -252,7 +255,7 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
     if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
     reset_sta_runtime_state();
 
-    if (s_sta_configured) {
+    if (atomic_load_explicit(&s_sta_configured, memory_order_acquire)) {
         wifi_config_t sta_cfg = {0};
         strlcpy((char *)sta_cfg.sta.ssid, s_config.sta_ssid, sizeof(sta_cfg.sta.ssid));
         strlcpy((char *)sta_cfg.sta.password,
@@ -262,7 +265,7 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
         sta_cfg.sta.pmf_cfg.capable = true;
         sta_cfg.sta.pmf_cfg.required = false;
 
-        s_mode = WM_STATE_APSTA;
+        atomic_store_explicit(&s_mode, WM_STATE_APSTA, memory_order_release);
         err = esp_wifi_set_mode(WIFI_MODE_APSTA);
         if (err != ESP_OK) return err;
         apply_ap_config();
@@ -271,7 +274,7 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
         return ESP_OK;
     }
 
-    s_mode = WM_STATE_PROVISION_AP;
+    atomic_store_explicit(&s_mode, WM_STATE_PROVISION_AP, memory_order_release);
     err = esp_wifi_set_mode(WIFI_MODE_AP);
     if (err != ESP_OK) return err;
     apply_ap_config();
@@ -295,7 +298,7 @@ static void arm_reconnect(void)
  */
 static void reopen_ap_if_needed(void)
 {
-    if (s_mode != WM_STATE_STA_ONLY) return;
+    if (atomic_load_explicit(&s_mode, memory_order_acquire) != WM_STATE_STA_ONLY) return;
     ESP_LOGI(TAG, "Reopening AP after STA disconnect (was closed via close_on_sta)");
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (err != ESP_OK) {
@@ -303,7 +306,7 @@ static void reopen_ap_if_needed(void)
         return;
     }
     apply_ap_config();
-    s_mode = WM_STATE_APSTA;
+    atomic_store_explicit(&s_mode, WM_STATE_APSTA, memory_order_release);
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -313,11 +316,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     if (event_base == WIFI_EVENT) {
         switch (event_id) {
         case WIFI_EVENT_STA_START:
-            if (s_sta_configured) {
+            if (atomic_load_explicit(&s_sta_configured, memory_order_acquire)) {
                 ESP_LOGI(TAG, "STA start: ssid_len=%u auth_threshold=%s mode=%s",
                          (unsigned)strlen(s_config.sta_ssid),
                          wifi_manager_sta_password_is_set() ? "wpa2_psk" : "open",
-                         wifi_manager_mode_string(s_mode));
+                         wifi_manager_mode_string(atomic_load_explicit(&s_mode, memory_order_acquire)));
                 esp_wifi_connect();
             } else {
                 ESP_LOGW(TAG, "Wi-Fi STA not configured, skipping connection");
@@ -328,30 +331,32 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             const wifi_event_sta_disconnected_t *disc = event_data;
             uint16_t reason = disc ? disc->reason : 0;
             strlcpy(s_ip_addr, "0.0.0.0", sizeof(s_ip_addr));
-            if (s_connected) {
-                s_connected = false;
+            if (atomic_load_explicit(&s_connected, memory_order_acquire)) {
+                atomic_store_explicit(&s_connected, false, memory_order_release);
                 notify_state_changed(false);
             }
-            if (!s_sta_configured) {
+            if (!atomic_load_explicit(&s_sta_configured, memory_order_acquire)) {
                 ESP_LOGW(TAG, "STA disconnected but not configured, reason=%u", (unsigned)reason);
                 return;
             }
             reopen_ap_if_needed();
             ESP_LOGI(TAG, "STA disconnected: reason=%u next_retry_ms=%d ap_active=%d mode=%s",
-                     (unsigned)reason, WIFI_RETRY_MS, s_ap_active, wifi_manager_mode_string(s_mode));
+                     (unsigned)reason, WIFI_RETRY_MS,
+                     (int)atomic_load_explicit(&s_ap_active, memory_order_acquire),
+                     wifi_manager_mode_string(atomic_load_explicit(&s_mode, memory_order_acquire)));
             arm_reconnect();
             return;
         }
 
         case WIFI_EVENT_AP_START:
-            s_ap_active = true;
+            atomic_store_explicit(&s_ap_active, true, memory_order_release);
             refresh_ap_ip_str();
             ESP_LOGW(TAG, "*** Provisioning AP active: %s @ %s ***", s_ap_ssid, s_ap_ip);
             notify_state_changed(true);
             return;
 
         case WIFI_EVENT_AP_STOP:
-            s_ap_active = false;
+            atomic_store_explicit(&s_ap_active, false, memory_order_release);
             notify_state_changed(true);
             return;
 
@@ -363,14 +368,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = event_data;
         snprintf(s_ip_addr, sizeof(s_ip_addr), IPSTR, IP2STR(&event->ip_info.ip));
-        s_connected = true;
+        atomic_store_explicit(&s_connected, true, memory_order_release);
         if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
-        if (wifi_manager_close_on_sta() && s_ap_active) {
+        if (wifi_manager_close_on_sta() && atomic_load_explicit(&s_ap_active, memory_order_acquire)) {
             ESP_LOGI(TAG, "STA connected, closing AP per ap_behavior=close_on_sta");
             esp_err_t ap_err = esp_wifi_set_mode(WIFI_MODE_STA);
             if (ap_err == ESP_OK) {
-                s_ap_active = false;
-                s_mode = WM_STATE_STA_ONLY;
+                atomic_store_explicit(&s_ap_active, false, memory_order_release);
+                atomic_store_explicit(&s_mode, WM_STATE_STA_ONLY, memory_order_release);
             } else {
                 ESP_LOGW(TAG, "Failed to switch to STA-only mode: %s", esp_err_to_name(ap_err));
             }
@@ -382,21 +387,26 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 static void notify_state_changed(bool force)
 {
-    static bool s_last_connected;
-    static bool s_last_ap_active;
-    static bool s_initialized;
+    static atomic_bool s_last_connected;
+    static atomic_bool s_last_ap_active;
+    static atomic_bool s_initialized;
 
-    if (!force && s_initialized && s_last_connected == s_connected && s_last_ap_active == s_ap_active) return;
-    s_last_connected = s_connected;
-    s_last_ap_active = s_ap_active;
-    s_initialized = true;
-    if (s_state_cb) s_state_cb(s_connected, s_state_cb_user_ctx);
+    bool connected = atomic_load_explicit(&s_connected, memory_order_acquire);
+    bool ap_active = atomic_load_explicit(&s_ap_active, memory_order_acquire);
+
+    if (!force && atomic_load_explicit(&s_initialized, memory_order_acquire) &&
+        atomic_load_explicit(&s_last_connected, memory_order_acquire) == connected &&
+        atomic_load_explicit(&s_last_ap_active, memory_order_acquire) == ap_active) return;
+    atomic_store_explicit(&s_last_connected, connected, memory_order_release);
+    atomic_store_explicit(&s_last_ap_active, ap_active, memory_order_release);
+    atomic_store_explicit(&s_initialized, true, memory_order_release);
+    if (s_state_cb) s_state_cb(connected, s_state_cb_user_ctx);
 }
 
 static void reconnect_timer_cb(void *arg)
 {
     (void)arg;
-    if (!s_sta_configured) return;
+    if (!atomic_load_explicit(&s_sta_configured, memory_order_acquire)) return;
     esp_err_t err = esp_wifi_connect();
     if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
         ESP_LOGW(TAG, "esp_wifi_connect failed: %s; retrying in %d ms", esp_err_to_name(err), WIFI_RETRY_MS);
@@ -425,7 +435,7 @@ esp_err_t wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_reconnect_timer));
 
     memset(&s_config, 0, sizeof(s_config));
-    s_wifi_started = false;
+    atomic_store_explicit(&s_wifi_started, false, memory_order_release);
     /* compose_ap_ssid() is deferred to wifi_manager_start() —
      * on ESP32-P4, the C6 coprocessor (esp_hosted) may not be
      * booted yet when init() runs, causing esp_hosted_iface_mac_addr_get()
@@ -443,10 +453,10 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
     /* Compose AP SSID now — C6 coprocessor is ready after wifi_init */
     compose_ap_ssid();
 
-    if (!s_wifi_started) {
+    if (!atomic_load_explicit(&s_wifi_started, memory_order_acquire)) {
         err = esp_wifi_start();
         if (err != ESP_OK) return err;
-        s_wifi_started = true;
+        atomic_store_explicit(&s_wifi_started, true, memory_order_release);
     }
     return ESP_OK;
 }
@@ -455,19 +465,19 @@ esp_err_t wifi_manager_apply_sta_config(const wifi_manager_config_t *config)
 {
     if (!config) return ESP_ERR_INVALID_ARG;
 
-    bool was_connected = s_connected;
+    bool was_connected = atomic_load_explicit(&s_connected, memory_order_acquire);
     esp_err_t err = configure_sta_mode(config);
     if (err != ESP_OK) return err;
 
     if (was_connected) notify_state_changed(false);
 
-    if (!s_wifi_started) {
+    if (!atomic_load_explicit(&s_wifi_started, memory_order_acquire)) {
         err = esp_wifi_start();
         if (err != ESP_OK) return err;
-        s_wifi_started = true;
+        atomic_store_explicit(&s_wifi_started, true, memory_order_release);
     }
 
-    if (!s_sta_configured) return ESP_OK;
+    if (!atomic_load_explicit(&s_sta_configured, memory_order_acquire)) return ESP_OK;
 
     err = esp_wifi_disconnect();
     if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) return err;
@@ -478,7 +488,7 @@ esp_err_t wifi_manager_apply_sta_config(const wifi_manager_config_t *config)
 
 esp_err_t wifi_manager_wait_connected(uint32_t timeout_ms)
 {
-    if (!s_sta_configured) return ESP_ERR_INVALID_STATE;
+    if (!atomic_load_explicit(&s_sta_configured, memory_order_acquire)) return ESP_ERR_INVALID_STATE;
 
     TickType_t ticks = (timeout_ms == UINT32_MAX) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, ticks);
@@ -489,21 +499,24 @@ esp_err_t wifi_manager_register_state_callback(wifi_manager_state_cb_t cb, void 
 {
     s_state_cb = cb;
     s_state_cb_user_ctx = user_ctx;
-    if (s_state_cb) s_state_cb(s_connected, s_state_cb_user_ctx);
+    if (s_state_cb) {
+        bool connected = atomic_load_explicit(&s_connected, memory_order_acquire);
+        s_state_cb(connected, s_state_cb_user_ctx);
+    }
     return ESP_OK;
 }
 
 void wifi_manager_get_status(wifi_manager_status_t *status)
 {
     if (!status) return;
-    status->sta_connected = s_connected;
-    status->ap_active = s_ap_active;
-    status->sta_configured = s_sta_configured;
+    status->sta_connected = atomic_load_explicit(&s_connected, memory_order_acquire);
+    status->ap_active = atomic_load_explicit(&s_ap_active, memory_order_acquire);
+    status->sta_configured = atomic_load_explicit(&s_sta_configured, memory_order_acquire);
     status->sta_ip = s_ip_addr;
     status->sta_ssid = s_config.sta_ssid ? s_config.sta_ssid : "";
     status->ap_ip = s_ap_ip;
     status->ap_ssid = s_ap_ssid;
-    status->mode = wifi_manager_mode_string(s_mode);
+    status->mode = wifi_manager_mode_string(atomic_load_explicit(&s_mode, memory_order_acquire));
 }
 
 esp_netif_t *wifi_manager_get_ap_netif(void)
