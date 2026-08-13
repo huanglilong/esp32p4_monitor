@@ -120,7 +120,7 @@ private:
     /** Running flag (atomic for cross-core safety). */
     std::atomic<bool> _running{false};
     std::atomic<bool> _initialized{false};
-    std::atomic<bool> _task_exited{false};  /* Set by task before vTaskDelete, polled by stop() */
+    std::atomic<bool> _task_exited{true};  /* Initial=true (no previous task); set false on start, true on task exit */
 
     /** Historical minimum free heap (tracked across all samples). */
     std::atomic<uint32_t> _min_free_internal{UINT32_MAX};
