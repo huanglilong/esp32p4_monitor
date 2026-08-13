@@ -608,7 +608,7 @@ extern "C" void app_main(void)
             ulog_writer_add_topic(ulog, ORB_ID(system_alert), 0);     /* alerts on event */
             ulog_writer_add_topic(ulog, ORB_ID(camera_frame_chunk), 30);   /* camera JPEG chunks, 30ms to capture all chunks per frame */
             ulog_writer_add_topic(ulog, ORB_ID(audio_frame), 30);       /* audio AAC frames, 30ms = ~15.6fps */
-            ESP_LOGI(TAG, "ULog writer initialized with %d topics", 12);
+            ESP_LOGI(TAG, "ULog writer initialized with %d topics", 11);
         }
     } else {
         ESP_LOGW(TAG, "SD card not available, skipping ULog writer init");
