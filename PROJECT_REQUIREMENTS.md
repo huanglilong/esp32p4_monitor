@@ -376,7 +376,7 @@
 | S325 | **AudioUlogRecorder _task_exited atomic flag** | `stop()` 轮询 `_task_handle` 检测退出，任务在 vTaskDelete 前清空 handle — 跨核竞态: stop() 可过早释放 PSRAM 栈。修复: 新增 `_task_exited` atomic flag，所有退出路径 (含早期失败) 均设 true，stop() 等待此 flag | ✅ |
 | S326 | **AudioUlogRecorder start guard** | 前次任务未完全退出时允许 start，TCB 重用竞态。修复: `_task_handle != nullptr` 时拒绝 start | ✅ |
 | S327 | **AudioUlogRecorder stop 孤儿栈清理** | `_running=false` 时 stop() 立即返回，任务早期失败时 32KB PSRAM 栈永不释放。修复: 检测并释放 `_task_stack` | ✅ |
-| S328 | **SystemMonitor start guard** | 前次任务超时后仍运行时允许 start，双任务竞争 mutex。修复: `_task_exited=false` 时拒绝 start | ✅ |
+| S328 | **SystemMonitor start guard** | 前次任务超时后仍运行时允许 start，双任务竞争 mutex。修复: `_task_exited=false` 时拒绝 start。**二次修复**: `_task_exited` 初始值从 `false` 改为 `true` — 首次 start() 时无前次任务，`false` 导致 guard 错误拒绝启动 → SystemMonitor 永不启动 → system_stats 全零 | ✅ |
 | S329 | **SDCardDriver data_io_default_level** | SPI bus config 缺少 `data_io_default_level` 字段。修复: 添加 `.data_io_default_level = false` | ✅ |
 | S330 | **main.cpp ulog_writer_init 返回值** | init 失败时跳过 topic 注册但日志显示成功。修复: 检查返回值，失败时跳过注册并 ESP_LOGE | ✅ |
 | S331 | **PhoneAppCamera 析构紧急清理** | 对象未调用 close() 即销毁 (框架生命周期边界)，泄漏 CameraDriver claim + video pipeline。修复: 检测活跃状态，释放 claim + deinit video。同时添加 `v4l2_buf_len` bounds check 防止越界读取 | ✅ |
