@@ -1424,6 +1424,7 @@ static esp_err_t h_stop(httpd_req_t *req) {
         s_playing = false;
         audio_unlock();
         esp_audio_simple_player_stop(old_asp);
+        esp_audio_simple_player_destroy(old_asp);
     } else {
         audio_unlock();
     }
