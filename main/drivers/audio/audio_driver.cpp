@@ -87,24 +87,28 @@ void AudioDriver::init(void)
     };
     esp_err_t ret = gpio_config(&pa_conf);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to config PA GPIO %d: %s", AUDIO_PA_GPIO, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to config PA GPIO %d: %s — speaker will be silent", AUDIO_PA_GPIO, esp_err_to_name(ret));
+        /* Continue init — audio codec/I2S may still work for mic input,
+         * but speaker output will be non-functional without PA enabled. */
+    } else {
+        gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 1);
+        ESP_LOGI(TAG, "PA GPIO %d enabled", AUDIO_PA_GPIO);
     }
-    gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 1);
-    ESP_LOGI(TAG, "PA GPIO %d enabled", AUDIO_PA_GPIO);
 
     /* I2S channel init (duplex, STD, 48kHz stereo) */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
-    ret = i2s_new_channel(&chan_cfg, &_tx_handle, &_rx_handle);
+    i2s_chan_handle_t tx_h = nullptr, rx_h = nullptr;
+    ret = i2s_new_channel(&chan_cfg, &tx_h, &rx_h);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create I2S channel: %s", esp_err_to_name(ret));
-        _tx_handle = nullptr;
-        _rx_handle = nullptr;
         gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
         xSemaphoreGive(_lifecycle_mutex);
         return;
     }
+    _tx_handle.store(tx_h, std::memory_order_release);
+    _rx_handle.store(rx_h, std::memory_order_release);
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(EXAMPLE_AUDIO_SAMPLE_RATE),
@@ -118,41 +122,45 @@ void AudioDriver::init(void)
         },
     };
     std_cfg.clk_cfg.mclk_multiple = EXAMPLE_AUDIO_MCLK_MULTIPLE;
-    ret = i2s_channel_init_std_mode(_tx_handle, &std_cfg);
+    ret = i2s_channel_init_std_mode(tx_h, &std_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init I2S TX std mode: %s", esp_err_to_name(ret));
-        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
-        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        i2s_del_channel(tx_h); i2s_del_channel(rx_h);
+        _tx_handle.store(nullptr, std::memory_order_release);
+        _rx_handle.store(nullptr, std::memory_order_release);
         gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
         xSemaphoreGive(_lifecycle_mutex);
         return;
     }
-    ret = i2s_channel_init_std_mode(_rx_handle, &std_cfg);
+    ret = i2s_channel_init_std_mode(rx_h, &std_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init I2S RX std mode: %s", esp_err_to_name(ret));
-        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
-        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        i2s_del_channel(tx_h); i2s_del_channel(rx_h);
+        _tx_handle.store(nullptr, std::memory_order_release);
+        _rx_handle.store(nullptr, std::memory_order_release);
         gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
         xSemaphoreGive(_lifecycle_mutex);
         return;
     }
-    ret = i2s_channel_enable(_tx_handle);
+    ret = i2s_channel_enable(tx_h);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable I2S TX: %s", esp_err_to_name(ret));
-        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
-        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        i2s_del_channel(tx_h); i2s_del_channel(rx_h);
+        _tx_handle.store(nullptr, std::memory_order_release);
+        _rx_handle.store(nullptr, std::memory_order_release);
         gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
         xSemaphoreGive(_lifecycle_mutex);
         return;
     }
-    ret = i2s_channel_enable(_rx_handle);
+    ret = i2s_channel_enable(rx_h);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable I2S RX: %s", esp_err_to_name(ret));
-        i2s_del_channel(_tx_handle); _tx_handle = nullptr;
-        i2s_del_channel(_rx_handle); _rx_handle = nullptr;
+        i2s_del_channel(tx_h); i2s_del_channel(rx_h);
+        _tx_handle.store(nullptr, std::memory_order_release);
+        _rx_handle.store(nullptr, std::memory_order_release);
         gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
         xSemaphoreGive(_lifecycle_mutex);
@@ -173,7 +181,7 @@ void AudioDriver::init(void)
         audio_codec_i2s_cfg_t i2s_out_cfg = {
             .port = 0,
             .rx_handle = NULL,
-            .tx_handle = _tx_handle,
+            .tx_handle = _tx_handle.load(std::memory_order_relaxed),
         };
         const audio_codec_data_if_t *data_out = audio_codec_new_i2s_data(&i2s_out_cfg);
         if (!data_out) {
@@ -185,7 +193,7 @@ void AudioDriver::init(void)
         if (init_ok) {
             audio_codec_i2s_cfg_t i2s_in_cfg = {
                 .port = 0,
-                .rx_handle = _rx_handle,
+                .rx_handle = _rx_handle.load(std::memory_order_relaxed),
                 .tx_handle = NULL,
             };
             data_in = audio_codec_new_i2s_data(&i2s_in_cfg);
@@ -206,7 +214,7 @@ void AudioDriver::init(void)
                 es8311_codec_cfg_t es8311_cfg = {
                     .ctrl_if = ctrl_dac, .gpio_if = gpio_if,
                     .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-                    .pa_pin = AUDIO_PA_GPIO, .master_mode = false, .use_mclk = true,
+                    .pa_pin = AUDIO_PA_GPIO, .pa_reverted = false, .master_mode = false, .use_mclk = true,
                     .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
                     .mclk_div = I2S_MCLK_MULTIPLE_256,
                 };
@@ -254,8 +262,8 @@ void AudioDriver::init(void)
         /* ===== WIFI6: ES8311 single-chip (0x30, ADC + DAC) + NS4150B amp ===== */
         audio_codec_i2s_cfg_t i2s_data_cfg = {
             .port = 0,
-            .rx_handle = _rx_handle,
-            .tx_handle = _tx_handle,
+            .rx_handle = _rx_handle.load(std::memory_order_relaxed),
+            .tx_handle = _tx_handle.load(std::memory_order_relaxed),
         };
         const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_data_cfg);
         if (!data_if) {
@@ -274,7 +282,7 @@ void AudioDriver::init(void)
             es8311_codec_cfg_t es8311_cfg = {
                 .ctrl_if = ctrl_es8311, .gpio_if = gpio_if,
                 .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-                .pa_pin = AUDIO_PA_GPIO, .master_mode = false, .use_mclk = true,
+                .pa_pin = AUDIO_PA_GPIO, .pa_reverted = false, .master_mode = false, .use_mclk = true,
                 .hw_gain = { .pa_voltage = 5.0, .codec_dac_voltage = 3.3 },
                 .mclk_div = I2S_MCLK_MULTIPLE_256,
             };
@@ -305,13 +313,15 @@ void AudioDriver::init(void)
             esp_codec_dev_delete(codec_h);
             _codec_handle.store(nullptr, std::memory_order_relaxed);
         }
-        if (_tx_handle) {
-            i2s_del_channel(_tx_handle);
-            _tx_handle = nullptr;
+        i2s_chan_handle_t tx_h = _tx_handle.load(std::memory_order_relaxed);
+        if (tx_h) {
+            i2s_del_channel(tx_h);
+            _tx_handle.store(nullptr, std::memory_order_release);
         }
-        if (_rx_handle) {
-            i2s_del_channel(_rx_handle);
-            _rx_handle = nullptr;
+        i2s_chan_handle_t rx_h = _rx_handle.load(std::memory_order_relaxed);
+        if (rx_h) {
+            i2s_del_channel(rx_h);
+            _rx_handle.store(nullptr, std::memory_order_release);
         }
         gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio initialization failed — audio unavailable");
@@ -368,13 +378,15 @@ void AudioDriver::init(void)
             esp_codec_dev_delete(codec_h);
             _codec_handle.store(nullptr, std::memory_order_relaxed);
         }
-        if (_tx_handle) {
-            i2s_del_channel(_tx_handle);
-            _tx_handle = nullptr;
+        i2s_chan_handle_t tx_h2 = _tx_handle.load(std::memory_order_relaxed);
+        if (tx_h2) {
+            i2s_del_channel(tx_h2);
+            _tx_handle.store(nullptr, std::memory_order_release);
         }
-        if (_rx_handle) {
-            i2s_del_channel(_rx_handle);
-            _rx_handle = nullptr;
+        i2s_chan_handle_t rx_h2 = _rx_handle.load(std::memory_order_relaxed);
+        if (rx_h2) {
+            i2s_del_channel(rx_h2);
+            _rx_handle.store(nullptr, std::memory_order_release);
         }
         gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);
         ESP_LOGE(TAG, "Audio codec open failed — audio unavailable");
@@ -385,7 +397,28 @@ void AudioDriver::init(void)
     ESP_LOGI(TAG, "Audio initialized: %s, vol=%d", has_lcd ? "ES8311 + ES7210" : "ES8311 (single-chip)", _volume.load(std::memory_order_relaxed));
     /* Create codec mutex AFTER successful init — prevents concurrent codec ops
      * from seeing a valid mutex during init/rollback. */
-    _codec_mutex.store(xSemaphoreCreateMutex(), std::memory_order_release);
+    SemaphoreHandle_t codec_mutex = xSemaphoreCreateMutex();
+    if (!codec_mutex) {
+        ESP_LOGE(TAG, "Failed to create codec mutex — audio will be non-functional");
+        /* Rollback: close codec devices, disable I2S, release PA GPIO */
+        if (_codec_handle.load(std::memory_order_relaxed)) {
+            esp_codec_dev_close(_codec_handle.load(std::memory_order_relaxed));
+            esp_codec_dev_delete(_codec_handle.load(std::memory_order_relaxed));
+            _codec_handle.store(nullptr, std::memory_order_relaxed);
+        }
+        if (_codec_mic_handle.load(std::memory_order_relaxed)) {
+            esp_codec_dev_close(_codec_mic_handle.load(std::memory_order_relaxed));
+            esp_codec_dev_delete(_codec_mic_handle.load(std::memory_order_relaxed));
+            _codec_mic_handle.store(nullptr, std::memory_order_relaxed);
+        }
+        i2s_chan_handle_t rx_h3 = _rx_handle.load(std::memory_order_relaxed);
+        if (rx_h3) { i2s_channel_disable(rx_h3); i2s_del_channel(rx_h3); _rx_handle.store(nullptr, std::memory_order_release); }
+        i2s_chan_handle_t tx_h3 = _tx_handle.load(std::memory_order_relaxed);
+        if (tx_h3) { i2s_channel_disable(tx_h3); i2s_del_channel(tx_h3); _tx_handle.store(nullptr, std::memory_order_release); }
+        xSemaphoreGive(_lifecycle_mutex);
+        return;
+    }
+    _codec_mutex.store(codec_mutex, std::memory_order_release);
     _refcount.store(1, std::memory_order_relaxed);
     xSemaphoreGive(_lifecycle_mutex);
 }
@@ -438,13 +471,13 @@ void AudioDriver::deinit(void)
         esp_codec_dev_delete(c_mic_handle);
     }
 
-    if (_tx_handle) {
-        i2s_del_channel(_tx_handle);
-        _tx_handle = nullptr;
+    i2s_chan_handle_t tx_h4 = _tx_handle.exchange(nullptr, std::memory_order_acq_rel);
+    if (tx_h4) {
+        i2s_del_channel(tx_h4);
     }
-    if (_rx_handle) {
-        i2s_del_channel(_rx_handle);
-        _rx_handle = nullptr;
+    i2s_chan_handle_t rx_h4 = _rx_handle.exchange(nullptr, std::memory_order_acq_rel);
+    if (rx_h4) {
+        i2s_del_channel(rx_h4);
     }
 
     gpio_set_level((gpio_num_t)AUDIO_PA_GPIO, 0);

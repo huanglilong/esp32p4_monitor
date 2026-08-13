@@ -33,8 +33,8 @@ public:
     bool available(void) const { return _refcount.load(std::memory_order_relaxed) > 0; }
 
     /* ---- Audio handles (read-only access) ---- */
-    i2s_chan_handle_t rx_handle(void) const { return _rx_handle; }
-    i2s_chan_handle_t tx_handle(void) const { return _tx_handle; }
+    i2s_chan_handle_t rx_handle(void) const { return _rx_handle.load(std::memory_order_relaxed); }
+    i2s_chan_handle_t tx_handle(void) const { return _tx_handle.load(std::memory_order_relaxed); }
     esp_codec_dev_handle_t codec_handle(void) const { return _codec_handle.load(std::memory_order_relaxed); }
 
     /* ---- Thread-safe codec operations ---- */
@@ -71,8 +71,8 @@ private:
 
     std::atomic<esp_codec_dev_handle_t> _codec_handle;      /* atomic: TOCTOU-safe reads */
     std::atomic<esp_codec_dev_handle_t> _codec_mic_handle;  /* atomic: TOCTOU-safe reads */
-    i2s_chan_handle_t        _rx_handle;
-    i2s_chan_handle_t        _tx_handle;
+    std::atomic<i2s_chan_handle_t> _rx_handle;               /* atomic: read from audio_ulog_recorder (core 1), written from httpd (core 0) */
+    std::atomic<i2s_chan_handle_t> _tx_handle;               /* atomic: cross-core safe */
 
     std::atomic<orb_advert_t>   _vol_pub;    /* uORB volume_state publisher handle */
     std::atomic<int>            _codec_ops_in_flight;  /* Atomic: tracks in-flight codec ops for safe deinit */

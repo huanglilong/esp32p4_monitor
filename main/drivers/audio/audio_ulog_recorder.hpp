@@ -60,6 +60,7 @@ private:
     static void _task_func(void *arg);
 
     std::atomic<bool>      _running{false};
+    std::atomic<bool>      _task_exited{false};  /* Set by task before vTaskDelete — stop() waits for this before freeing stack */
     std::atomic<uint32_t>  _frame_count{0};
     std::atomic<uint32_t>  _bytes_published{0};
 

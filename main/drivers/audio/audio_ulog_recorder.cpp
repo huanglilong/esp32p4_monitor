@@ -84,6 +84,7 @@ void AudioUlogRecorder::_task_func(void *arg)
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!pcm_buf) {
         ESP_LOGE(TAG, "Failed to allocate PCM buffer");
+        self->_task_exited.store(true, std::memory_order_release);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
         vTaskDelete(NULL);
@@ -102,6 +103,7 @@ void AudioUlogRecorder::_task_func(void *arg)
     if (esp_aac_enc_open(&aac_cfg, sizeof(aac_cfg), &encoder) != ESP_AUDIO_ERR_OK || !encoder) {
         ESP_LOGE(TAG, "AAC encoder open failed");
         heap_caps_free(pcm_buf);
+        self->_task_exited.store(true, std::memory_order_release);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
         vTaskDelete(NULL);
@@ -115,6 +117,7 @@ void AudioUlogRecorder::_task_func(void *arg)
         ESP_LOGE(TAG, "AAC get_frame_size failed");
         esp_aac_enc_close(encoder);
         heap_caps_free(pcm_buf);
+        self->_task_exited.store(true, std::memory_order_release);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
         vTaskDelete(NULL);
@@ -133,6 +136,7 @@ void AudioUlogRecorder::_task_func(void *arg)
         if (enc_out_buf) heap_caps_free(enc_out_buf);
         esp_aac_enc_close(encoder);
         heap_caps_free(pcm_buf);
+        self->_task_exited.store(true, std::memory_order_release);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
         vTaskDelete(NULL);
@@ -151,6 +155,7 @@ void AudioUlogRecorder::_task_func(void *arg)
         heap_caps_free(enc_out_buf);
         esp_aac_enc_close(encoder);
         heap_caps_free(pcm_buf);
+        self->_task_exited.store(true, std::memory_order_release);
         self->_running.store(false, std::memory_order_release);
         self->_task_handle.store(nullptr, std::memory_order_release);
         vTaskDelete(NULL);
@@ -263,6 +268,7 @@ void AudioUlogRecorder::_task_func(void *arg)
     heap_caps_free(enc_out_buf);
     heap_caps_free(pcm_buf);
 
+    self->_task_exited.store(true, std::memory_order_release);
     self->_task_handle.store(nullptr, std::memory_order_release);
     vTaskDelete(NULL);
 }
@@ -291,6 +297,13 @@ esp_err_t AudioUlogRecorder::start()
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Guard: refuse to start if previous task hasn't fully exited.
+     * This prevents TCB reuse while the old task is still alive (S319). */
+    if (_task_handle.load(std::memory_order_acquire) != nullptr) {
+        ESP_LOGE(TAG, "Previous task still running, cannot start");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     /* Reset counters */
     _frame_count.store(0, std::memory_order_relaxed);
     _bytes_published.store(0, std::memory_order_relaxed);
@@ -316,6 +329,7 @@ esp_err_t AudioUlogRecorder::start()
         return ESP_ERR_NO_MEM;
     }
 
+    _task_exited.store(false, std::memory_order_release);
     _running.store(true, std::memory_order_release);
 
     TaskHandle_t h = xTaskCreateStaticPinnedToCore(
@@ -344,6 +358,15 @@ esp_err_t AudioUlogRecorder::start()
 void AudioUlogRecorder::stop()
 {
     if (!_running.load(std::memory_order_acquire)) {
+        /* Task may have failed during init — clean up stack if still allocated.
+         * When the task fails early (PCM alloc, encoder open, etc.), it sets
+         * _running=false and _task_handle=nullptr then self-deletes, but
+         * _task_stack (32KB PSRAM) is never freed because stop() previously
+         * returned immediately here. */
+        if (_task_stack) {
+            heap_caps_free(_task_stack);
+            _task_stack = nullptr;
+        }
         return;
     }
 
@@ -353,13 +376,17 @@ void AudioUlogRecorder::stop()
     /* Wait for task to self-delete (it releases resources).
      * Use a generous timeout — i2s_channel_read can block briefly.
      * Per convention, do NOT force-delete — the task holds encoder
-     * handle + 3 heap buffers that would be leaked. */
-    for (int i = 0; i < 60 && _task_handle.load(std::memory_order_acquire); ++i) {
+     * handle + 3 heap buffers that would be leaked.
+     * Wait for _task_exited (not _task_handle) to ensure the task
+     * has fully stopped before freeing the PSRAM stack — the task
+     * sets _task_exited before vTaskDelete, preventing the cross-core
+     * race where stop() frees the stack while the task is still
+     * executing between _task_handle=nullptr and vTaskDelete. */
+    for (int i = 0; i < 60 && !_task_exited.load(std::memory_order_acquire); ++i) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    TaskHandle_t h = _task_handle.load(std::memory_order_acquire);
-    if (h) {
+    if (!_task_exited.load(std::memory_order_acquire)) {
         ESP_LOGE(TAG, "Task did not exit in 3s — resources may be leaked, skipping force-delete");
         /* Do NOT call vTaskDelete(h) — the task holds encoder + 3 heap buffers.
          * Force-deleting would leak all of them (PSRAM + encoder handle).
