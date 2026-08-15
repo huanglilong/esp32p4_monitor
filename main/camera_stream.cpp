@@ -18,6 +18,8 @@
 #include "lwip/apps/netbiosns.h"
 #include "driver/i2c_master.h"
 #include "ppa_preprocessor.hpp"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -425,6 +427,32 @@ void CameraStream::stop(void)
     xSemaphoreGive(_start_stop_mutex);
 }
 
+void CameraStream::set_rotation(int degrees)
+{
+    /* Clamp to valid values */
+    if (degrees != 0 && degrees != 90 && degrees != 180 && degrees != 270) {
+        ESP_LOGW(TAG, "Invalid rotation %d, ignoring", degrees);
+        return;
+    }
+
+    int old = _rotation.load(std::memory_order_acquire);
+    if (old == degrees) return;
+
+    ESP_LOGI(TAG, "Rotation changed: %d° → %d°", old, degrees);
+    _rotation.store(degrees, std::memory_order_release);
+
+    /* NOTE: PPA rotation is applied at _init_ppa() time (during start()).
+     * We do NOT restart the stream here because:
+     *   1. stop()/start() cannot be called from an httpd handler (deadlock:
+     *      httpd_stop waits for handlers to finish, but handler waits for stop)
+     *   2. The web UI applies CSS rotation for immediate visual feedback
+     *   3. PPA hardware rotation takes effect on next stream start
+     *
+     * If the stream is running, the rotation change will be applied when the
+     * stream is next stopped and restarted (e.g., via camera_stream toggle).
+     */
+}
+
 /*============================================================================
  * V4L2 Video Init / Deinit
  *============================================================================*/
@@ -747,14 +775,15 @@ bool CameraStream::_init_ppa(void)
 #if CONFIG_SOC_PPA_SUPPORTED
     _ppa = new (std::nothrow) PPAPreprocessor();
     if (_ppa) {
-        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 400, 400)) {
-            ESP_LOGW(TAG, "PPA init failed for %" PRIu32 "x%" PRIu32 " → 400x400", _cam_width, _cam_height);
+        int rot = _rotation.load(std::memory_order_acquire);
+        if (!_ppa->init((uint16_t)_cam_width, (uint16_t)_cam_height, 400, 400, rot)) {
+            ESP_LOGW(TAG, "PPA init failed for %" PRIu32 "x%" PRIu32 " → 400x400 (rotation=%d)", _cam_width, _cam_height, rot);
             delete _ppa;
             _ppa = nullptr;
             return false;
         }
-        ESP_LOGI(TAG, "PPA enabled: %" PRIu32 "×%" PRIu32 " RGB565 → %d×%d RGB565",
-                 _cam_width, _cam_height, _ppa->actual_width(), _ppa->actual_height());
+        ESP_LOGI(TAG, "PPA enabled: %" PRIu32 "×%" PRIu32 " RGB565 → %d×%d RGB565 (rotation=%d°)",
+                 _cam_width, _cam_height, _ppa->actual_width(), _ppa->actual_height(), rot);
         return true;
     }
     ESP_LOGW(TAG, "PPA alloc failed");
@@ -1124,6 +1153,7 @@ static esp_err_t camera_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "jpeg_quality", cs->_jpeg_quality.load());
     cJSON_AddNumberToObject(root, "frame_rate", 5);   /* ~5fps from VTS=9840 */
     cJSON_AddNumberToObject(root, "total_frames", cs->_frame_count);
+    cJSON_AddNumberToObject(root, "rotation", cs->rotation());
 
     const char *fmt_str = "UNKNOWN";
     if (cs->_cam_pixel_format == V4L2_PIX_FMT_JPEG) fmt_str = "JPEG";
@@ -1232,6 +1262,39 @@ static esp_err_t set_camera_config_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/** GET /api/set_rotation?value=0 — set camera rotation (0, 90, 180, 270) */
+static esp_err_t set_rotation_handler(httpd_req_t *req)
+{
+    CameraStream *cs = (CameraStream *)req->user_ctx;
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
+        return ESP_FAIL;
+    }
+    char val[8];
+    if (httpd_query_key_value(buf, "value", val, sizeof(val)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing value");
+        return ESP_FAIL;
+    }
+    int deg = atoi(val);
+    cs->set_rotation(deg);
+
+    /* Persist to NVS */
+    nvs_handle_t h;
+    if (nvs_open("settings", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_i32(h, "cam_rotation", (int32_t)cs->rotation());
+        nvs_commit(h);
+        nvs_close(h);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":1,\"rotation\":%d}", cs->rotation());
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
 static esp_err_t index_handler(httpd_req_t *req)
 {
     CameraStream *cs = (CameraStream *)req->user_ctx;
@@ -1245,12 +1308,14 @@ static esp_err_t index_handler(httpd_req_t *req)
         "body{margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:sans-serif}"
         "#settings-banner{position:fixed;top:0;left:0;right:0;background:#1a1a2e;color:#00d4ff;padding:8px 16px;text-align:center;font-size:13px;z-index:10}"
         "#settings-banner a{color:#00d4ff;font-weight:bold}"
-        "img#stream{max-width:100vw;max-height:80vh;margin-top:40px}"
+        "img#stream{max-width:100vw;max-height:80vh;margin-top:40px;transition:transform .3s}"
         ".panel{position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.8);padding:8px 16px;display:flex;gap:20px;justify-content:center;align-items:center;flex-wrap:wrap}"
         ".stat{color:#ccc;font-size:12px} .stat b{color:#4CAF50}"
         "label{color:#fff;font-size:12px} label b{color:#4CAF50}"
         "input[type=range]{width:80px;accent-color:#4CAF50}"
         "a{color:#4CAF50;text-decoration:none;font-size:11px}"
+        ".rot-btn{background:#333;color:#fff;border:1px solid #555;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px}"
+        ".rot-btn.active{background:#4CAF50;border-color:#4CAF50}"
         "</style></head><body>"
         "<div id='settings-banner'>"
         "⚙ <a id='settings-link'>Settings (WiFi / Volume / Factory Reset)</a>"
@@ -1262,17 +1327,31 @@ static esp_err_t index_handler(httpd_req_t *req)
         "<span class='stat'>Frames: <b id='fr'>0</b></span>"
         "<label>Quality: <b id='ql'>30</b></label>"
         "<input type='range' id='qs' min='1' max='100' value='30' oninput=\"setQ(this.value)\">"
+        "<span class='stat'>Rot: "
+        "<button class='rot-btn' onclick='setRot(0)' id='rot0'>0°</button>"
+        "<button class='rot-btn' onclick='setRot(90)' id='rot90'>90°</button>"
+        "<button class='rot-btn' onclick='setRot(180)' id='rot180'>180°</button>"
+        "<button class='rot-btn' onclick='setRot(270)' id='rot270'>270°</button>"
+        "</span>"
         "</div><script>"
         "document.getElementById('settings-link').href='http://'+window.location.hostname+':8080/';"
         "var stream_url='http://'+window.location.hostname+':81/stream';"
         "document.getElementById('stream').src=stream_url;"
         "function setQ(v){document.getElementById('ql').textContent=v;fetch('/api/set_quality?value='+v)}"
+        "function setRot(d){fetch('/api/set_rotation?value='+d).then(r=>r.json()).then(j=>{"
+        "if(j.ok){highlightRot(j.rotation);applyCSSRot(j.rotation)}}).catch(function(){})}"
+        "function highlightRot(d){"
+        "document.querySelectorAll('.rot-btn').forEach(function(b){b.classList.remove('active')});"
+        "var btn=document.getElementById('rot'+d);if(btn)btn.classList.add('active')}"
+        "function applyCSSRot(d){document.getElementById('stream').style.transform='rotate('+d+'deg)'}"
         "function upd(){fetch('/api/get_camera_info').then(r=>r.json()).then(d=>{"
         "document.getElementById('res').textContent=d.width+'x'+d.height;"
         "document.getElementById('fps').textContent=d.frame_rate;"
         "document.getElementById('fr').textContent=d.total_frames;"
         "document.getElementById('ql').textContent=d.jpeg_quality;"
-        "document.getElementById('qs').value=d.jpeg_quality}).catch(function(){})}"
+        "document.getElementById('qs').value=d.jpeg_quality;"
+        "highlightRot(d.rotation||0);applyCSSRot(d.rotation||0)"
+        "}).catch(function(){})}"
         "setInterval(upd,3000);upd()</script></body></html>";
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, strlen(html));
@@ -1311,11 +1390,13 @@ bool CameraStream::_start_http_server(void)
     httpd_uri_t uri_quality = { .uri = "/api/set_quality", .method = HTTP_GET, .handler = set_quality_handler, .user_ctx = this };
     httpd_uri_t uri_config  = { .uri = "/api/set_camera_config", .method = HTTP_POST, .handler = set_camera_config_handler, .user_ctx = this };
     httpd_uri_t uri_detect  = { .uri = "/api/get_detection_info", .method = HTTP_GET, .handler = detection_info_handler, .user_ctx = this };
+    httpd_uri_t uri_rotation = { .uri = "/api/set_rotation", .method = HTTP_GET, .handler = set_rotation_handler, .user_ctx = this };
     if (httpd_register_uri_handler(_httpd_80, &uri_index) != ESP_OK)  ESP_LOGE(TAG, "Failed to register /");
     if (httpd_register_uri_handler(_httpd_80, &uri_info) != ESP_OK)   ESP_LOGE(TAG, "Failed to register /api/get_camera_info");
     if (httpd_register_uri_handler(_httpd_80, &uri_quality) != ESP_OK) ESP_LOGE(TAG, "Failed to register /api/set_quality");
     if (httpd_register_uri_handler(_httpd_80, &uri_config) != ESP_OK)  ESP_LOGE(TAG, "Failed to register /api/set_camera_config");
     if (httpd_register_uri_handler(_httpd_80, &uri_detect) != ESP_OK)  ESP_LOGE(TAG, "Failed to register /api/get_detection_info");
+    if (httpd_register_uri_handler(_httpd_80, &uri_rotation) != ESP_OK) ESP_LOGE(TAG, "Failed to register /api/set_rotation");
 
     /* Port 81: MJPEG stream */
     config.server_port += 1;   // 80 → 81 (matches reference: config.server_port += 1)

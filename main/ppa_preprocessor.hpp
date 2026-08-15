@@ -37,7 +37,7 @@ public:
     PPAPreprocessor() = default;
     ~PPAPreprocessor() { deinit(); }
 
-    bool init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint16_t dst_h);
+    bool init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint16_t dst_h, int rotation_deg = 0);
     void deinit();
     bool process(const uint8_t *rgb565_buf);
 
@@ -53,6 +53,7 @@ public:
      * ACTUAL PPA output width. May be less than dst_width() due to
      * 4-bit scale quantization. Use for img descriptor and coordinate rescaling.
      * E.g., 800→320: scale=0.375, actual_width=300 (not 320).
+     * For 90/270 rotation, width and height are swapped relative to dst.
      */
     uint16_t actual_width() const { return _actual_w; }
     uint16_t actual_height() const { return _actual_h; }
@@ -60,6 +61,9 @@ public:
     float scale_x() const { return _scale_x; }
     float scale_y() const { return _scale_y; }
     bool is_initialized() const { return _ppa_handle != nullptr; }
+
+    /** Current rotation angle (0, 90, 180, 270) */
+    int rotation() const { return _rotation; }
 
 private:
     ppa_client_handle_t _ppa_handle = nullptr;
@@ -69,6 +73,7 @@ private:
     uint16_t _dst_w = 0, _dst_h = 0;
     uint16_t _actual_w = 0, _actual_h = 0;
     float    _scale_x = 1.0f, _scale_y = 1.0f;
+    int      _rotation = 0;  /* 0, 90, 180, 270 degrees CCW */
 };
 
 #endif // CONFIG_SOC_PPA_SUPPORTED

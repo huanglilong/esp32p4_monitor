@@ -36,21 +36,46 @@ static inline uint16_t ppa_actual_dim(uint16_t src, float scale)
     return (uint16_t)(scale_int * src + scale_frag * src / 16);
 }
 
-bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint16_t dst_h)
+/** Map rotation degrees to PPA enum. */
+static ppa_srm_rotation_angle_t rotation_to_ppa(int deg)
+{
+    switch (deg) {
+        case 90:  return PPA_SRM_ROTATION_ANGLE_90;
+        case 180: return PPA_SRM_ROTATION_ANGLE_180;
+        case 270: return PPA_SRM_ROTATION_ANGLE_270;
+        default:  return PPA_SRM_ROTATION_ANGLE_0;
+    }
+}
+
+bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint16_t dst_h, int rotation_deg)
 {
     if (_ppa_handle) {
         ESP_LOGW(TAG, "Already initialized, deinit first");
         deinit();
     }
 
+    /* Clamp rotation to valid values */
+    if (rotation_deg != 0 && rotation_deg != 90 && rotation_deg != 180 && rotation_deg != 270) {
+        ESP_LOGW(TAG, "Invalid rotation %d, clamping to 0", rotation_deg);
+        rotation_deg = 0;
+    }
+    _rotation = rotation_deg;
+
     _src_w = src_w;
     _src_h = src_h;
+
+    /* For 90/270 rotation, the PPA output dimensions are swapped:
+     * source W×H rotated 90/270 → output H×W.
+     * We request dst_w/dst_h as the "unrotated" target, then swap for PPA. */
+    bool swap_dims = (rotation_deg == 90 || rotation_deg == 270);
+    uint16_t ppa_dst_w = swap_dims ? dst_h : dst_w;
+    uint16_t ppa_dst_h = swap_dims ? dst_w : dst_h;
     _dst_w = dst_w;
     _dst_h = dst_h;
 
     /* Compute PPA scale factors (4-bit fractional precision) */
-    _scale_x = get_ppa_scale(src_w, dst_w);
-    _scale_y = get_ppa_scale(src_h, dst_h);
+    _scale_x = get_ppa_scale(src_w, ppa_dst_w);
+    _scale_y = get_ppa_scale(src_h, ppa_dst_h);
     if (_scale_x < 0 || _scale_y < 0) {
         ESP_LOGE(TAG, "Invalid PPA scale: %.4f x %.4f", _scale_x, _scale_y);
         return false;
@@ -61,8 +86,8 @@ bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint1
      * E.g., 800→320: ideal_scale=0.4, ppa_scale=0.375, actual=300 (not 320). */
     _actual_w = ppa_actual_dim(src_w, _scale_x);
     _actual_h = ppa_actual_dim(src_h, _scale_y);
-    ESP_LOGI(TAG, "PPA scale: %d×%d → %d×%d (requested %d×%d, scale=%.4f,%.4f)",
-             src_w, src_h, _actual_w, _actual_h, dst_w, dst_h, _scale_x, _scale_y);
+    ESP_LOGI(TAG, "PPA scale: %d×%d → %d×%d (requested %d×%d, scale=%.4f,%.4f, rotation=%d°)",
+             src_w, src_h, _actual_w, _actual_h, ppa_dst_w, ppa_dst_h, _scale_x, _scale_y, rotation_deg);
 
     /* Allocate PPA output buffer for the REQUESTED size (model input shape).
      * PPA writes actual_w×actual_h valid pixels; the remainder (right/bottom
@@ -70,7 +95,7 @@ bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint1
      * img dimensions ensures correct stride for downstream consumers.
      * RGB565 output: 2 bytes per pixel. */
     size_t align = cache_hal_get_cache_line_size(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_DATA);
-    _out_buf_size = align_up((size_t)dst_w * dst_h * 2, align);
+    _out_buf_size = align_up((size_t)ppa_dst_w * ppa_dst_h * 2, align);
     _out_buf = (uint8_t *)heap_caps_aligned_calloc(align, 1, _out_buf_size,
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
     if (!_out_buf) {
@@ -93,8 +118,8 @@ bool PPAPreprocessor::init(uint16_t src_w, uint16_t src_h, uint16_t dst_w, uint1
         return false;
     }
 
-    ESP_LOGI(TAG, "Initialized: %d×%d RGB565 → %d×%d RGB565 (contiguous, model=%d×%d with letterbox)",
-             src_w, src_h, _actual_w, _actual_h, dst_w, dst_h);
+    ESP_LOGI(TAG, "Initialized: %d×%d RGB565 → %d×%d RGB565 (rotation=%d°, contiguous, model=%d×%d)",
+             src_w, src_h, _actual_w, _actual_h, rotation_deg, dst_w, dst_h);
     return true;
 }
 
@@ -111,6 +136,7 @@ void PPAPreprocessor::deinit()
     _out_buf_size = 0;
     _src_w = _src_h = _dst_w = _dst_h = _actual_w = _actual_h = 0;
     _scale_x = _scale_y = 1.0f;
+    _rotation = 0;
 }
 
 bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
@@ -147,8 +173,8 @@ bool PPAPreprocessor::process(const uint8_t *rgb565_buf)
     srm_cfg.out.block_offset_y = 0;
     srm_cfg.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
 
-    /* Scale + no rotation/mirror */
-    srm_cfg.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+    /* Scale + rotation + no mirror */
+    srm_cfg.rotation_angle = rotation_to_ppa(_rotation);
     srm_cfg.scale_x = _scale_x;
     srm_cfg.scale_y = _scale_y;
     srm_cfg.mirror_x = false;

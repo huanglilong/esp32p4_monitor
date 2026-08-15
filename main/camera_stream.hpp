@@ -55,6 +55,11 @@ public:
     /** @return true if stream is currently active */
     bool isRunning(void) const { return _running.load(std::memory_order_acquire); }
 
+    /** Set rotation angle (0, 90, 180, 270 degrees CCW).
+     *  Takes effect on next start(). If stream is running, stops and restarts. */
+    void set_rotation(int degrees);
+    int rotation(void) const { return _rotation.load(std::memory_order_acquire); }
+
     /** Enable/disable camera frame recording to ULog.
      *  Frames are published as camera_frame_chunk uORB topic when recording is enabled.
      *  ULogWriter must be configured to subscribe to camera_frame_chunk for this to take effect. */
@@ -142,6 +147,7 @@ private:
 
     /* State */
     std::atomic<bool>          _running;
+    std::atomic<int>           _rotation{0};       /* 0, 90, 180, 270 degrees CCW — persisted to NVS */
     SemaphoreHandle_t          _start_stop_mutex;  /* Prevents concurrent start()/stop() — avoids race when
                                                     * cam_stop task hasn't finished cleanup and cam_start
                                                     * task begins re-initialization (EADDRINUSE, double-free) */

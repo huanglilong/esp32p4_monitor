@@ -90,3 +90,69 @@ class TestDetectionInfo:
         r.raise_for_status()
         info = r.json()
         assert "detection_enabled" in info, f"Missing detection_enabled: {info}"
+
+
+class TestCameraRotation:
+    """GET /api/set_rotation on port 80 — camera image rotation."""
+
+    def test_camera_info_has_rotation(self, client, camera_base_url):
+        """Camera info includes rotation field."""
+        r = client.get(f"{camera_base_url}/api/get_camera_info", timeout=10)
+        r.raise_for_status()
+        info = r.json()
+        assert "rotation" in info, f"Missing rotation: {info}"
+        assert info["rotation"] in (0, 90, 180, 270), f"Invalid rotation: {info['rotation']}"
+
+    def test_set_rotation_90(self, client, camera_base_url):
+        """Set rotation to 90 degrees."""
+        r = client.get(
+            f"{camera_base_url}/api/set_rotation",
+            params={"value": 90},
+            timeout=10,
+        )
+        r.raise_for_status()
+        j = r.json()
+        assert j.get("ok") in (1, True), f"Set rotation failed: {j}"
+        assert j.get("rotation") == 90, f"Rotation not 90: {j}"
+
+    def test_set_rotation_180(self, client, camera_base_url):
+        """Set rotation to 180 degrees."""
+        r = client.get(
+            f"{camera_base_url}/api/set_rotation",
+            params={"value": 180},
+            timeout=10,
+        )
+        r.raise_for_status()
+        j = r.json()
+        assert j.get("ok") in (1, True), f"Set rotation failed: {j}"
+        assert j.get("rotation") == 180, f"Rotation not 180: {j}"
+
+    def test_set_rotation_270(self, client, camera_base_url):
+        """Set rotation to 270 degrees."""
+        r = client.get(
+            f"{camera_base_url}/api/set_rotation",
+            params={"value": 270},
+            timeout=10,
+        )
+        r.raise_for_status()
+        j = r.json()
+        assert j.get("ok") in (1, True), f"Set rotation failed: {j}"
+        assert j.get("rotation") == 270, f"Rotation not 270: {j}"
+
+    def test_set_rotation_restore_0(self, client, camera_base_url):
+        """Restore rotation to 0 degrees."""
+        r = client.get(
+            f"{camera_base_url}/api/set_rotation",
+            params={"value": 0},
+            timeout=10,
+        )
+        r.raise_for_status()
+        j = r.json()
+        assert j.get("ok") in (1, True), f"Set rotation failed: {j}"
+        assert j.get("rotation") == 0, f"Rotation not 0: {j}"
+
+    def test_rotation_in_status(self, api):
+        """Rotation appears in /api/status on port 8080."""
+        status = api.status()
+        assert "cam_rotation" in status, f"Missing cam_rotation: {status}"
+        assert status["cam_rotation"] in (0, 90, 180, 270), f"Invalid cam_rotation: {status}"

@@ -276,4 +276,18 @@ def api(client: requests.Session, base_url: str):
             r.raise_for_status()
             return r.json()
 
+        @staticmethod
+        def set_rotation(value: int):
+            """Set camera rotation (0, 90, 180, 270) on port 80."""
+            parsed = urlparse(base_url)
+            port = 80 if (parsed.port == 8080 or parsed.port is None) else parsed.port
+            cam_url = f"{parsed.scheme}://{parsed.hostname}:{port}"
+            r = client.get(
+                f"{cam_url}/api/set_rotation",
+                params={"value": value},
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json()
+
     return _API

@@ -77,8 +77,8 @@ esp32p4_monitor/
 │   ├── wifi_service.cpp           # WifiService 实现 (uORB wifi_state + SNTP + NVS)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件
 │   └── camera_stream.cpp          # Camera Stream 核心 (V4L2 + JPEG → capture task + HTTP MJPEG + mDNS)
-│   ├── ppa_preprocessor.hpp       # PPA 硬件预处理 (RGB565→RGB888 resize)
-│   └── ppa_preprocessor.cpp       # PPA SRM client: 缩放+格式转换, CPU 仅做量化
+│   ├── ppa_preprocessor.hpp       # PPA 硬件预处理 (RGB565→RGB888 resize + rotation)
+│   └── ppa_preprocessor.cpp       # PPA SRM client: 缩放+旋转+格式转换, CPU 仅做量化
 ├── proto/                                    # uORB .msg 消息定义
 │   ├── fps_stats.msg
 │   ├── wifi_state.msg
@@ -584,7 +584,8 @@ SD Card (.mp3/.wav) → GMF File IO → GMF Audio Pipeline (解码) → _asp_out
 - 启动条件: Toggle ON + WiFi 已连接
 - 自动停止: Toggle OFF / WiFi 断开
 - **独立生命周期**: Camera Stream 不随 Settings App 退出而停止, 仅通过开关控制
-- **不持久化**: 重启后默认 OFF
+- **图像旋转**: PPA 硬件旋转 (0°/90°/180°/270°), NVS 持久化 (`cam_rotation`), Web UI CSS 即时反馈 + PPA 下次 start() 生效
+- **不持久化**: 重启后默认 OFF (旋转设置单独持久化)
 
 **NVS 命名空间**: `"settings"`
 
@@ -609,8 +610,8 @@ Camera Stream 通过 Settings App 的开关控制, 退出 Settings App 不会停
 | 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~5-8KB/帧 @ 300×300) |
 | 推流分辨率 | 300×300 BGR24 (PPA 输出, 非 800×800 RGB565) |
 | 帧率实测 | **~2fps** @ 2fps sensor, CPU ~5% |
-| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/get_detection_info`, `/api/set_camera_config`), 端口 81: MJPEG `/stream` |
-| Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块) |
+| HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/get_detection_info`, `/api/set_camera_config`, `/api/set_rotation`), 端口 81: MJPEG `/stream` |
+| Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块 + 旋转按钮 0°/90°/180°/270°) |
 
 **调试过程中发现并修复的关键问题**:
 - **编码器信号量死锁**: `xSemaphoreGive` 在流处理器成功路径被误删, 第一帧后信号量永不归还, 后续帧全部超时 (0fps)。

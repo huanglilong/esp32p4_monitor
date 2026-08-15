@@ -442,6 +442,13 @@ static const char *WEB_UI_HTML =
 "<input type=\"checkbox\" id=\"cam_stream\" onchange=\"onCamToggle()\">"
 "<span class=\"slider\"></span></label></div>"
 "<div id=\"cam_status\" style=\"font-size:12px;color:#a0a0b0;margin-top:4px\"></div>"
+"<div style=\"margin-top:8px;display:flex;gap:6px;align-items:center\">"
+"<span style=\"font-size:12px;color:#a0a0b0\">Rotation:</span>"
+"<button class=\"rot-btn\" onclick=\"setRot(0)\" id=\"rot0\" style=\"flex:1;padding:6px 0;font-size:12px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer\">0°</button>"
+"<button class=\"rot-btn\" onclick=\"setRot(90)\" id=\"rot90\" style=\"flex:1;padding:6px 0;font-size:12px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer\">90°</button>"
+"<button class=\"rot-btn\" onclick=\"setRot(180)\" id=\"rot180\" style=\"flex:1;padding:6px 0;font-size:12px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer\">180°</button>"
+"<button class=\"rot-btn\" onclick=\"setRot(270)\" id=\"rot270\" style=\"flex:1;padding:6px 0;font-size:12px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer\">270°</button>"
+"</div>"
 "</div>"
 "<div class=\"card\" id=\"audio_card\" style=\"display:none\">"
 "<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:8px\">"
@@ -507,6 +514,7 @@ static const char *WEB_UI_HTML =
 "loadUlogStatus();"
 "refreshRec();"
 "if(!uiTimer)uiTimer=setInterval(pollLive,2000);"
+"highlightRot(j.cam_rotation||0);"
 "updateUI()}catch(e){showStatus('Failed to load settings','error')}}"
 "function showStatus(msg,cls){let s=document.getElementById('status');"
 "s.textContent=msg;s.className=cls}"
@@ -526,6 +534,14 @@ static const char *WEB_UI_HTML =
 "showStatus(j.running?'Stream started':'Stream stopped','success')}"
 "else{showStatus(j.error||'Failed','error');loadStatus()}}"
 "catch(e){showStatus('Connection error','error');loadStatus()}}"
+"function highlightRot(d){"
+"document.querySelectorAll('.rot-btn').forEach(function(b){b.style.background='#333';b.style.borderColor='#555'});"
+"var btn=document.getElementById('rot'+d);if(btn){btn.style.background='#4CAF50';btn.style.borderColor='#4CAF50'}}"
+"async function setRot(d){"
+"showStatus('Setting rotation to '+d+'°...','info');"
+"try{var r=await fetch('http://'+window.location.hostname+':80/api/set_rotation?value='+d);"
+"var j=await r.json();if(j.ok){highlightRot(j.rotation);showStatus('Rotation: '+j.rotation+'°','success')}"
+"else showStatus('Rotation failed','error')}catch(e){showStatus('Connection error','error')}}"
 "var uiTimer=null;"
 "async function loadFiles(){"
 "try{var r=await fetch('/api/audio/list');var j=await r.json();"
@@ -786,6 +802,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "cam_stream", cam_en);
     cJSON_AddBoolToObject(root, "cam_running", cam_running);
     cJSON_AddBoolToObject(root, "cam_recording", CameraStream::instance().is_recording());
+    cJSON_AddNumberToObject(root, "cam_rotation", CameraStream::instance().rotation());
 
     char *json_str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -2281,6 +2298,13 @@ static void web_config_task(void *arg)
 
     /* Auto-start camera stream if NVS says it was enabled */
     if (nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
+        /* Restore rotation from NVS before starting stream */
+        int rot = (int)nvs_get_i32_def("cam_rotation", 0);
+        if (rot != 0 && rot != 90 && rot != 180 && rot != 270) rot = 0;
+        if (rot != 0) {
+            CameraStream::instance().set_rotation(rot);
+            ESP_LOGI(TAG, "NVS cam_rotation=%d, applied before stream start", rot);
+        }
         ESP_LOGI(TAG, "NVS cam_stream=1, auto-starting camera stream...");
         CameraStream::instance().start();
     }
