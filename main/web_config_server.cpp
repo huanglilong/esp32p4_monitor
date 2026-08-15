@@ -71,9 +71,9 @@
 /* System Monitor */
 #include "system_monitor.hpp"
 
-extern "C" {
-#include "layer3.h"
-}
+#include "esp_aac_enc.h"
+#include "esp_audio_enc.h"
+#include "esp_audio_enc_default.h"
 
 static const char *TAG = "WebConfig";
 
@@ -99,17 +99,21 @@ static std::atomic<bool>  s_mdns_running{false};
 /*============================================================================
  * Audio state — lazy-init when camera stream is OFF
  *============================================================================*/
-#define REC_BUF_SAMPLES      480
+#define REC_BUF_SAMPLES      160
 #define REC_BUF_BYTES        (REC_BUF_SAMPLES * 2 * sizeof(int16_t))
-#define ENC_SAMPLES_PER_CH   1152
-#define PCM_BUF_SAMPLES      (ENC_SAMPLES_PER_CH * 2)
+#define AAC_SAMPLES_PER_CH   1024
+#define PCM_BUF_SAMPLES      (AAC_SAMPLES_PER_CH * 2)
 
 static std::atomic<bool> s_audio_inited{false};
 static std::atomic<TaskHandle_t> s_audio_task{nullptr};
 static std::atomic<bool>  s_audio_running{false};
 static std::atomic<bool>  s_audio_task_exited{true}; /* true initially (no task running) */
 static std::atomic<bool>  s_is_recording{false};
-static shine_t        s_shine = NULL;
+static esp_audio_enc_handle_t s_aac_enc = NULL;
+static uint8_t       *s_enc_in_buf = NULL;
+static uint8_t       *s_enc_out_buf = NULL;
+static int            s_enc_in_size = 0;
+static int            s_enc_out_size = 0;
 static int16_t       *s_pcm_buf = NULL;
 static std::atomic<int>  s_pcm_count{0};
 static FILE          *s_rec_file = NULL;
@@ -129,7 +133,7 @@ static std::atomic<orb_advert_t> s_rec_pub{ORB_ADVERT_INVALID};
 
 /* Mutex to serialize audio operations across concurrent HTTP handlers.
  * Without this, two clients hitting /api/record and /api/play simultaneously
- * could corrupt s_is_recording, s_asp, s_shine, etc.
+ * could corrupt s_is_recording, s_asp, s_aac_enc, etc.
  * Created at task startup (not lazily) to avoid a race between two handlers
  * both seeing s_audio_mutex == NULL and creating separate mutexes. */
 static SemaphoreHandle_t s_audio_mutex = NULL;
@@ -191,7 +195,7 @@ static void _stop_audio_task_if_running(void)
     s_audio_task.store(nullptr, std::memory_order_release);
 }
 
-/* Audio recording task: I2S RX → shine MP3 → SD card */
+/* Audio recording task: I2S RX → AAC encoder → SD card */
 static void audio_task(void *arg)
 {
     (void)arg;
@@ -207,10 +211,10 @@ static void audio_task(void *arg)
             continue;
         }
         size_t n = 0;
-        esp_err_t read_ret = i2s_channel_read(rx, buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(10));
+        esp_err_t read_ret = i2s_channel_read(rx, buf, REC_BUF_BYTES, &n, pdMS_TO_TICKS(50));
         if (read_ret != ESP_OK || n == 0) continue;
         int32_t spc = n / (2 * sizeof(int16_t));
-        if (s_is_recording && s_pcm_buf && s_shine) {
+        if (s_is_recording && s_pcm_buf && s_aac_enc) {
             for (int32_t i = 0; i < spc; i++) {
                 /* Break out of PCM processing if stop was requested */
                 if (!s_audio_running) break;
@@ -219,19 +223,28 @@ static void audio_task(void *arg)
                  * a previous recording session), reset to 0 to prevent OOB write.
                  * Normally s_pcm_count is reset in h_rec_start() under audio_lock
                  * before s_is_recording is set, so this is defensive. */
-                if (idx < 0 || idx >= ENC_SAMPLES_PER_CH) {
+                if (idx < 0 || idx >= AAC_SAMPLES_PER_CH) {
                     s_pcm_count.store(0, std::memory_order_relaxed);
                     idx = 0;
                 }
                 s_pcm_buf[idx * 2]     = buf[i * 2];
                 s_pcm_buf[idx * 2 + 1] = buf[i * 2 + 1];
-                if (s_pcm_count.fetch_add(1, std::memory_order_relaxed) + 1 >= ENC_SAMPLES_PER_CH) {
-                    int wr = 0;
-                    unsigned char *mp3 = shine_encode_buffer_interleaved(s_shine, s_pcm_buf, &wr);
+                if (s_pcm_count.fetch_add(1, std::memory_order_relaxed) + 1 >= AAC_SAMPLES_PER_CH) {
+                    /* Copy interleaved PCM into encoder input buffer and encode one AAC frame */
+                    memcpy(s_enc_in_buf, s_pcm_buf, s_enc_in_size);
+                    esp_audio_enc_in_frame_t in_frame = {
+                        .buffer = s_enc_in_buf,
+                        .len = (uint32_t)s_enc_in_size,
+                    };
+                    esp_audio_enc_out_frame_t out_frame = {
+                        .buffer = s_enc_out_buf,
+                        .len = (uint32_t)s_enc_out_size,
+                    };
+                    esp_audio_err_t enc_ret = esp_aac_enc_process(s_aac_enc, &in_frame, &out_frame);
                     /* Skip fwrite if stop was requested — avoids holding VFS mutex
                      * when the caller is waiting for this task to exit. */
-                    if (mp3 && wr > 0 && s_rec_file && s_audio_running) {
-                        s_rec_bytes.fetch_add(fwrite(mp3, 1, wr, s_rec_file), std::memory_order_relaxed);
+                    if (enc_ret == ESP_AUDIO_ERR_OK && out_frame.encoded_bytes > 0 && s_rec_file && s_audio_running) {
+                        s_rec_bytes.fetch_add(fwrite(s_enc_out_buf, 1, out_frame.encoded_bytes, s_rec_file), std::memory_order_relaxed);
                     }
                     s_pcm_count.store(0, std::memory_order_relaxed);
                 }
@@ -246,14 +259,37 @@ static void audio_task(void *arg)
      * This is done in the audio task context (core 1, priority 1) so it
      * doesn't block the single-threaded httpd.  fclose on SDSPI can take
      * ~10s due to FAT table updates. */
-    if (s_shine) {
-        int wr = 0;
-        unsigned char *d = shine_flush(s_shine, &wr);
-        FILE *f = s_rec_file; s_rec_file = NULL;
-        if (d && wr > 0 && f) fwrite(d, 1, wr, f);
-        shine_close(s_shine); s_shine = NULL;
-        if (f) fclose(f);
+    if (s_aac_enc) {
+        /* Encode remaining partial buffer if any */
+        int pcm_count = s_pcm_count.load(std::memory_order_relaxed);
+        if (pcm_count > 0 && s_enc_in_buf && s_enc_out_buf) {
+            int partial_bytes = pcm_count * 2 * sizeof(int16_t);
+            memset(s_enc_in_buf, 0, s_enc_in_size);
+            memcpy(s_enc_in_buf, s_pcm_buf, partial_bytes < s_enc_in_size ? partial_bytes : s_enc_in_size);
+            esp_audio_enc_in_frame_t in_frame = {
+                .buffer = s_enc_in_buf,
+                .len = (uint32_t)s_enc_in_size,
+            };
+            esp_audio_enc_out_frame_t out_frame = {
+                .buffer = s_enc_out_buf,
+                .len = (uint32_t)s_enc_out_size,
+            };
+            esp_audio_err_t enc_ret = esp_aac_enc_process(s_aac_enc, &in_frame, &out_frame);
+            FILE *f = s_rec_file; s_rec_file = NULL;
+            if (enc_ret == ESP_AUDIO_ERR_OK && out_frame.encoded_bytes > 0 && f) {
+                fwrite(s_enc_out_buf, 1, out_frame.encoded_bytes, f);
+            }
+            if (f) fclose(f);
+        } else {
+            FILE *f = s_rec_file; s_rec_file = NULL;
+            if (f) fclose(f);
+        }
+        esp_aac_enc_close(s_aac_enc); s_aac_enc = NULL;
+    } else if (s_rec_file) {
+        fclose(s_rec_file); s_rec_file = NULL;
     }
+    if (s_enc_in_buf) { heap_caps_free(s_enc_in_buf); s_enc_in_buf = NULL; }
+    if (s_enc_out_buf) { heap_caps_free(s_enc_out_buf); s_enc_out_buf = NULL; }
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf = NULL; }
 
     s_audio_task.store(nullptr, std::memory_order_release);
@@ -1045,7 +1081,7 @@ static esp_err_t factory_reset_handler(httpd_req_t *req)
 }
 
 /*============================================================================
- * Audio Handlers — record / play / list mp3 files on SD card
+ * Audio Handlers — record / play / list aac files on SD card
  *============================================================================*/
 
 /* Lazy-init SD card + audio codec on headless boards */
@@ -1164,10 +1200,39 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         return ESP_OK;
     }
     s_pcm_count.store(0, std::memory_order_relaxed);
-    shine_config_t c; shine_set_config_mpeg_defaults(&c.mpeg);
-    c.wave.channels = PCM_STEREO; c.wave.samplerate = 48000; c.mpeg.mode = STEREO; c.mpeg.bitr = 128;
-    s_shine = shine_initialise(&c);
-    if (!s_shine) {
+    esp_aac_enc_config_t aac_cfg = {
+        .sample_rate     = 16000,
+        .channel         = ESP_AUDIO_DUAL,
+        .bits_per_sample = ESP_AUDIO_BIT16,
+        .bitrate         = 64000,
+        .adts_used       = true,
+    };
+    esp_audio_err_t enc_ret = esp_aac_enc_open(&aac_cfg, sizeof(aac_cfg), &s_aac_enc);
+    if (enc_ret != ESP_AUDIO_ERR_OK || !s_aac_enc) {
+        heap_caps_free(s_pcm_buf);
+        s_pcm_buf = NULL;
+        s_audio_running = false;
+        audio_unlock();
+        httpd_resp_sendstr(req, "{\"ok\":0}");
+        return ESP_OK;
+    }
+    /* Get encoder frame sizes for buffer allocation */
+    enc_ret = esp_aac_enc_get_frame_size(s_aac_enc, &s_enc_in_size, &s_enc_out_size);
+    if (enc_ret != ESP_AUDIO_ERR_OK) {
+        esp_aac_enc_close(s_aac_enc); s_aac_enc = NULL;
+        heap_caps_free(s_pcm_buf);
+        s_pcm_buf = NULL;
+        s_audio_running = false;
+        audio_unlock();
+        httpd_resp_sendstr(req, "{\"ok\":0}");
+        return ESP_OK;
+    }
+    s_enc_in_buf = (uint8_t *)heap_caps_calloc(1, s_enc_in_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_enc_out_buf = (uint8_t *)heap_caps_calloc(1, s_enc_out_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_enc_in_buf || !s_enc_out_buf) {
+        if (s_enc_in_buf) { heap_caps_free(s_enc_in_buf); s_enc_in_buf = NULL; }
+        if (s_enc_out_buf) { heap_caps_free(s_enc_out_buf); s_enc_out_buf = NULL; }
+        esp_aac_enc_close(s_aac_enc); s_aac_enc = NULL;
         heap_caps_free(s_pcm_buf);
         s_pcm_buf = NULL;
         s_audio_running = false;
@@ -1180,14 +1245,17 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     localtime_r(&t, &tm_buf);
     /* Guard against unsynced wall-clock (epoch year < 2020 → overwrite) */
     if (tm_buf.tm_year + 1900 > 2020) {
-        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
+        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.aac",
                  tm_buf.tm_year+1900, tm_buf.tm_mon+1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
     } else {
         uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%lu.mp3", (unsigned long)mono_ms);
+        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%lu.aac", (unsigned long)mono_ms);
     }
     s_rec_file = fopen(s_rec_path, "wb");
-    if (!s_rec_file) { shine_close(s_shine); s_shine = NULL; heap_caps_free(s_pcm_buf); s_pcm_buf = NULL;
+    if (!s_rec_file) { esp_aac_enc_close(s_aac_enc); s_aac_enc = NULL;
+        if (s_enc_in_buf) { heap_caps_free(s_enc_in_buf); s_enc_in_buf = NULL; }
+        if (s_enc_out_buf) { heap_caps_free(s_enc_out_buf); s_enc_out_buf = NULL; }
+        heap_caps_free(s_pcm_buf); s_pcm_buf = NULL;
         s_audio_running = false; audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms.store((uint32_t)(esp_timer_get_time() / 1000), std::memory_order_relaxed);
@@ -1323,7 +1391,7 @@ static esp_err_t h_list(httpd_req_t *req) {
         return ESP_FAIL;
     }
     cJSON_AddItemToObject(root, "files", arr);
-    if(d){ struct dirent *e; while((e=readdir(d))){ if(e->d_name[0]=='.') continue; char *x=strrchr(e->d_name,'.'); if(x&&strcasecmp(x,".mp3")==0) cJSON_AddItemToArray(arr,cJSON_CreateString(e->d_name)); } closedir(d); }
+    if(d){ struct dirent *e; while((e=readdir(d))){ if(e->d_name[0]=='.') continue; char *x=strrchr(e->d_name,'.'); if(x&&strcasecmp(x,".aac")==0) cJSON_AddItemToArray(arr,cJSON_CreateString(e->d_name)); } closedir(d); }
     char *j = cJSON_PrintUnformatted(root);
     if (!j) {
         cJSON_Delete(root);
@@ -1371,7 +1439,7 @@ static int _asp_evt(esp_asp_event_pkt_t *pkt, void *_) { (void)_;
     if(pkt->type==ESP_ASP_EVENT_TYPE_STATE){ int s=*(esp_asp_state_t*)pkt->payload;
         if(s==ESP_ASP_STATE_FINISHED||s==ESP_ASP_STATE_STOPPED||s==ESP_ASP_STATE_ERROR) s_playing=false; } return 0; }
 
-/* GET /api/audio/play?file=xxx.mp3 */
+/* GET /api/audio/play?file=xxx.aac */
 static esp_err_t h_play(httpd_req_t *req) {
     audio_lock();
     if(!__audio_init()){ audio_unlock(); httpd_resp_sendstr(req,"{\"ok\":0,\"error\":\"Init fail\"}"); return ESP_OK; }
@@ -2487,7 +2555,7 @@ void web_config_server_stop(void)
     /* Stop audio task first — wait for it to exit cleanly so it can
      * flush/close recording resources in its own context (avoids holding
      * the FAT VFS mutex in httpd context, and prevents use-after-free
-     * on s_shine/s_pcm_buf/s_rec_file which the audio task uses
+     * on s_aac_enc/s_pcm_buf/s_rec_file which the audio task uses
      * without audio_lock). */
     s_audio_running = false;
     s_is_recording = false;
@@ -2498,7 +2566,9 @@ void web_config_server_stop(void)
      * task wasn't created yet). The audio task's deferred cleanup
      * nulls these out, so the null checks are safe. */
     audio_lock();
-    if (s_shine) { shine_close(s_shine); s_shine = NULL; }
+    if (s_aac_enc) { esp_aac_enc_close(s_aac_enc); s_aac_enc = NULL; }
+    if (s_enc_in_buf) { heap_caps_free(s_enc_in_buf); s_enc_in_buf = NULL; }
+    if (s_enc_out_buf) { heap_caps_free(s_enc_out_buf); s_enc_out_buf = NULL; }
     if (s_rec_file) { fclose(s_rec_file); s_rec_file = NULL; }
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf = NULL; }
     s_playing = false;

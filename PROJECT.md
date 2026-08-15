@@ -20,7 +20,7 @@
 | App | 类名 | 功能 |
 |-----|------|------|
 | 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, V4L2 (esp_video) 驱动, 800×800 → 720×720 显示 (纯预览, 检测已移至 CameraStream) |
-| 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **MP3 录音 (SD 卡)** |
+| 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **AAC 录音 (SD 卡)** |
 | 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
 | 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
 | ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi + Camera Stream 开关** (WiFi 始终启用, 后台运行; Camera Stream 独立于 App 生命周期, 仅开关控制) |
@@ -68,7 +68,7 @@ esp32p4_monitor/
 │   ├── phone_app_camera.hpp        # Camera App 头文件
 │   ├── phone_app_camera.cpp    # Camera App (V4L2 + OV5647 sensor, 纯预览)
 │   ├── phone_app_audio.hpp     # Audio App 头文件
-│   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + MP3 录音)
+│   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + AAC 录音)
 │   ├── phone_app_music.hpp     # Music App 头文件
 │   ├── phone_app_music.cpp     # Music App (MP3/WAV 播放器)
 │   ├── phone_app_settings.hpp     # Settings App 头文件
@@ -120,7 +120,7 @@ esp32p4_monitor/
 | `protocol_examples_common` | local | IDF examples |
 | `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
 | `lvgl/lvgl` | 9.2.2 | ESP Registry |
-| `shine_encoder` | (local) | 本地组件 `components/shine_encoder/` |
+| `espressif__esp_audio_codec` | (managed) | ESP audio encoder/decoder (AAC, etc.) |
 | `espressif/esp_audio_simple_player` | ^1.0.0 | ESP Registry |
 | `espressif/gmf_core` | ^1.0 | (间接依赖, 自动拉入) |
 | `espressif/gmf_audio` | ^1.0 | (间接依赖, 自动拉入) |
@@ -480,18 +480,18 @@ V4L2 buffer RGB565 (800×800)
 
 ### 8. Audio App 实现
 
-`PhoneAppAudio` 继承 `ESP_Brookesia_PhoneApp`，双声道电平表 UI + MP3 录音:
+`PhoneAppAudio` 继承 `ESP_Brookesia_PhoneApp`，双声道电平表 UI + AAC 录音:
 
 | 项目 | 配置 |
 |------|------|
-| Mic 输入 | I2S RX, 48000Hz Stereo, 16-bit |
+| Mic 输入 | I2S RX, 16000Hz Stereo, 16-bit |
 | Codec | ES8311 (speaker) + ES7210 (dual mic, 30dB gain) |
 | PA | GPIO 53 High (功放使能) |
 | 数据读取 | **直接 I2S RX** (`i2s_channel_read`)，绕过 `esp_codec_dev_read` 中间层 |
 | 电平计算 | Per-channel peak detection → 0-100% LVGL bar |
 | UI 刷新 | LVGL timer 20Hz (50ms) |
 | 音频输出 | **不输出 speaker**（纯监控模式，无回声振荡） |
-| **MP3 录音** | **Shine 定点 MP3 编码器 (128kbps stereo 48kHz) → SD 卡 `/sdcard/rec_*.mp3`** |
+| **AAC 录音** | **ESP AAC 编码器 (64kbps stereo 16kHz ADTS) → SD 卡 `/sdcard/rec_*.aac`** |
 | 录音 UI | REC 按钮 (右上角), 录制时间/大小实时显示, 录音文件列表 |
 
 **已解决的问题**:
@@ -504,21 +504,22 @@ V4L2 buffer RGB565 (800×800)
 ### 8. ESP-Brookesia 样式表适配
 720x720 分辨率没有对应的 ESP-Brookesia 预置样式表, 当前使用默认回退方案。
 
-### 9. MP3 录音 (Shine Encoder)
+### 9. AAC 录音 (ESP AAC Encoder)
 
-使用 **Shine** 定点 MPEG Layer III 编码器 (toots/shine), 作为本地组件集成:
+使用 **ESP AAC 编码器** (espressif/esp_audio_codec managed component):
 
-- **组件路径**: `components/shine_encoder/`
-- **编码参数**: 48kHz stereo, 128kbps CBR, MPEG-I Layer III
-- **帧大小**: 1152 samples/channel (SHINE_MAX_SAMPLES)
-- **PCM 缓冲**: PSRAM 分配, 2304 int16_t interleaved (1152×2)
+- **组件**: `espressif__esp_audio_codec` (managed component)
+- **编码参数**: 16kHz stereo, 64kbps, ADTS mode
+- **帧大小**: 1024 samples/channel
+- **PCM 缓冲**: PSRAM 分配, 2048 int16_t interleaved (1024×2)
+- **编码器 I/O 缓冲**: PSRAM 分配, enc_in_buf (4096 bytes) + enc_out_buf (动态大小)
 - **工作流程**:
   1. 用户按下 "REC" 按钮 → `_start_recording()`
-  2. 初始化 Shine encoder, 打开 SD 卡文件 `/sdcard/rec_YYYYMMDD_HHMMSS.mp3`
-  3. `_audio_task` 每 10ms 读取 I2S PCM 数据, 累积到 1152 samples/channel
-  4. `shine_encode_buffer_interleaved()` 编码一帧, `fwrite()` 写入 SD 卡
-  5. 用户按 "STOP" → `_stop_recording()`: `shine_flush()` + `shine_close()` + `fclose()`
-- **线程安全**: `_is_recording=false` 后等待 50ms 确保 audio task 退出编码块
+  2. 初始化 AAC encoder (`esp_aac_enc_open`), 分配编码器 I/O 缓冲, 打开 SD 卡文件 `/sdcard/rec_YYYYMMDD_HHMMSS.aac`
+  3. `_audio_task` 每 30ms 读取 I2S PCM 数据, 累积到 1024 samples/channel
+  4. `esp_aac_enc_process()` 编码一帧, `fwrite()` 写入 SD 卡
+  5. 用户按 "STOP" → `_stop_recording()`: 编码剩余数据 + `esp_aac_enc_close()` + `fclose()`
+- **线程安全**: `_recording_ops_in_flight` 原子计数器 + `_is_recording` 原子标志
 
 ### 10. 音频初始化最终方案
 
@@ -550,7 +551,7 @@ i2s_channel_disable(tx); i2s_channel_enable(tx);
 
 **播放管道**:
 ```
-SD Card (.mp3/.wav) → GMF File IO → GMF Audio Pipeline (解码) → _asp_output_cb() → ES8311 Codec (I2S TX, 48kHz 16bit Stereo) → Speaker (PA GPIO53 HIGH)
+SD Card (.aac/.wav) → GMF File IO → GMF Audio Pipeline (解码) → _asp_output_cb() → ES8311 Codec (I2S TX, 16kHz 16bit Stereo) → Speaker (PA GPIO53 HIGH)
 ```
 
 **问题**: 播放完一首歌后 GMF 音频管道回调 `_asp_event_cb` (运行在 GMF task, priority 5) 直接调用 `_next()` → `_play()` 更新 LVGL UI (`lv_label_set_text` 等)。如果此时 `taskLVGL` (priority 4) 正在渲染 (`lv_timer_handler`), 高优先级的 GMF task 会抢占并调用 `lv_inv_area()`, 触发 LVGL 断言 `!disp->rendering_in_progress` → 系统崩溃。
@@ -673,8 +674,8 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - **音量**: 滑条 0-100
 - **连接验证**: 点 Save 后先尝试连接，成功才写 NVS，失败回连旧 WiFi
 - **WiFi 门控**: 任务等待 `IP_EVENT_STA_GOT_IP` 后才启动 HTTP，WiFi 未连时不占用 socket
-- **音频录制**: Start/End 按钮, I2S RX → Shine MP3 编码 → SD 卡 (`/sdcard/rec_*.mp3`), 实时显示录制时长和文件大小
-- **音频播放**: 列出 SD 卡上 `.mp3` 文件, Play 按钮通过 `esp_audio_simple_player` 播放
+- **音频录制**: Start/End 按钮, I2S RX → AAC 编码 → SD 卡 (`/sdcard/rec_*.aac`), 实时显示录制时长和文件大小
+- **音频播放**: 列出 SD 卡上 `.aac` 文件, Play 按钮通过 `esp_audio_simple_player` 播放
 - **互斥保护**: 音频功能仅在 Camera Stream **未**运行时可操作, UI 自动隐藏/显示
 - **子设置字段完整性校验**: 每个子设置 (WiFi / LLM / Feishu / QQ / Telegram) 的所有字段必须非空，任一为空则 **skip 整个子设置**的 NVS 更新 (返回 `ok:false`)，其余满足条件的子设置正常更新。WiFi 要求 **SSID + password 同时非空** (不考虑开放网络) 且 **连接成功才写 NVS**
 
@@ -684,13 +685,13 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 
 | 项目 | 配置 |
 |------|------|
-| 录音输入 | I2S RX, 48000Hz Stereo, 16-bit (`s_rx_handle`) |
-| 编码器 | Shine 定点 MP3, 128kbps CBR, 48kHz Stereo |
-| 帧大小 | 1152 samples/channel (SHINE_MAX_SAMPLES) |
-| PCM 缓冲 | PSRAM, 2304 int16_t interleaved |
+| 录音输入 | I2S RX, 16000Hz Stereo, 16-bit (`s_rx_handle`) |
+| 编码器 | ESP AAC, 64kbps, 16kHz Stereo, ADTS mode |
+| 帧大小 | 1024 samples/channel |
+| PCM 缓冲 | PSRAM, 2048 int16_t interleaved |
 | 录音任务 | `w_audio` (core 0, prio 1, **12KB** stack) |
 | 播放器 | `esp_audio_simple_player` → ES8311 DAC (`s_codec_handle`) |
-| 录音文件 | `/sdcard/rec_YYYYMMDD_HHMMSS.mp3` |
+| 录音文件 | `/sdcard/rec_YYYYMMDD_HHMMSS.aac` |
 | 懒加载 | SD 卡 + 音频首次访问时才初始化 (`__audio_init()`) |
 | 清理 | `web_config_server_stop()` 刷新编码器、关闭文件、释放 SD/音频 |
 
@@ -703,8 +704,8 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - `GET /api/audio/record_start` — 开始录音
 - `GET /api/audio/record_stop` — 停止录音
 - `GET /api/audio/record_status` — 录音状态 (秒数, 字节数)
-- `GET /api/audio/list` — 列出 `.mp3` 文件
-- `GET /api/audio/play?file=xxx.mp3` — 播放文件
+- `GET /api/audio/list` — 列出 `.aac` 文件
+- `GET /api/audio/play?file=xxx.aac` — 播放文件
 - `GET /api/audio/stop` — 停止播放
 - `GET /api/files/list?dir=/` — 列出目录内容 (JSON)
 - `GET /api/files/download?path=xxx` — 下载文件 (binary)
@@ -750,9 +751,9 @@ GPIO (I2S: 9-13, PA_CTRL: 53) 两块板子完全一致, 无需额外适配。
 | **设备状态** | Connected/Reachable/Offline/History 徽章 (TCP 端口探测) |
 | **Camera 实时预览** | MJPEG 流解码 (端口 81) |
 | **Settings 配置** | WiFi/音量/Camera Stream 开关 + 恢复出厂设置 |
-| **音频录制** | 调用 8080 API 远程录制 MP3 到 SD 卡 |
-| **音频播放** | 远程播放 SD 卡上已录制的 MP3 文件 |
-| **ULog 音频录制** | 持续 AAC 音频通过 `audio_frame` uORB topic 写入 `.ulg` 文件 (16kHz 立体声 64kbps ADTS，~512B/帧，~15.6fps) |
+| **音频录制** | 调用 8080 API 远程录制 AAC 到 SD 卡 |
+| **音频播放** | 远程播放 SD 卡上已录制的 AAC 文件 |
+| **ULog 音频录制** | 持续 AAC 音频通过 `audio_frame` uORB topic 写入 `.ulg` 文件 (I2S 16kHz 立体声, 64kbps ADTS, ~1KB/帧, ~15.6fps) |
 | **ULog 视频查看** | 下载/解析 .ulg 文件，camera_frame_chunk JPEG 帧缩略图 + 幻灯片 + 保存 |
 | **平台支持** | macOS, iOS, Linux, Android |
 

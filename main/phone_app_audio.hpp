@@ -8,9 +8,9 @@
 #include "uorb.h"
 #include "topics.h"
 
-extern "C" {
-#include "layer3.h"
-}
+#include "esp_aac_enc.h"
+#include "esp_audio_enc.h"
+#include "esp_audio_enc_default.h"
 
 #define MAX_RECORDINGS 50
 
@@ -44,10 +44,15 @@ private:
     /* Recording state */
     std::atomic<bool>  _is_recording;
     std::atomic<int>   _recording_ops_in_flight;  /* Non-zero while audio task is in recording block — prevents _stop_recording from freeing _pcm_buffer/_encoder prematurely */
-    shine_t            _encoder;
+    esp_audio_enc_handle_t _encoder;
     FILE              *_record_file;
-    int16_t           *_pcm_buffer;      // Accumulation buffer for 1152*2 samples
+    int16_t           *_pcm_buffer;      // Accumulation buffer for 1024*2 samples
     int                _pcm_buf_count;   // Samples accumulated (per channel)
+    uint8_t           *_enc_in_buf;      // AAC encoder input buffer (enc_in_size bytes)
+    uint8_t           *_enc_out_buf;     // AAC encoder output buffer (enc_out_size bytes)
+    int                _enc_in_size;     // AAC encoder input frame size (bytes)
+    int                _enc_out_size;    // AAC encoder output frame size (bytes)
+    int                _enc_in_count;    // Bytes accumulated in _enc_in_buf
     std::atomic<uint32_t> _record_bytes_written;
     std::atomic<uint32_t> _record_start_ms;
 

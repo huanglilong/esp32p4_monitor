@@ -584,7 +584,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: ListView(children: _fmEntries.map((f) {
             final name = f['name'] as String;
             final isDir = f['is_dir'] == true;
-            final isMp3 = !isDir && name.toLowerCase().endsWith('.mp3');
+            final isAudio = !isDir && name.toLowerCase().endsWith('.aac');
             final isUlg = !isDir && name.toLowerCase().endsWith('.ulg');
             final isPlaying = _playingFile == name;
             final isSelected = _fmSelected.contains(name);
@@ -598,7 +598,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       size: 22,
                     )
                   : Icon(
-                      isDir ? Icons.folder : isMp3 ? (isPlaying ? Icons.volume_up : Icons.music_note) : isUlg ? Icons.videocam : Icons.insert_drive_file,
+                      isDir ? Icons.folder : isAudio ? (isPlaying ? Icons.volume_up : Icons.music_note) : isUlg ? Icons.videocam : Icons.insert_drive_file,
                       color: isDir ? Colors.amber : isPlaying ? Colors.green : isUlg ? Colors.deepPurple : null,
                     ),
               title: Text(name, overflow: TextOverflow.ellipsis),
@@ -609,7 +609,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       })
                   : isDir ? () => _fmNavigate(name) : isUlg ? () => _fmOpenUlog(name) : null,
               trailing: _fmSelectMode ? null : Row(mainAxisSize: MainAxisSize.min, children: [
-                if (isMp3)
+                if (isAudio)
                   isPlaying
                       ? IconButton(icon: const Icon(Icons.stop_circle, color: Colors.red, size: 22), onPressed: _stopPlayback)
                       : IconButton(icon: const Icon(Icons.play_circle, color: Colors.green, size: 22), onPressed: () => _playFile(name)),

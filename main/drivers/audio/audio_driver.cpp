@@ -95,7 +95,7 @@ void AudioDriver::init(void)
         ESP_LOGI(TAG, "PA GPIO %d enabled", AUDIO_PA_GPIO);
     }
 
-    /* I2S channel init (duplex, STD, 48kHz stereo) */
+    /* I2S channel init (duplex, STD, 16kHz stereo) */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     i2s_chan_handle_t tx_h = nullptr, rx_h = nullptr;

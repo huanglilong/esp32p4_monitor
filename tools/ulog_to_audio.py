@@ -19,6 +19,9 @@ Usage:
     # Show audio info without extracting
     python3 ulog_to_audio.py log.ulg --info
 
+    # Fix sample rate mismatch (firmware bug: 48kHz PCM encoded as 16kHz AAC)
+    python3 ulog_to_audio.py log.ulg --fix-sample-rate 48000
+
 ULog File Format: https://docs.px4.io/main/en/dev_log/ulog_file_format.html
 """
 
@@ -42,6 +45,37 @@ MSG_TYPE_REMOVE_LOGGED_MSG = ord('R')
 MSG_TYPE_SYNC = ord('S')
 MSG_TYPE_DROPOUT = ord('O')
 MSG_TYPE_FLAG_BITS = ord('B')
+
+# ADTS sampling_frequency_index mapping
+ADTS_SAMPLE_RATE_MAP = {
+    96000: 0, 88200: 1, 64000: 2, 48000: 3, 44100: 4,
+    32000: 5, 24000: 6, 22050: 7, 16000: 8, 12000: 9,
+    11025: 10, 8000: 11, 7350: 12,
+}
+ADTS_SAMPLE_RATE_INDEX = {v: k for k, v in ADTS_SAMPLE_RATE_MAP.items()}
+
+
+def patch_adts_sample_rate(aac_frame: bytearray, target_rate: int) -> bytearray:
+    """Patch the sampling_frequency_index in an ADTS frame header.
+
+    ADTS header byte 2 contains the 4-bit sampling_frequency_index at bits [5:2].
+    This patches those bits to reflect the actual sample rate,
+    fixing playback speed when the encoder was misconfigured.
+
+    Args:
+        aac_frame: Raw AAC-ADTS frame data (mutable bytearray)
+        target_rate: The actual sample rate to write into the ADTS header
+
+    Returns:
+        The patched aac_frame (modified in-place)
+    """
+    if target_rate not in ADTS_SAMPLE_RATE_MAP:
+        return aac_frame
+    new_index = ADTS_SAMPLE_RATE_MAP[target_rate]
+    # Byte 2: bits [5:2] = sampling_frequency_index (4 bits)
+    # Clear bits [5:2] and set new index
+    aac_frame[2] = (aac_frame[2] & 0xC3) | ((new_index & 0x0F) << 2)
+    return aac_frame
 
 
 @dataclass
@@ -186,7 +220,8 @@ def build_audio_frame_struct(fields: dict, field_order: list) -> AudioFrameForma
 
 
 def extract_audio_from_ulog(ulg_path: str, output_path: str | None = None,
-                            info_only: bool = False) -> ExtractStats:
+                            info_only: bool = False,
+                            fix_sample_rate: int = 0) -> ExtractStats:
     """Extract AAC audio from a ULog file.
 
     Args:
@@ -329,6 +364,8 @@ def extract_audio_from_ulog(ulg_path: str, output_path: str | None = None,
                                         audio_format.aac_data_offset + aac_size]
 
                 if not info_only:
+                    if fix_sample_rate > 0:
+                        aac_data = patch_adts_sample_rate(bytearray(aac_data), fix_sample_rate)
                     out_file.write(aac_data)
 
                 stats.frames_extracted += 1
@@ -354,8 +391,12 @@ def extract_audio_from_ulog(ulg_path: str, output_path: str | None = None,
                 f.read(msg_size)
 
     # Calculate duration
-    if stats.sample_rate > 0 and stats.frames_extracted > 0:
-        # AAC frame = 1024 samples
+    if stats.frames_extracted > 0 and stats.last_timestamp > stats.first_timestamp:
+        # Use timestamp span for real-time duration (more accurate than frame count,
+        # especially when resampling is involved — e.g. 48kHz I2S → 16kHz AAC).
+        stats.duration_seconds = (stats.last_timestamp - stats.first_timestamp) / 1_000_000.0
+    elif stats.sample_rate > 0 and stats.frames_extracted > 0:
+        # Fallback: AAC frame = 1024 samples
         total_samples = stats.frames_extracted * 1024
         stats.duration_seconds = total_samples / stats.sample_rate
 
@@ -386,6 +427,10 @@ def main():
     parser.add_argument('-o', '--output', help='Output .aac file (or directory for batch)')
     parser.add_argument('--info', action='store_true',
                         help='Show audio info without extracting')
+    parser.add_argument('--fix-sample-rate', type=int, default=0, metavar='HZ',
+                        help='Patch ADTS headers to this sample rate (e.g. 48000). '
+                             'Fixes firmware bug where 48kHz PCM was encoded as 16kHz AAC, '
+                             'causing 3x slow playback.')
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -404,7 +449,8 @@ def main():
         total_bytes = 0
         for ulg_file in ulg_files:
             out_path = str(output_dir / ulg_file.with_suffix('.aac').name)
-            stats = extract_audio_from_ulog(str(ulg_file), out_path, info_only=args.info)
+            stats = extract_audio_from_ulog(str(ulg_file), out_path, info_only=args.info,
+                                            fix_sample_rate=args.fix_sample_rate)
             print_stats(stats, str(ulg_file))
             total_frames += stats.frames_extracted
             total_bytes += stats.bytes_extracted
@@ -412,7 +458,8 @@ def main():
         print(f"\nTotal: {len(ulg_files)} files, {total_frames} frames, {total_bytes} bytes")
 
     elif input_path.is_file():
-        stats = extract_audio_from_ulog(str(input_path), args.output, info_only=args.info)
+        stats = extract_audio_from_ulog(str(input_path), args.output, info_only=args.info,
+                                        fix_sample_rate=args.fix_sample_rate)
         print_stats(stats, str(input_path))
         if stats.frames_extracted == 0:
             sys.exit(1)

@@ -115,7 +115,7 @@ idf_component_register(
          "generated/uORBTopics.cpp"
     INCLUDE_DIRS "." "generated" "drivers/audio" "drivers/sdcard" "drivers/camera" "drivers/system_monitor" "logger"
     REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c esp_driver_ppa fatfs
-             shine_encoder nvs_flash esp_wifi esp_video
+             espressif__esp_audio_codec nvs_flash esp_wifi esp_video
              esp_new_jpeg mdns cjson esp_http_server example_video_common
              esp_audio_simple_player uorb ulog wifi_manager captive_dns
     PRIV_REQUIRES esp_driver_i2s esp_driver_sdmmc)

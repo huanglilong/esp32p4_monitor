@@ -1,10 +1,14 @@
 /*
  * AudioUlogRecorder — Continuous audio recording to ULog via uORB.
  *
- * Background task: I2S PCM read → AAC-ADTS encode → publish audio_frame uORB.
- * ULog writer polls audio_frame and writes to .ulg file on SD card.
+ * Background task: I2S PCM read (16kHz stereo/mono) → AAC-ADTS encode
+ * → publish audio_frame uORB. ULog writer polls audio_frame and writes
+ * to .ulg file on SD card.
  *
- * AAC config: 16kHz stereo 64kbps ADTS (matches existing .mp3 recording).
+ * I2S runs at 16kHz (EXAMPLE_AUDIO_SAMPLE_RATE), matching AAC encoder config.
+ * No resampling needed — PCM data goes directly from I2S to encoder.
+ *
+ * AAC config: 16kHz stereo 64kbps ADTS (I2S always stereo; WIFI6 right ch silent).
  * Frame size: 1024 samples × 2ch × 2B = 4096 bytes PCM input per AAC frame.
  * Output: ~1KB ADTS frame at ~15.6 fps → ~16 KB/s data rate.
  */
@@ -31,9 +35,9 @@
 static const char *TAG = "audio_ulog";
 
 /* ── PCM read buffer ── */
-/* 480 samples × 2 channels × 2 bytes = 1920 bytes per I2S read.
+/* 160 samples × 2 channels × 2 bytes = 640 bytes per I2S read (~10ms @16kHz).
  * Multiple reads accumulate into encoder input buffer. */
-#define PCM_BUF_SAMPLES  480
+#define PCM_BUF_SAMPLES  160
 #define PCM_BUF_BYTES    (PCM_BUF_SAMPLES * 2 * sizeof(int16_t))
 
 /* ── Task config ── */
@@ -175,12 +179,12 @@ void AudioUlogRecorder::_task_func(void *arg)
             continue;
         }
         size_t n = 0;
-        esp_err_t read_ret = i2s_channel_read(rx, pcm_buf, PCM_BUF_BYTES, &n, pdMS_TO_TICKS(10));
-        if (read_ret != ESP_OK || n <= 0) {
+        esp_err_t read_ret = i2s_channel_read(rx, pcm_buf, PCM_BUF_BYTES, &n, pdMS_TO_TICKS(50));
+        if (n <= 0) {
             read_fail_count++;
             if (read_fail_count <= 5 || (read_fail_count % 1000) == 0) {
-                ESP_LOGW(TAG, "i2s_channel_read failed (n=%u, fails=%u)",
-                         (unsigned)n, (unsigned)read_fail_count);
+                ESP_LOGW(TAG, "i2s_channel_read failed (ret=%d, n=%u, fails=%u)",
+                         (int)read_ret, (unsigned)n, (unsigned)read_fail_count);
             }
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;

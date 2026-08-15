@@ -26,15 +26,15 @@
 | R5 | **Camera 红绿通道修正** | Bayer GBRG + byte_swap_en=1 修复颜色错误 | ✅ |
 | R6 | **Camera Stream WiFi 推流** | HW JPEG MJPEG 流 (port 81) + Web UI (port 80), mDNS 发现 | ✅ |
 | R7 | **Camera Stream 独立 App** | 从 Settings App 分离，独立开关，含 CPU/PSRAM 监控 | ✅ |
-| R8 | **Audio 双 Mic 监控** | I2S RX 48kHz Stereo 直接读取，双声道电平表 (0–100%) | ✅ |
-| R9 | **Audio MP3 录音** | Shine 定点编码器 128kbps stereo → SD 卡，录制/停止/文件列表 | ✅ |
+| R8 | **Audio 双 Mic 监控** | I2S RX 16kHz Stereo 直接读取，双声道电平表 (0–100%) | ✅ |
+| R9 | **Audio AAC 录音** | ESP AAC 编码器 64kbps stereo 16kHz ADTS → SD 卡，录制/停止/文件列表 | ✅ |
 | R10 | **Music MP3/WAV 播放器** | ESP-GMF 音频管道，SD 卡音源，音量滑条 | ✅ |
 | R11 | **Settings 音量/亮度** | LVGL Slider (0–100 / 20–100), NVS 持久化，500ms 去抖写入 | ✅ |
 | R12 | **Settings WiFi 管理** | SSID 扫描 + 密码输入 + 连接，后台保持，WiFi 始终启用不可禁用 | ✅ |
 | R13 | **Web 配置服务器** | HTTP :8080，WiFi/音量远程设置，connect-before-save 验证 | ✅ |
 | R14 | **多板自动检测** | GT911 I2C (0x5D) 探测，自动适配 LCD-4B / WIFI6，单一固件 | ✅ |
-| R15 | **Web 音频录制** | WIFI6 无屏板通过 Web :8080 录制，Shine MP3 → SD 卡，Start/End 按钮 | ✅ |
-| R16 | **Web 音频播放** | WIFI6 无屏板通过 Web :8080 播放 SD 卡 MP3，esp_audio_simple_player | ✅ |
+| R15 | **Web 音频录制** | WIFI6 无屏板通过 Web :8080 录制，AAC → SD 卡，Start/End 按钮 | ✅ |
+| R16 | **Web 音频播放** | WIFI6 无屏板通过 Web :8080 播放 SD 卡 AAC，esp_audio_simple_player | ✅ |
 | R17 | **Camera Stream 互斥保护** | ~~Web 音频功能仅在 Camera Stream 未运行时可用，UI 隐藏 + API 阻断~~ → **已移除**: Camera (MIPI CSI) 和 Audio (I2S) 使用独立硬件，无需互斥。所有 `__cam_running()` 检查已移除 | ✅ |
 | R18 | **Camera 图像旋转** | PPA 硬件旋转 0°/90°/180°/270°, NVS 持久化 (`cam_rotation`), Web UI 旋转按钮 + CSS 即时反馈, API `/api/set_rotation`, 启动时从 NVS 恢复 | ✅ |
 
@@ -64,7 +64,7 @@
 | S19 | **Music 音量同步降频** | NVS 同步 timer 1s→5s | ✅ |
 | S20 | **不兼容 Kconfig 清理** | 移除 sdkconfig.defaults 中 4 个未知符号 | ✅ |
 | S21 | **-Wno-attributes 作用域** | PUBLIC→PRIVATE，仅对 LVGL 自身生效 | ✅ |
-| S22 | **shine_encoder 头文件** | `<malloc.h>`→`<stdlib.h>`，跨平台兼容 | ✅ |
+| S22 | **shine_encoder 头文件** | `<malloc.h>`→`<stdlib.h>`，跨平台兼容 (已移除: 替换为 ESP AAC 编码器) | ✅ |
 | S23 | **strdup null 检查** | Audio/Music 文件列表 OOM 保护 | ✅ |
 | S24 | **V4L2 cache 一致性** | DQBUF 后 + JPEG 编码后 esp_cache_msync | ✅ |
 | S25 | **Music GMF 重入修复** | `_asp_event_cb` 不再直接调 `_play()`，改用 `_auto_next` flag | ✅ |
@@ -361,8 +361,8 @@
 | S300 | **wifi_service esp_timer_create 返回值未检查** | `_captive_httpd_stop_deferred()` 调用 `esp_timer_create()` 未检查返回值，OOM 失败时 `s_captive_stop_timer` 保持 null → `esp_timer_start_once(nullptr)` 崩溃 (null指针解引用)。修复: 检查返回值，失败时 fallback 直接调用 `httpd_stop()` (阻塞但安全) | ✅ |
 | S301 | **captive_dns restart 竞态 (STA rapid disconnect)** | `captive_dns_stop()` 仅设 `s_running=false`，DNS task 在 `recvfrom` (1s timeout) 中可能仍运行。STA disconnect 在此窗口内触发 `captive_dns_start()`，看到 `s_dns_task` 非 null 直接返回，但旧 task 已 stop → 无新 DNS task 启动 → captive portal DNS 永久失效。修复: `captive_dns_start()` 检测到 `s_dns_task` 非空但 `s_running` 为 false 时，轮询等待旧任务清除句柄 (最多 1.2s)，超时返回 `ESP_ERR_TIMEOUT` 供调用方重试 | ✅ |
 | S302 | **uORB orb_copy() unbounded retry loop** | `while(1)` 在 subscriber 快速被 recycled 时 (unsubscribe+resubscribe) 可无限自旋。修复: 添加 MAX_RETRIES=3 上限，超出后返回 -1 并 ESP_LOGE | ✅ |
-| S306 | **vTaskDelete audio task → FAT VFS 死锁** | `h_rec_stop` 用 `vTaskDelete()` 强制删除 audio task，若 task 正在 `fwrite()` 持有 FAT VFS mutex，则 mutex 永久被占 → 所有文件 I/O 死锁 → httpd 无响应。修复: 移除 `vTaskDelete`，改用 `s_audio_running=false` + `s_audio_task_exited` atomic flag 让 task 自行退出；audio task 在退出主循环后执行 `shine_flush`+`fclose`+`heap_caps_free`，避免 httpd 阻塞 | ✅ |
-| S307 | **h_rec_stop 非阻塞 fclose** | `fclose()` 在 SDSPI 上耗时 ~10s (FAT 表更新)，若在 httpd handler 中调用则阻塞整个 HTTP 服务器。修复: 将 `shine_flush`+`fclose`+`heap_caps_free` 移至 audio task 退出后的清理代码中，`h_rec_stop` 仅设置 flag 并立即发送 HTTP 响应 (0.05s) | ✅ |
+| S306 | **vTaskDelete audio task → FAT VFS 死锁** | `h_rec_stop` 用 `vTaskDelete()` 强制删除 audio task，若 task 正在 `fwrite()` 持有 FAT VFS mutex，则 mutex 永久被占 → 所有文件 I/O 死锁 → httpd 无响应。修复: 移除 `vTaskDelete`，改用 `s_audio_running=false` + `s_audio_task_exited` atomic flag 让 task 自行退出；audio task 在退出主循环后执行 AAC flush+`fclose`+`heap_caps_free`，避免 httpd 阻塞 | ✅ |
+| S307 | **h_rec_stop 非阻塞 fclose** | `fclose()` 在 SDSPI 上耗时 ~10s (FAT 表更新)，若在 httpd handler 中调用则阻塞整个 HTTP 服务器。修复: 将 AAC flush+`fclose`+`heap_caps_free` 移至 audio task 退出后的清理代码中，`h_rec_stop` 仅设置 flag 并立即发送 HTTP 响应 (0.05s) | ✅ |
 | S308 | **h_rec_start cross-core stack race** | `xTaskCreateStaticPinnedToCore` 手动管理 PSRAM stack，audio task (core 1) 设 `s_audio_task_exited=true` 后到 `vTaskDelete(NULL)` 之间，httpd (core 0) 可并发释放 stack → crash。修复: 改用 `xTaskCreatePinnedToCore` 动态分配 stack，kernel 在 `vTaskDelete` 时自动释放，消除 cross-core stack 竞态 | ✅ |
 | S309 | **record_start retry_after 协议** | `h_rec_start` 在 audio task 仍在 fclose 时返回 `{"ok":0,"error":"Previous recording cleanup in progress","retry_after":10}`，客户端 (pytest) 自动重试。测试 helper `api.record_start()` 添加 retry 逻辑 (timeout=30s)，无需修改 test 用例 | ✅ |
 | S310 | **SD 卡空间不足致 fopen 阻塞** | SD 卡被 ULog 数据 (15GB/15.2GB) 填满，FAT 需扫描整个 FAT 表寻找空闲簇 → `fopen` 耗时 12s+ 且返回 NULL。修复: 清理旧 ULog 数据释放空间；需后续添加自动清理策略 (SD 卡使用率 >90% 时自动删除最旧 ULog 目录) | ✅ |
@@ -518,7 +518,7 @@
 | App | 图标 | 功能 | 入口条件 |
 |-----|:----:|------|----------|
 | Camera | 📷 | OV5647 预览 + 人体检测 | LCD-4B (有屏幕) |
-| Audio | 🎤 | 双 Mic 电平 + MP3 录音 | LCD-4B + Audio codec |
+| Audio | 🎤 | 双 Mic 电平 + AAC 录音 | LCD-4B + Audio codec |
 | Music | 🎵 | MP3/WAV 播放 | LCD-4B + Audio codec |
 | Camera Stream | 🌐 | MJPEG WiFi 推流 + 人体检测 | LCD-4B + WiFi |
 | Settings | ⚙️ | 音量/亮度 + WiFi | LCD-4B |
@@ -544,6 +544,7 @@
 | 日期 | 变更 |
 |------|------|
 | 2026-08-15 | +S340/S341/S342 **代码审查 Round 12 修复 (3 issues: 2 MEDIUM + 1 LOW)**: **S340 (MEDIUM) set_rotation_handler 硬编码 NVS 键**: `nvs_open("settings")`/`nvs_set_i32(h,"cam_rotation")`/`nvs_get_i32_def("cam_rotation")` 使用字符串字面量而非共享宏 (S156)。修复: 新增 `NVS_KEY_CAM_ROTATION` 至 `example_config.h`，全部替换为 `NVS_NAMESPACE_SETTINGS` + `NVS_KEY_CAM_ROTATION` 宏。**S341 (MEDIUM) NVS 返回值未检查**: `nvs_set_i32()`/`nvs_commit()` 返回值未检查 (Section 3.3)。修复: 检查 + `ESP_LOGW`。**S342 (LOW) set_rotation 文档误导**: hpp 注释称 "stops and restarts" 但实现不重启。修复: 更正注释。每个 commit 后 `idf.py build` 验证通过 |
+| 2026-08-15 | **S343 ULog 音频倍速变慢修复**: 根因: I2S 以 48kHz stereo 采集 PCM，但 AAC 编码器配置为 16kHz stereo 且无降采样 → ADTS 头声明 16kHz，播放器以 16kHz 解码 48kHz 数据 → 3x 变慢。初始修复尝试在固件中降采样 (48kHz→16kHz + 动态通道配置)，后改为直接将 I2S 采样率降至 16kHz (见 S344)，无需降采样。最终方案: `audio_ulog_recorder.cpp` 始终使用 stereo (匹配 I2S stereo 配置), `ulog_to_audio.py`/`ulog_to_video.py` 时长计算改用 timestamp span + 新增 `--fix-sample-rate HZ` 选项修补已有 ULog 文件的 ADTS 头。`idf.py build` 验证通过 |
 | 2026-08-15 | +R18 **Camera 图像旋转**: PPA 硬件旋转 0°/90°/180°/270°, `PPAPreprocessor::init()` 新增 `rotation_deg` 参数 (90/270 自动交换输出宽高), `CameraStream::set_rotation()` atomic 存储 + NVS 持久化 (`cam_rotation`), Web UI 旋转按钮 + CSS `transform:rotate()` 即时反馈, `/api/set_rotation` API (port 80), `/api/status` 返回 `cam_rotation`, 启动时从 NVS 恢复旋转设置。pytest 测试覆盖。`idf.py build` 验证通过 |
 | 2026-08-14 | +S336/S337/S339 **代码审查 Round 11 修复 (3 issues: 1 HIGH + 1 MEDIUM + 1 LOW)**: **S336 (HIGH) CameraStream start() httpd 失败路径栈泄漏**: `_start_http_server()` 失败时 `_running=false`，stop() 的 CAS guard 立即返回 → capture task 的 32KB PSRAM stack 永不释放 (每次失败 start 泄漏 32KB PSRAM)。修复: start() 失败路径用 `_capture_stack.exchange(nullptr)` 原子摘除并 `heap_caps_free`，与 stop()/析构的释放路径互斥，保证恰好一条路径释放。**S337 (MEDIUM) wifi_manager 跨核状态变量数据竞态**: `s_connected`/`s_ap_active`/`s_sta_configured`/`s_mode`/`s_wifi_started` 为普通 bool/enum 全局变量，由 WiFi event loop task 写入、LVGL timer/web_config/httpd 任务跨核读取 — C11 data race (无原子性/内存序保证)。修复: 全部转 `atomic_bool`/`_Atomic` 并显式 acquire/release 内存序，`notify_state_changed()` 静态去重缓存同转 atomic。**S339 (LOW) main.cpp ULog topic 计数日志错误**: 日志打印 `12 topics` 但实际仅 11 次 `ulog_writer_add_topic()`。修复: 12 → 11。每个 commit 后均 `idf.py build` 验证通过 (0 warning) |
 | 2026-07-11 | **G3 wifi_manager 集成**: `common/wifi_manager/` → `components/common/wifi_manager/`。新增 `WifiService` C++ facade (main/wifi_service.hpp/cpp) — 封装 wifi_manager C API, 自动发布 uORB wifi_state, 管理 SNTP 启动和 NVS 持久化。PhoneAppSettings 重构: 移除 bootWifiAutoConnect()/wifiInit()/wifiEventHandler()/wifiReconnectTimerCallback() (~200 行), scan/connect 改用 WifiService。web_config_server 重构: 移除 s_wifi_state_sub uORB 订阅, settings_handler WiFi connect 改用 WifiService::apply_sta_config()/wait_connected()。main.cpp boot WiFi 改用 WifiService::init()+start()。CMakeLists.txt 添加 EXTRA_COMPONENT_DIRS components/common, main REQUIRES wifi_manager。wifi_manager 配置: AP always on (ap_behavior=keep) + infinite auto-reconnect。idf.py build 验证通过 |
@@ -615,4 +616,5 @@
 | 2026-07-31 | **代码审查 Round 9 修复 (3 issues: 1 MEDIUM + 45×HIGH + 14×MEDIUM)**: **S302 (MEDIUM) uORB orb_copy() unbounded retry loop**: `while(1)` 在 generation mismatch 时可无限自旋。修复: 添加 MAX_RETRIES=3 上限 + ESP_LOGE 日志。**S303 (HIGH) lua_modules cJSON_Print* free() 不匹配 (45处, 17文件)**: 所有 `cJSON_PrintUnformatted()`/`cJSON_Print()` 结果用 `free()` 释放，cJSON 使用自定义分配器时堆损坏。修复: 全部替换为 `cJSON_free()`，匹配 main/ 代码惯例。**S304 (HIGH) volatile→atomic 迁移 (8文件, 14字段)**: 双核 ESP32-P4 上 volatile 不保证原子性和内存序。修复: `volatile bool`→`atomic_bool`, `volatile int`→`atomic_int`, `volatile bool*`→`atomic_bool*` (C11 <stdatomic.h>)，覆盖 core_internal.h/cap_im_tg/qq/cap_lua_runtime/async/llm_types/http_transport。**S305 (HIGH) Round 2 遗漏修复 (6文件)**: 额外 cJSON_free() 遗漏 (core_events/agent_loop/cap/memory_storage/core_llm) + lua_lvgl_private.h volatile→atomic 遗漏。`idf.py build` 验证通过
 | 2026-07-31 | **Audio recording httpd 死锁修复 (S306~S310)**: **S306**: `vTaskDelete` audio task 在 `fwrite` 中途强杀 → FAT VFS mutex 永久死锁 → httpd 无响应。修复: 移除 `vTaskDelete`，改用 `s_audio_task_exited` atomic flag + task 自行退出。**S307**: `fclose` 在 SDSPI 耗时 ~10s，移至 audio task 退出后执行，`h_rec_stop` 仅设 flag + 立即响应。**S308**: `xTaskCreateStaticPinnedToCore` cross-core stack 竞态 → 改用 `xTaskCreatePinnedToCore` 动态 stack。**S309**: `h_rec_start` 在 audio task 清理中返回 `retry_after` 协议，pytest helper 自动重试。**S310**: SD 卡 99.9% 满 (ULog 数据 15GB/15.2GB) → `fopen` 阻塞 12s+ 返回 NULL，清理旧数据后恢复。66 passed, 0 failed
 | 2026-07-31 | **Camera Frame Chunk ULog 录制 + Audio ULog 录制 (S311~S313)**: **S311**: 替换 `camera_frame` 单缓冲 (15KB jpeg_data) 为 `camera_frame_chunk` 分块 (1024 字节, ORB_QUEUE_LENGTH=32)，消除大帧超出缓冲问题，匹配 esp32s31_korvo1 参考实现。**S312**: 新增 `audio_frame` uORB 主题 + `AudioUlogRecorder` 后台任务 (I2S PCM → AAC-ADTS 编码 → 发布 audio_frame)，ULog 启停时自动控制音频录制。**S313**: 新增 `tools/ulog_to_audio.py` 和 `tools/ulog_to_video.py` 提取工具。`test_z_ulog_audio_camera.py` 验证音频+视频双主题录制
-| 2026-08-01 | **Audio ULog 录制修复 (S314~S316)**: **S314**: AAC 编码器使用 `esp_audio_enc_open` 通用 API 但未注册编码器，导致 `esp_aac_enc_open` 失败。修复: 改用直接 `esp_aac_enc_open/esp_aac_enc_get_frame_size/esp_aac_enc_process/esp_aac_enc_close` API。**S315**: ULog 自动启动 (SNTP 同步后) 未启动 `AudioUlogRecorder`。修复: 在 `ulog_autostart` 路径中增加 `AudioUlogRecorder::instance().start()`。**S316**: `AudioUlogRecorder` 与 MP3 录制/播放 I2S 共享冲突。修复: `h_rec_start`/`h_play` 中先停止 `AudioUlogRecorder`。`tools/ulog_extract_frames.py` 删除，`flutter_app` ULog 解析器更新支持 `camera_frame_chunk` + `audio_frame`。70 passed, 0 failed
+| 2026-08-01 | **Audio ULog 录制修复 (S314~S316)**: **S314**: AAC 编码器使用 `esp_audio_enc_open` 通用 API 但未注册编码器，导致 `esp_aac_enc_open` 失败。修复: 改用直接 `esp_aac_enc_open/esp_aac_enc_get_frame_size/esp_aac_enc_process/esp_aac_enc_close` API。**S315**: ULog 自动启动 (SNTP 同步后) 未启动 `AudioUlogRecorder`。修复: 在 `ulog_autostart` 路径中增加 `AudioUlogRecorder::instance().start()`。**S316**: `AudioUlogRecorder` 与录制/播放 I2S 共享冲突。修复: `h_rec_start`/`h_play` 中先停止 `AudioUlogRecorder`。`tools/ulog_extract_frames.py` 删除，`flutter_app` ULog 解析器更新支持 `camera_frame_chunk` + `audio_frame`。70 passed, 0 failed
+| 2026-08-15 | **Shine MP3 → ESP AAC 编码器替换 (S344)**: I2S 采样率从 48kHz 降至 16kHz，录音编码器从 Shine MP3 (128kbps 48kHz) 替换为 ESP AAC (64kbps 16kHz ADTS)。变更: ① `phone_app_audio.hpp/cpp`: 移除 `layer3.h`/`shine_t`，改用 `esp_aac_enc.h`/`esp_audio_enc_handle_t`，新增 `_enc_in_buf/_enc_out_buf/_enc_in_size/_enc_out_size/_enc_in_count` 成员，AAC 帧大小 1024 samples/ch (原 1152)，文件扩展名 `.aac` (原 `.mp3`) ② `web_config_server.cpp`: 同步替换 Shine→AAC，新增 `s_enc_in_buf/s_enc_out_buf/s_enc_in_size/s_enc_out_size` 静态变量 ③ `main/CMakeLists.txt`: `shine_encoder` → `espressif__esp_audio_codec` ④ `main/idf_component.yml`: 新增 `espressif/esp_audio_codec: '^2.5'` 依赖 ⑤ `PROJECT.md/PROJECT_REQUIREMENTS.md`: 更新文档。`idf.py build` 验证通过 |

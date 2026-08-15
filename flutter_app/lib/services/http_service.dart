@@ -551,10 +551,10 @@ class Esp32HttpService {
   /// GET /api/audio/record_status — Get recording status (seconds, bytes).
   Future<Map<String, dynamic>> audioRecordStatus() => _audioGet('/api/audio/record_status');
 
-  /// GET /api/audio/list — List MP3 files on SD card.
+  /// GET /api/audio/list — List AAC files on SD card.
   Future<Map<String, dynamic>> audioList() => _audioGet('/api/audio/list');
 
-  /// GET /api/audio/play?file=xxx.mp3 — Play a recording.
+  /// GET /api/audio/play?file=xxx.aac — Play a recording.
   Future<Map<String, dynamic>> audioPlay(String filename) =>
       _audioGet('/api/audio/play?file=${Uri.encodeComponent(filename)}');
 

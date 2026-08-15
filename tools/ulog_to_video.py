@@ -66,6 +66,28 @@ CTYPE_MAP = {
     'char':     ('c', 1),
 }
 
+# ADTS sampling_frequency_index mapping
+ADTS_SAMPLE_RATE_MAP = {
+    96000: 0, 88200: 1, 64000: 2, 48000: 3, 44100: 4,
+    32000: 5, 24000: 6, 22050: 7, 16000: 8, 12000: 9,
+    11025: 10, 8000: 11, 7350: 12,
+}
+
+
+def patch_adts_sample_rate(aac_frame: bytearray, target_rate: int) -> bytearray:
+    """Patch the sampling_frequency_index in an ADTS frame header.
+
+    ADTS header byte 2 contains the 4-bit sampling_frequency_index at bits [5:2].
+    This patches those bits to reflect the actual sample rate,
+    fixing playback speed when the encoder was misconfigured.
+    """
+    if target_rate not in ADTS_SAMPLE_RATE_MAP:
+        return aac_frame
+    new_index = ADTS_SAMPLE_RATE_MAP[target_rate]
+    # Byte 2: bits [5:2] = sampling_frequency_index (4 bits)
+    aac_frame[2] = (aac_frame[2] & 0xC3) | ((new_index & 0x0F) << 2)
+    return aac_frame
+
 
 # ── Data classes ──
 
@@ -196,7 +218,7 @@ def _find_field_offset(topic_fmt: TopicFormat, field_name: str) -> int:
 
 
 def parse_ulog(ulg_path: str, frames_dir: str, aac_output_path: str,
-               verbose: bool = False) -> tuple[CameraFrameInfo, AudioFrameInfo]:
+               verbose: bool = False, fix_sample_rate: int = 0) -> tuple[CameraFrameInfo, AudioFrameInfo]:
     """Parse ULog file and extract camera frames + audio.
 
     Returns (camera_info, audio_info).
@@ -408,6 +430,8 @@ def parse_ulog(ulg_path: str, frames_dir: str, aac_output_path: str,
                             continue
                         aac_data = data_payload[aud_aac_data_offset:
                                                  aud_aac_data_offset + aac_size]
+                        if fix_sample_rate > 0:
+                            aac_data = patch_adts_sample_rate(bytearray(aac_data), fix_sample_rate)
                         aac_file.write(aac_data)
 
                         # Parse header for metadata
@@ -445,8 +469,12 @@ def parse_ulog(ulg_path: str, frames_dir: str, aac_output_path: str,
         cam_info.chunks_per_frame_avg = sum(_chunks_per_frame) // len(_chunks_per_frame)
         cam_info.chunks_per_frame_max = max(_chunks_per_frame)
 
-    if aud_info.sample_rate > 0 and aud_info.frame_count > 0:
-        # AAC frame = 1024 samples
+    if aud_info.frame_count > 0 and aud_info.last_timestamp_us > aud_info.first_timestamp_us:
+        # Use timestamp span for real-time duration (more accurate than frame count,
+        # especially when resampling is involved — e.g. 48kHz I2S → 16kHz AAC).
+        aud_info.duration_seconds = (aud_info.last_timestamp_us - aud_info.first_timestamp_us) / 1_000_000.0
+    elif aud_info.sample_rate > 0 and aud_info.frame_count > 0:
+        # Fallback: AAC frame = 1024 samples
         aud_info.duration_seconds = (aud_info.frame_count * 1024) / aud_info.sample_rate
 
     return cam_info, aud_info
@@ -559,6 +587,10 @@ def main():
                         help='Working directory for intermediate files (default: temp dir)')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Print detailed extraction info')
+    parser.add_argument('--fix-sample-rate', type=int, default=0, metavar='HZ',
+                        help='Patch ADTS headers to this sample rate (e.g. 48000). '
+                             'Fixes firmware bug where 48kHz PCM was encoded as 16kHz AAC, '
+                             'causing 3x slow playback.')
     args = parser.parse_args()
 
     ulg_path = Path(args.input)
@@ -589,7 +621,8 @@ def main():
         print()
 
         # ── Parse and extract ──
-        cam_info, aud_info = parse_ulog(str(ulg_path), frames_dir, aac_path, args.verbose)
+        cam_info, aud_info = parse_ulog(str(ulg_path), frames_dir, aac_path, args.verbose,
+                                        fix_sample_rate=args.fix_sample_rate)
 
         # ── Print stats ──
         print(f"\n{'═' * 50}")

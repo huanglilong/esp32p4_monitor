@@ -79,7 +79,7 @@ dependencies:
       require: private
       version: '>=4.4'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 2.5.0
   espressif/esp_audio_effects:
@@ -194,7 +194,7 @@ dependencies:
       type: service
     version: 1.2.1
   espressif/esp_lcd_touch_gt911:
-    component_hash: 07f678e4202d79bbad917805dcec4134ff08344177720f32ec4898267ad9e394
+    component_hash: 737bdf29e0823eacf041381e81db2aaf5d378f3b5417df7f415f83319e3e790b
     dependencies:
     - name: espressif/esp_lcd_touch
       registry_url: https://components.espressif.com
@@ -206,7 +206,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.2.0~3
+    version: 1.2.1
   espressif/esp_lvgl_port:
     dependencies: []
     source:
@@ -214,12 +214,12 @@ dependencies:
       type: local
     version: 2.8.0~1
   espressif/esp_muxer:
-    component_hash: 390a00633bdd35cf90bdfc55cdfe895a937546e86c63cee18989bf0c1ff194bc
+    component_hash: 7de5d869121f8decaf4dd1dcaf0d7ffa9be0e9bd58be55dcf544eac4958a61ef
     dependencies: []
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.2.2
+    version: 1.2.3
   espressif/esp_new_jpeg:
     component_hash: e1e7e6991193c41ed6c9fc386702aa7821433319e7aa9c3147cd3236310cd69c
     dependencies: []
@@ -463,7 +463,7 @@ dependencies:
       type: service
     version: 1.4.1
   espressif/gmf_audio:
-    component_hash: 85aa484ce217fefa3b4e3694a06b22df5750b7d822679e336351233ad796d899
+    component_hash: 41371f80510635c1c2cc69b7828b5ced06bfce49e2b34b652830a36a99a0a6b8
     dependencies:
     - name: espressif/esp_asrc
       registry_url: https://components.espressif.com
@@ -484,18 +484,18 @@ dependencies:
     - name: espressif/gmf_core
       registry_url: https://components.espressif.com
       require: private
-      version: ^1.0
+      version: ~1.0
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.0.1
+    version: 1.0.1~1
   espressif/gmf_core:
-    component_hash: f242674fc224543cc8df3608730b039b3bc1fd7639741bfc4815d13df5a993fc
+    component_hash: 03aaff3dec4d2431b752f2ca6eb5f8e831f12e748007bf3d063a6dfdeba3bf7f
     dependencies: []
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.0.0
+    version: 1.0.1
   espressif/gmf_fft:
     component_hash: b59451ef2f96d22b80c27a162515b21f1b85954dda434c0b092172164028779d
     dependencies: []
@@ -675,6 +675,7 @@ dependencies:
 direct_dependencies:
 - espressif/cjson
 - espressif/esp-brookesia
+- espressif/esp_audio_codec
 - espressif/esp_audio_simple_player
 - espressif/esp_cam_sensor
 - espressif/esp_codec_dev
@@ -688,6 +689,6 @@ direct_dependencies:
 - lvgl/lvgl
 - protocol_examples_common
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 4b4246eb486d42d10cae2ddcd6ded286240925f71c8fb87bfd46a278f4c35328
+manifest_hash: cf21276067404fc119fa390811af2b299ffac9c1da50ffb258c3531b58365262
 target: esp32p4
 version: 3.0.0

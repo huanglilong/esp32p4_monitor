@@ -17,13 +17,13 @@ static const char *TAG = "PhoneAppAudio";
 /* External launcher icon from brookesia */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
-/* Audio buffer: 480 samples * 2 channels * 2 bytes = 1920 bytes ~10ms @48kHz */
+/* Audio buffer: 480 samples * 2 channels * 2 bytes = 1920 bytes ~30ms @16kHz (100ms timeout) */
 #define AUDIO_BUF_SAMPLES   480
 #define AUDIO_BUF_BYTES     (AUDIO_BUF_SAMPLES * 2 * sizeof(int16_t))
 
-/* Shine encoder expects SHINE_MAX_SAMPLES (1152) samples per channel per frame */
-#define ENC_SAMPLES_PER_CH  SHINE_MAX_SAMPLES
-#define PCM_BUF_SAMPLES     (ENC_SAMPLES_PER_CH * 2)  /* interleaved stereo */
+/* AAC encoder expects 1024 samples per channel per frame */
+#define AAC_SAMPLES_PER_CH  1024
+#define PCM_BUF_SAMPLES     (AAC_SAMPLES_PER_CH * 2)  /* interleaved stereo */
 
 PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :
     ESP_Brookesia_PhoneApp("Audio", &esp_brookesia_image_large_app_launcher_default_112_112,
@@ -34,6 +34,8 @@ PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :
     _is_recording{false}, _recording_ops_in_flight{0},
     _encoder(nullptr), _record_file(nullptr),
     _pcm_buffer(nullptr), _pcm_buf_count(0),
+    _enc_in_buf(nullptr), _enc_out_buf(nullptr),
+    _enc_in_size(0), _enc_out_size(0), _enc_in_count(0),
     _record_bytes_written{0}, _record_start_ms{0},
     _rec_pub{ORB_ADVERT_INVALID},
     _recording_count(0),
@@ -267,7 +269,7 @@ bool PhoneAppAudio::close(void)
 }
 
 /*============================================================================
- * Audio Echo Task (with optional MP3 recording)
+ * Audio Echo Task (with optional AAC recording)
  *============================================================================*/
 
 void PhoneAppAudio::_audio_task(void *arg)
@@ -294,7 +296,7 @@ void PhoneAppAudio::_audio_task(void *arg)
 
         int32_t samples_per_ch = (int32_t)(bytes_read / (2 * sizeof(int16_t)));
 
-        /* If recording, accumulate PCM and encode to MP3 */
+        /* If recording, accumulate PCM and encode to AAC */
         if (app->_is_recording && app->_pcm_buffer && app->_encoder) {
             app->_recording_ops_in_flight.fetch_add(1, std::memory_order_acquire);
             /* Re-check under counter — _stop_recording waits for counter to drain */
@@ -305,14 +307,23 @@ void PhoneAppAudio::_audio_task(void *arg)
                     app->_pcm_buffer[idx + 1] = buf[i * 2 + 1];
                     app->_pcm_buf_count++;
 
-                    if (app->_pcm_buf_count >= ENC_SAMPLES_PER_CH) {
-                        /* Encode one frame of MP3 */
-                        int written = 0;
-                        unsigned char *mp3_data = shine_encode_buffer_interleaved(
-                            app->_encoder, app->_pcm_buffer, &written);
-                        if (mp3_data && written > 0 && app->_record_file) {
-                            size_t wr = fwrite(mp3_data, 1, written, app->_record_file);
+                    if (app->_pcm_buf_count >= AAC_SAMPLES_PER_CH) {
+                        /* Copy interleaved PCM into encoder input buffer and encode one AAC frame */
+                        memcpy(app->_enc_in_buf, app->_pcm_buffer, app->_enc_in_size);
+                        esp_audio_enc_in_frame_t in_frame = {
+                            .buffer = app->_enc_in_buf,
+                            .len = (uint32_t)app->_enc_in_size,
+                        };
+                        esp_audio_enc_out_frame_t out_frame = {
+                            .buffer = app->_enc_out_buf,
+                            .len = (uint32_t)app->_enc_out_size,
+                        };
+                        esp_audio_err_t ret = esp_aac_enc_process(app->_encoder, &in_frame, &out_frame);
+                        if (ret == ESP_AUDIO_ERR_OK && out_frame.encoded_bytes > 0 && app->_record_file) {
+                            size_t wr = fwrite(app->_enc_out_buf, 1, out_frame.encoded_bytes, app->_record_file);
                             app->_record_bytes_written += wr;
+                        } else if (ret != ESP_AUDIO_ERR_OK) {
+                            ESP_LOGW(TAG, "AAC encode error: %d", ret);
                         }
                         app->_pcm_buf_count = 0;
                     }
@@ -356,9 +367,9 @@ void PhoneAppAudio::_start_recording(void)
 {
     if (_is_recording) return;
 
-    ESP_LOGI(TAG, "Starting MP3 recording...");
+    ESP_LOGI(TAG, "Starting AAC recording...");
 
-    /* Allocate PCM accumulation buffer (1152 samples * 2 channels interleaved = 4608 bytes).
+    /* Allocate PCM accumulation buffer (1024 samples * 2 channels interleaved = 4096 bytes).
      * Use PSRAM: ESP32-P4 PSRAM is DMA-capable, freeing internal SRAM for critical allocations. */
     _pcm_buffer = (int16_t *)heap_caps_calloc(1, PCM_BUF_SAMPLES * sizeof(int16_t),
                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -368,35 +379,58 @@ void PhoneAppAudio::_start_recording(void)
     }
     _pcm_buf_count = 0;
 
-    /* Configure Shine encoder: 48kHz stereo, 128kbps */
-    shine_config_t cfg;
-    shine_set_config_mpeg_defaults(&cfg.mpeg);
-    cfg.wave.channels = PCM_STEREO;
-    cfg.wave.samplerate = 48000;
-    cfg.mpeg.mode = STEREO;
-    cfg.mpeg.bitr = 128;
+    /* Configure AAC encoder: 16kHz stereo, 64kbps, ADTS mode */
+    esp_aac_enc_config_t aac_cfg = {
+        .sample_rate     = 16000,
+        .channel         = ESP_AUDIO_DUAL,
+        .bits_per_sample = ESP_AUDIO_BIT16,
+        .bitrate         = 64000,
+        .adts_used       = true,
+    };
 
-    if (shine_check_config(cfg.wave.samplerate, cfg.mpeg.bitr) < 0) {
-        ESP_LOGE(TAG, "Invalid encoder config: %dHz %dkbps",
-                 cfg.wave.samplerate, cfg.mpeg.bitr);
+    esp_audio_err_t ret = esp_aac_enc_open(&aac_cfg, sizeof(aac_cfg), &_encoder);
+    if (ret != ESP_AUDIO_ERR_OK || !_encoder) {
+        ESP_LOGE(TAG, "Failed to initialize AAC encoder: %d", ret);
         heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
     }
 
-    _encoder = shine_initialise(&cfg);
-    if (!_encoder) {
-        ESP_LOGE(TAG, "Failed to initialize MP3 encoder");
+    /* Get encoder frame sizes for buffer allocation */
+    ret = esp_aac_enc_get_frame_size(_encoder, &_enc_in_size, &_enc_out_size);
+    if (ret != ESP_AUDIO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to get AAC frame size: %d", ret);
+        esp_aac_enc_close(_encoder);
+        _encoder = nullptr;
         heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
     }
+
+    ESP_LOGI(TAG, "AAC frame sizes: in=%d bytes, out=%d bytes", _enc_in_size, _enc_out_size);
+
+    /* Allocate encoder I/O buffers from PSRAM */
+    _enc_in_buf = (uint8_t *)heap_caps_calloc(1, _enc_in_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    _enc_out_buf = (uint8_t *)heap_caps_calloc(1, _enc_out_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!_enc_in_buf || !_enc_out_buf) {
+        ESP_LOGE(TAG, "Failed to allocate AAC encoder buffers (in=%p out=%p)", _enc_in_buf, _enc_out_buf);
+        if (_enc_in_buf) { heap_caps_free(_enc_in_buf); _enc_in_buf = nullptr; }
+        if (_enc_out_buf) { heap_caps_free(_enc_out_buf); _enc_out_buf = nullptr; }
+        esp_aac_enc_close(_encoder);
+        _encoder = nullptr;
+        heap_caps_free(_pcm_buffer);
+        _pcm_buffer = nullptr;
+        return;
+    }
+    _enc_in_count = 0;
 
     /* Open file on SD card */
     if (!PeripheralManager::instance().init_sdcard()) {
         ESP_LOGE(TAG, "SD card not available, cannot start recording");
-        shine_close(_encoder);
+        esp_aac_enc_close(_encoder);
         _encoder = nullptr;
+        heap_caps_free(_enc_in_buf); _enc_in_buf = nullptr;
+        heap_caps_free(_enc_out_buf); _enc_out_buf = nullptr;
         heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
@@ -411,20 +445,22 @@ void PhoneAppAudio::_start_recording(void)
      * Before NTP sync, gettimeofday returns epoch (1970), causing
      * all recordings to get the same filename and overwrite each other. */
     if (tm_info.tm_year + 1900 > 2020) {
-        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.mp3",
+        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.aac",
                  tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
                  tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
     } else {
         /* Fallback: use monotonic timer as unique identifier */
         uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%lu.mp3", (unsigned long)mono_ms);
+        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%lu.aac", (unsigned long)mono_ms);
     }
 
     _record_file = fopen(path, "wb");
     if (!_record_file) {
         ESP_LOGE(TAG, "Failed to create file: %s", path);
-        shine_close(_encoder);
+        esp_aac_enc_close(_encoder);
         _encoder = nullptr;
+        heap_caps_free(_enc_in_buf); _enc_in_buf = nullptr;
+        heap_caps_free(_enc_out_buf); _enc_out_buf = nullptr;
         heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
         return;
@@ -470,7 +506,7 @@ void PhoneAppAudio::_stop_recording(void)
 {
     if (!_is_recording) return;
 
-    ESP_LOGI(TAG, "Stopping MP3 recording...");
+    ESP_LOGI(TAG, "Stopping AAC recording...");
     _is_recording = false;
 
     /* Wait for audio task to exit the recording block before freeing
@@ -486,14 +522,27 @@ void PhoneAppAudio::_stop_recording(void)
     FILE *file = _record_file;
     _record_file = nullptr;
 
-    /* Flush remaining encoded data */
+    /* Encode remaining partial buffer (if any) and close encoder */
     if (_encoder) {
-        int written = 0;
-        unsigned char *data = shine_flush(_encoder, &written);
-        if (data && written > 0 && file) {
-            fwrite(data, 1, written, file);
+        if (_pcm_buf_count > 0 && _enc_in_buf && _enc_out_buf && file) {
+            /* Partial frame: zero-pad remaining bytes and encode */
+            int partial_bytes = _pcm_buf_count * 2 * sizeof(int16_t);
+            memset(_enc_in_buf, 0, _enc_in_size);
+            memcpy(_enc_in_buf, _pcm_buffer, partial_bytes < _enc_in_size ? partial_bytes : _enc_in_size);
+            esp_audio_enc_in_frame_t in_frame = {
+                .buffer = _enc_in_buf,
+                .len = (uint32_t)_enc_in_size,
+            };
+            esp_audio_enc_out_frame_t out_frame = {
+                .buffer = _enc_out_buf,
+                .len = (uint32_t)_enc_out_size,
+            };
+            esp_audio_err_t ret = esp_aac_enc_process(_encoder, &in_frame, &out_frame);
+            if (ret == ESP_AUDIO_ERR_OK && out_frame.encoded_bytes > 0) {
+                fwrite(_enc_out_buf, 1, out_frame.encoded_bytes, file);
+            }
         }
-        shine_close(_encoder);
+        esp_aac_enc_close(_encoder);
         _encoder = nullptr;
     }
 
@@ -507,6 +556,19 @@ void PhoneAppAudio::_stop_recording(void)
         heap_caps_free(_pcm_buffer);
         _pcm_buffer = nullptr;
     }
+
+    /* Free encoder I/O buffers */
+    if (_enc_in_buf) {
+        heap_caps_free(_enc_in_buf);
+        _enc_in_buf = nullptr;
+    }
+    if (_enc_out_buf) {
+        heap_caps_free(_enc_out_buf);
+        _enc_out_buf = nullptr;
+    }
+    _enc_in_size = 0;
+    _enc_out_size = 0;
+    _enc_in_count = 0;
 
     /* Publish recording_state.active=false for cross-module notification (e.g. Music app) */
     orb_advert_t pub = _rec_pub.load(std::memory_order_acquire);
@@ -535,7 +597,7 @@ void PhoneAppAudio::_stop_recording(void)
 }
 
 /*============================================================================
- * Scan SD card for MP3 recordings
+ * Scan SD card for AAC recordings
  *============================================================================*/
 
 void PhoneAppAudio::_scan_recordings(void)
@@ -576,7 +638,7 @@ void PhoneAppAudio::_scan_recordings(void)
         size_t len = strlen(name);
         if (len < 5) continue;
         const char *ext = name + len - 4;
-        if (strcasecmp(ext, ".mp3") != 0) continue;
+        if (strcasecmp(ext, ".aac") != 0) continue;
         _recording_names[count] = strdup(name);
         if (!_recording_names[count]) continue;  // OOM, skip this file
         count++;

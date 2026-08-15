@@ -110,17 +110,17 @@ class TestAudioList:
         assert "files" in data
         assert isinstance(data["files"], list)
 
-    def test_audio_list_has_mp3_after_record(self, api):
-        """After recording, list contains .mp3 entry."""
+    def test_audio_list_has_aac_after_record(self, api):
+        """After recording, list contains .aac entry."""
         api.record_start()
         time.sleep(RECORD_SECONDS)
         api.record_stop()
         time.sleep(0.5)
         data = api.audio_list()
-        mp3 = [f for f in data["files"] if f.lower().endswith(".mp3")]
-        assert len(mp3) > 0, f"No .mp3 in list: {data['files']}"
+        aac = [f for f in data["files"] if f.lower().endswith(".aac")]
+        assert len(aac) > 0, f"No .aac in list: {data['files']}"
         # Expose for play tests (module-level)
-        pytest.latest_recording = mp3[-1]
+        pytest.latest_recording = aac[-1]
 
 
 class TestAudioPlay:
@@ -133,15 +133,15 @@ class TestAudioPlay:
             data = api.audio_list()
         except Exception:
             data = {"files": []}
-        mp3 = [f for f in data["files"] if f.lower().endswith(".mp3")]
-        if not mp3:
+        aac = [f for f in data["files"] if f.lower().endswith(".aac")]
+        if not aac:
             api.record_start()
             time.sleep(RECORD_SECONDS)
             api.record_stop()
             time.sleep(0.5)
             data = api.audio_list()
-            mp3 = [f for f in data["files"] if f.lower().endswith(".mp3")]
-        pytest.latest_recording = mp3[-1] if mp3 else None
+            aac = [f for f in data["files"] if f.lower().endswith(".aac")]
+        pytest.latest_recording = aac[-1] if aac else None
 
     def test_play_returns_ok(self, api):
         """play with valid file returns {ok: 1}."""
@@ -177,7 +177,7 @@ class TestAudioPlay:
 
     def test_play_nonexistent_file(self, api):
         """play with nonexistent file — firmware play is async, so 'ok' is always present."""
-        r = api.audio_play("nonexistent_abc123.mp3")
+        r = api.audio_play("nonexistent_abc123.aac")
         # The firmware's esp_audio_simple_player_run is asynchronous;
         # it may return ok:1 even for non-existent files (failure is async via callback).
         # Just verify the response is valid JSON with 'ok' key.

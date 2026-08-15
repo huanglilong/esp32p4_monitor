@@ -11,6 +11,8 @@ dependencies:
     version: ^0.0.8
   espressif/esp_audio_simple_player:
     version: ^1.0.0
+  espressif/esp_audio_codec:
+    version: '^2.5'
   espressif/esp_wifi_remote:
     version: '*'
   espressif/esp_hosted:

@@ -3,14 +3,14 @@
 /*
  * AudioUlogRecorder — Continuous audio recording to ULog via uORB.
  *
- * Reads PCM from I2S (ES8311 ADC), encodes to AAC-ADTS, and publishes
+ * Reads PCM from I2S (16kHz stereo), encodes to AAC-ADTS, and publishes
  * audio_frame uORB topics. The ULog writer automatically picks up these
  * topics and writes them to .ulg files on the SD card.
  *
  * Lifecycle: tied to ULog writer — start when ULog starts, stop when ULog stops.
  * Must NOT run simultaneously with .aac file recording or playback (shared I2S).
  *
- * AAC config: 16kHz stereo 64kbps ADTS (matches existing recording settings).
+ * AAC config: 16kHz stereo 64kbps ADTS (I2S always stereo; WIFI6 right ch silent).
  */
 
 #include <atomic>

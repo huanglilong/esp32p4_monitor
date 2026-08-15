@@ -1,6 +1,7 @@
 # Audio frame for ULog continuous recording
 # AAC-ADTS encoded audio data, continuously captured from I2S mic input.
-# AAC encoder: 16kHz stereo 64kbps ADTS → ~512B/frame at ~15.6 fps.
+# I2S runs at 16kHz stereo, matching AAC encoder config (no resampling).
+# AAC encoder: 16kHz stereo 64kbps ADTS → ~1KB/frame at ~15.6 fps.
 # 1536B buffer gives 3× headroom over typical ~512B frames.
 # Variable-length AAC: aac_size indicates actual data length, aac_data[] is fixed-size
 # buffer that may be partially filled. ULog writer uses o_size_no_padding to avoid
