@@ -56,7 +56,8 @@ public:
     bool isRunning(void) const { return _running.load(std::memory_order_acquire); }
 
     /** Set rotation angle (0, 90, 180, 270 degrees CCW).
-     *  Takes effect on next start(). If stream is running, stops and restarts. */
+     *  Takes effect on next stream start(). Does NOT restart a running stream;
+     *  the web UI applies CSS rotation for immediate visual feedback. */
     void set_rotation(int degrees);
     int rotation(void) const { return _rotation.load(std::memory_order_acquire); }
 
