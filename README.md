@@ -99,15 +99,16 @@
 
 ### Software Features
 - **MIPI DSI** 720×720 LCD + GT911 Touch (ESP-Brookesia Phone UI, LVGL v9.2.2)
-- **MIPI CSI** OV5647 camera (V4L2, ~2fps, HW JPEG, PPA-accelerated preprocessing; Camera App is preview-only, Camera Stream PPA resizes to 300×300 for efficient MJPEG encoding)
-- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, PPA-accelerated 300×300 JPEG encoding, independent capture task, TCP keep-alive; toggle in Settings App)
-- **Audio** Dual mic monitoring + MP3 recording (Shine encoder, SD card) + Music playback (ESP-GMF)
-- **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording, WiFi recovery httpd restart)
+- **MIPI CSI** OV5647 camera (V4L2, ~5fps sensor via VTS=9840, HW JPEG, PPA-accelerated preprocessing; Camera App is preview-only, Camera Stream PPA resizes to 300×300 for efficient MJPEG encoding)
+- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, PPA-accelerated 300×300 JPEG encoding, independent capture task, TCP keep-alive, image rotation 0°/90°/180°/270°; toggle in Settings App)
+- **Audio** Dual mic monitoring + AAC recording (ESP AAC encoder, SD card) + Music playback (ESP-GMF)
+- **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording, WiFi recovery httpd restart, captive portal for headless config)
 - **Settings App** Volume/brightness sliders + WiFi + Camera Stream enable/disable (stream persists across app close/open)
-- **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video viewer (parse .ulg frames, slideshow, save)
+- **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video+audio viewer (parse .ulg frames, slideshow, save)
 - **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
-- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible, auto-start on WiFi+SNTP)
+- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible, auto-start on WiFi+SNTP, camera frame + audio frame recording)
 - **System Monitor** Per-core CPU busy%, heap/PSRAM tracking, resource alerts (uORB + ULog + Web API)
-- **AI Agent** 16 capabilities, 15 device MCP tools, WeChat/Feishu/QQ/Telegram IM, Web+Flutter Agent Chat, LLM Vision
+- **Logger** Text log to SD card (ring buffer + writer task, file rotation, esp_log_set_vprintf interception)
+- **Captive DNS** UDP 53 DNS hijack + DHCP DNS advertisement for headless WiFi provisioning (WIFI6 board)
 - **Multi-board** Auto-detect LCD-4B / WIFI6 via GT911 I2C probe, single firmware
-- **Driver Architecture** PeripheralManager facade → AudioDriver + SDCardDriver + CameraDriver
+- **Driver Architecture** PeripheralManager facade → AudioDriver + SDCardDriver + CameraDriver + SystemMonitor

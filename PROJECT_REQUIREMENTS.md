@@ -1,6 +1,6 @@
 # ESP32-P4 Monitor — 项目需求文档
 
-> 生成日期: 2026-07-02 | 基于 PROJECT.md 及历史会话分析
+> 生成日期: 2026-07-02 | 最后更新: 2026-08-15 | 基于 PROJECT.md 及历史会话分析
 > 代码仓库: [gitee.com/huanglilong/esp32p4_monitor](https://gitee.com/huanglilong/esp32p4_monitor)
 >
 > 本文档是**需求、已修复问题登记 (R/S/M) 与变更记录**的唯一参考。软件/架构/实现细节见 [PROJECT.md](PROJECT.md)，硬件规格见 [README.md](README.md)。随项目迭代持续更新。
@@ -46,14 +46,14 @@
 | S2 | **SD init-once + SDSPI 统一** | boot 时挂载永不下电, 两板统一 SDSPI, sd_pwr_ctrl + _has_lcd 区分, VFS_MAX_COUNT=16 | ✅ |
 | S2b | **SD 防御检查** | Audio/Music App SD 文件操作前调用 init_sdcard() 确保挂载 | ✅ |
 | S3 | **LVGL 线程安全** | Music (GMF cb + lvgl_port_lock), Settings (wifi task + bsp_display_lock) | ✅ |
-| S4 | **检测框坐标修复** | COCODetect 内部缩放 → 移除手动 SCALE，修正双重缩放 | ✅ |
+| S4 | ~~**检测框坐标修复**~~ | ~~COCODetect 内部缩放 → 移除手动 SCALE~~ → **已移除**: R3 人体检测已移除 | ✅ |
 | S5 | **I2S MCLK 匹配** | 384×→256×，与 ES8311/ES7210 codec 一致 | ✅ |
-| S6 | **跨核 volatile 保护** | `_wifi_scanning`, `_running`, `_volume`, `_detect_available` 加 volatile | ✅ |
+| S6 | ~~**跨核 volatile 保护**~~ | ~~volatile bool~~ → **已升级**: 全部 `volatile` → `std::atomic` (S130-S131, S220-S228, S304) | ✅ |
 | S7 | **V4L2 双开防护** | Camera App 初始化前检查 CameraStream::instance().isRunning() | ✅ |
 | S8 | **全局 codec 互斥锁** | `s_codec_mutex` 保护 Settings/Music 并发 `set_out_vol()` | ✅ |
 | S9 | **WiFi task/Event Group 清理** | close() + WiFi OFF 时 vTaskDelete + vEventGroupDelete | ✅ |
 | S10 | **资源泄漏修复** | CSI/ISP 释放顺序, SD LDO handle, Camera buffer 错误路径 | ✅ |
-| S11 | **Task 栈安全** | Audio task 4KB→12KB, detection task 16KB, 消除溢出风险 | ✅ |
+| S11 | **Task 栈安全** | Audio task 4KB→12KB, ~~detection task 16KB~~ (已移除), 消除溢出风险 | ✅ |
 | S12 | **NVS 去抖写入** | Settings/Music 音量滑块 500ms debounce timer | ✅ |
 | S13 | **WiFi deinit 完善** | WiFi OFF 时 `esp_wifi_stop()`, 避免一次性 init 函数重复调用 | ✅ |
 | S14 | **字体精简** | 禁用 10 个未使用字体，回收 ~560KB Flash | ✅ |
@@ -75,8 +75,8 @@
 | S30 | **Web Audio JS 语法修复** | `loadFiles` 改用 template literal 避免单引号冲突，修复整个 script 被丢弃 | ✅ |
 | S31 | **Web Playback ASP 生命周期** | 每次 play 重建 ASP handle (stop→destroy→new→run)，防止管道状态残留崩溃 | ✅ |
 | S32 | **Web Record 音频任务停止** | `h_rec_stop` 同时设 `s_audio_running=false`，释放 I2S RX 给 playback | ✅ |
-| S33 | **Web 音频 API 全端点 guard** | 6 个端点均加 `__cam_running()` 检查 (list/status/stop 新增) | ✅ |
-| S34 | **`max_uri_handlers`** | 11→16，容纳 14 个 handler (5 core + 6 audio + 3 CORS) | ✅ |
+| S33 | ~~**Web 音频 API 全端点 guard**~~ | ~~6 个端点均加 `__cam_running()` 检查~~ → **已移除**: R17 Camera 和 Audio 独立硬件, 无需互斥 | ✅ |
+| S34 | ~~**`max_uri_handlers`**~~ | ~~11→16~~ → 42 (ESP-Claw) → 30 (ESP-Claw 移除后) | ✅ |
 | S35 | **WIFI6 音频修复** | 修正 I2C 地址 0x18→0x30 (ES8311_CODEC_DEFAULT_ADDR)，单 handle (BOTH+IN_OUT) 匹配参考固件 | ✅ |
 | S36 | **Music App ASP 生命周期同步** | `_play()` 改为 stop→destroy→new→run，匹配 web S31，防止 GMF 缓存状态崩溃 | ✅ |
 | S37 | **Flutter Settings 页面** | 集成 WiFi/音量/Camera Stream 配置 + 录音/播放 + 恢复出厂设置 | ✅ |
@@ -307,7 +307,7 @@
 | S243 | **orb_publish 无锁投递 use-after-free** | `orb_publish()` 快照订阅者后释放锁，并发 `orb_unsubscribe()` 可 `vQueueDelete` 释放队列，投递时写入已释放内存。修复: 整个 publish (查找 topic + 投递) 全程持锁，xQueue 操作非阻塞锁时间极短 | ✅ |
 | S244 | **AudioDriver codec I2C 控制句柄 NULL** | `audio_codec_new_i2c_ctrl()` 分配失败可返回 NULL，但三个调用点 (DAC ctrl/ADC ctrl/WIFI6 ES8311 ctrl) 均未检查，传入 codec 构造函数导致崩溃。修复: 三处均添加 NULL 检查，失败时设 `init_ok=false` 跳过 codec 创建 | ✅ |
 | S245 | **CameraStream PSRAM 缓冲区 free/alloc 不匹配** | 析构函数用 `free()` 释放 `_shared_jpeg_buf` (由 `heap_caps_realloc(..., MALLOC_CAP_SPIRAM)` 分配)，API 不匹配。修复: 改用 `heap_caps_free()` 匹配分配 API，避免分配器实现变更风险 | ✅ |
-| S246 | **max_uri_handlers 不足** | 添加 WeChat (8 handlers) + LLM (3) + TG (2) 后实际需 40 个 handler slot，但 `max_uri_handlers` 仅设 29/30，导致 10+ 个 handler 注册失败 (`no slots left`)。修复: 29→42 / 30→42，覆盖 5 core + 6 audio + 4 file mgr + 5 CORS + 5 ULog + 2 system + 8 WeChat + 3 LLM + 2 TG + 2 spare | ✅ |
+| S246 | ~~**max_uri_handlers 不足**~~ | ~~添加 WeChat (8 handlers) + LLM (3) + TG (2) 后需 40 个 handler slot, 修复 29→42~~ → **ESP-Claw 移除后降至 30** | ✅ |
 | S247 | **Camera Stream + Music 播放卡顿 (P0 回归)** | 提交 65c36ad 将帧采集/编码循环从 httpd stream_handler (绑定 Core 0, S176) 抽离为独立 `cam_capture` 任务，但错误地将其绑定到 **Core 1, priority 5**。Music 的 GMF/ASP 任务固定运行在 **Core 1, priority 3** (`phone_app_music.cpp`)，capture 任务 (DQBUF→PPA DMA→HW JPEG 编码→NPU 推理) 持续运行并以更高优先级抢占音乐解码器，导致 I2S TX DMA 欠载 → 音乐卡顿。v0.0.3 正常是因为采集循环在 Core 0 的 httpd 上下文中运行，Core 1 仅 LVGL(prio4)+Music ASP(prio3)，音乐从不被摄像头工作抢占。修复: 将 `cam_capture` 改绑 **Core 0** (恢复 v0.0.3 核亲和性)，不再与 Core 1 的 Music ASP 竞争 | ✅ (硬件验证: 固定频率卡顿已消失；但仍有偶发杂音/轻微卡顿，见 S248) |
 | S248 | **Camera Stream + Music 偶发杂音/轻微卡顿 (S247 残留)** | 固定频率卡顿修复后 (S247)，硬件验证发现**偶发**杂音并轻微卡一下 (非周期、低频)。根因疑似 **跨核共享 PSRAM 总线带宽 + 共享 L2 cache 竞争** (非同核调度抢占): Core 0 的 `cam_capture`(prio5) 每帧产生大量 PSRAM 流量 (CSI DMA→PPA DMA→HW JPEG DMA→SDIO WiFi DMA + 每3帧 NPU 推理尖峰)，与 Core 1 的 Music I2S TX DMA (从 PSRAM 读 PCM) 争用同一外部 PSRAM 总线/L2 cache → 短时欠载。S249 将背景/轻量任务重新绑核验证调度抢占已消除。最终解决: S289 SRAM 优化将 91.1KB 的 BSS 大对象 (agent_msgs/uORB/lua_jobs/agent_mgr) 从内部 SRAM 迁移至 PSRAM，DIRAM 使用从 51.5%→30.8%，释放足够内部 SRAM 用于关键 DMA 缓冲，消除 PSRAM 总线争用瓶颈 | ✅ (S289 SRAM 优化) |
 | S249 | **Web 设置 WiFi 字段完整性校验** | 需求: WiFi 子设置 **SSID + password 必须同时非空** (不考虑开放网络)。`settings_handler` 现校验: 若请求携带任意 WiFi 字段 (ssid/pass) 但 SSID 或 password 为空/缺失，则 **skip 整个 WiFi NVS 更新** (含连接尝试)，返回 `wifi_connected:false`；volume-only 请求 (无 WiFi 字段) 不触碰 WiFi。仍保持 **连接成功才写 NVS** (规则 #2)。`PhoneAppSettings::wifiConnectTaskHandler` 同步: SSID 或 password 任一为空则跳过连接且不写 NVS | ✅ |
@@ -420,11 +420,11 @@
 |---|------|------|----------|
 | P0 | **Camera Stream + Music 播放卡顿** (S247) | Camera Stream 运行时 Music 播放卡顿。git bisect 定位根因为 commit 65c36ad: 独立 `cam_capture` 任务错误绑定 Core 1 (priority 5)，抢占 Core 1 上 priority 3 的 Music GMF/ASP 任务导致 I2S DMA 欠载。修复: `cam_capture` 改绑 Core 0 (恢复 v0.0.3 httpd 上下文核亲和性)。S247 固定频率卡顿已消除；S248 偶发杂音残留经 S289 SRAM 优化 (释放 91.1KB 内部 SRAM) 后已解决 | ✅ (已解决: S247 + S289) |
 | P1 | **720×720 自定义样式表** | 当前使用默认回退方案，UI 一致性不佳 | 需设计 ESP-Brookesia 样式 |
-| P2 | **WIFI6 无屏配网** | 首次启动 NVS 为空时需要配网方案 | esp-hosted SDIO 不支持稳定 SoftAP (#197) |
-| PB | **Flutter AI Agent UI** | ✅ 已完成: agent_chat_screen.dart — 聊天界面 + LLM 配置弹窗 + 消息气泡 (user/agent/tool) | — |
-| PC | **Web Agent 对话界面** | ✅ 已完成: Web UI Agent Chat card + /api/agent/chat POST handler | — |
-| PD | **Camera Vision 多模态** | ✅ 代码就绪: supports_vision=true + camera.capture_vision MCP tool; 实际 Vision 需 LLM 支持 image content | 需 Vision API 验证 |
-| PE | **Audio Speech ASR/TTS** | 语音交互: 录音→ASR→LLM→TTS→播放 | 需 ASR/TTS 服务
+| P2 | **WIFI6 无屏配网** | ✅ 已完成: captive_dns (G4) + wifi_manager (G3) 协同实现无屏配网。手机连接 AP 后自动弹出 captive portal → Web Config (:8080) | — |
+| PB | ~~**Flutter AI Agent UI**~~ | ~~✅ 已完成: agent_chat_screen.dart~~ → **已移除**: ESP-Claw 框架删除 (commit 43c65f1), agent_chat_screen.dart 成为孤儿文件 | — |
+| PC | ~~**Web Agent 对话界面**~~ | ~~✅ 已完成: Web UI Agent Chat card + /api/agent/chat~~ → **已移除**: ESP-Claw 框架删除 | — |
+| PD | ~~**Camera Vision 多模态**~~ | ~~✅ 代码就绪: supports_vision=true~~ → **已移除**: ESP-Claw 框架删除 | — |
+| PE | ~~**Audio Speech ASR/TTS**~~ | ~~语音交互: 录音→ASR→LLM→TTS→播放~~ → **已移除**: ESP-Claw 框架删除, 需重新设计 | — |
 
 ### 3.2 中优先级
 
@@ -432,8 +432,8 @@
 |---|------|------|
 | P3 | **Camera App 录像功能** | 视频录制到 SD 卡（已通过 R22 ULog 录制部分实现） |
 | P3b | **pyulog 兼容性修复** | ~~pyulog 1.2.3 在移除 trailing `_padding` 后计算 `max_data_size`，导致所有含 padding 的 topic 被标记为 corrupt。~~ ✅ 已修复：采用 PX4 `o_size_no_padding` 方案 — `orb_metadata` 新增 `o_size_no_padding` 字段，ULog writer DATA 消息写 `o_size_no_padding` 字节（不含尾部 padding），pyulog `max_data_size` 与 `o_size_no_padding` 一致 |
-| P4 | **Camera 检测框平滑** | EMA 或 Kalman filter 减少检测框抖动 |
-| P5 | **ROI 区域检测** | 只检测画面中心区域，减少误报 |
+| P4 | ~~**Camera 检测框平滑**~~ | ~~EMA 或 Kalman filter 减少检测框抖动~~ → **已移除**: R3 人体检测已移除 |
+| P5 | ~~**ROI 区域检测**~~ | ~~只检测画面中心区域，减少误报~~ → **已移除**: R3 人体检测已移除 |
 
 ### 3.3 低优先级 / 长期优化
 
@@ -443,7 +443,7 @@
 | P7 | **SD 卡访问协调器** | 统一管理 Camera/Music/Audio 对 SD 卡的并发访问 |
 | P8 | **Camera Canvas 800→720** | Canvas 裁剪到 720×720，节省 21% 像素处理量 |
 | P9 | **I2S 按需启停** | Audio App 打开时启用 RX，Music 播放时启用 TX |
-| P10 | **WiFi 管理重构** | WiFi 功能解耦为独立服务模块 |
+| P10 | ~~**WiFi 管理重构**~~ | ~~WiFi 功能解耦为独立服务模块~~ → ✅ 已完成: G3 WifiService + wifi_manager |
 | P11 | **IPC 迁移至 uORB** | 逐步将现有的 volatile/mutex/event_group IPC 替换为 uORB topic |
 
 ---
@@ -464,12 +464,12 @@
 | # | 限制 | 说明 |
 |---|------|------|
 | L1 | **esp-hosted v2.12.7 锁定** | v2.12.8+ 在 Waveshare 硬件上验证更快死锁 (#197) |
-| L2 | **无 SoftAP 配网** | SDIO 缓冲区溢出导致 C6 崩溃，首次启动需预置 WiFi 凭据 |
-| L3 | **Camera 检测帧率 ~1.8fps** | YOLO11n NPU 推理 ~560ms/帧 |
-| L4 | **Camera Stream 帧率 ~4fps** | 受限于 sensor VTS=9840 (~5fps) + HW JPEG 编码 + 内联检测 |
+| L2 | **无 SoftAP 配网** | ~~SDIO 缓冲区溢出导致 C6 崩溃~~ → ✅ 已缓解: captive_dns (G4) 实现无屏配网, 手机连接 AP 后弹出 captive portal |
+| L3 | ~~**Camera 检测帧率 ~1.8fps**~~ | ~~YOLO11n NPU 推理 ~560ms/帧~~ → **已移除**: R3 人体检测已移除 |
+| L4 | **Camera Stream 帧率 ~4fps** | 受限于 sensor VTS=9840 (~5fps) + HW JPEG 编码 |
 | L5 | **720×720 无预设样式表** | ESP-Brookesia 默认回退方案 |
 | L6 | **PPA client 注册未使用** | 307KB PSRAM 占用，可优化 |
-| L8 | **esp-dl mbedtls/sha256.h 兼容 shim** | ESP-IDF v6.x (mbedtls 4.x) 将 `sha256.h` 移至 `mbedtls/private/`，`managed_components/espressif__esp-dl` 未更新。当前方案: `main/compat/mbedtls/sha256.h` 转发头 + CMake include path。下次升级 esp-dl 后应移除 |
+| L8 | ~~**esp-dl mbedtls/sha256.h 兼容 shim**~~ | ~~ESP-IDF v6.x sha256.h 路径兼容~~ → **ESP-Claw 移除后 esp-dl 不再使用, shim 可删除** |
 
 ### 4.3 已知未修复问题（架构审查遗留）
 
@@ -479,7 +479,7 @@
 | K2 | 🟢 低 | Audio 无用的 PSRAM 分配 (1920B) | 开销极小 |
 | K3 | 🟢 低 | Music 部分低优先级边界情况 | `_play()` 参数未验证、`run()` 中 UI 对象先于 player 创建等边界情况 |
 | K4 | ✅ 已修复 | **Web 音频 Camera Stream 互斥已移除** | Camera (MIPI CSI) 和 Audio (I2S) 使用独立硬件，无需互斥。所有 `__cam_running()` 检查已移除 |
-| K5 | 🟢 低 | CameraStream/web_config_server 大文件模块化 | 单文件超 1800/87KB，可拆分为独立模块 (V4L2Pipeline, AudioRecorder, WiFiManager 等)。部分已提取辅助方法 (S159) |
+| K5 | 🟢 低 | CameraStream/web_config_server 大文件模块化 | camera_stream.cpp ~1474 行, web_config_server.cpp ~2621 行, 可拆分为独立模块。ESP-Claw 移除后 web_config_server 已从 ~3500 行降至 ~2600 行 |
 | K6 | 🟢 低 | Logger 重入风险 | esp_log_set_vprintf 回调中调用 ESP_LOG 可能递归 |
 | K7 | ✅ 已修复 | Web `s_audio_running` 跨核竞态 | `volatile bool` → `std::atomic<bool>` (v2.4) |
 
@@ -508,6 +508,7 @@
 | `espressif/esp-brookesia` | 0.5.0 | 当前功能稳定 |
 | `espressif/esp_lvgl_port` | 2.8.0~1 (本地补丁) | 修复 LVGL 9.2.2 兼容性 |
 | `lvgl/lvgl` | 9.2.2 | ESP-Brookesia 依赖 |
+| `espressif/esp_audio_codec` | ^2.5 | ESP AAC 编码器 (替代 Shine MP3, S344) |
 
 ---
 
@@ -517,11 +518,11 @@
 
 | App | 图标 | 功能 | 入口条件 |
 |-----|:----:|------|----------|
-| Camera | 📷 | OV5647 预览 + 人体检测 | LCD-4B (有屏幕) |
+| Camera | 📷 | OV5647 预览 (纯预览, 人体检测已移除) | LCD-4B (有屏幕) |
 | Audio | 🎤 | 双 Mic 电平 + AAC 录音 | LCD-4B + Audio codec |
 | Music | 🎵 | MP3/WAV 播放 | LCD-4B + Audio codec |
-| Camera Stream | 🌐 | MJPEG WiFi 推流 + 人体检测 | LCD-4B + WiFi |
-| Settings | ⚙️ | 音量/亮度 + WiFi | LCD-4B |
+| Camera Stream | 🌐 | MJPEG WiFi 推流 + 图像旋转 | LCD-4B + WiFi |
+| Settings | ⚙️ | 音量/亮度 + WiFi + Camera Stream 开关 | LCD-4B |
 | Squareline | 🎨 | 内置示例 | LCD-4B |
 
 ### 6.2 非 UI 功能
@@ -543,6 +544,8 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-08-15 | **ESP-Claw 框架移除** (commit 43c65f1): 删除 AI Agent / MCP 工具 / IM 集成 (WeChat/Feishu/QQ/Telegram) / LLM 配置 / Agent Chat, 共 95,303 行代码删除。`max_uri_handlers` 42→30, web_config_server.cpp ~3500→~2621 行, main.cpp ~775→~530 行。移除依赖: esp-dl, lua, cogent. Flutter `agent_chat_screen.dart` 成为孤儿文件 (后端 API 不存在, 未被导航引用)。PB/PC/PD/PE 标记为已移除 |
+| 2026-08-15 | +S344 **Shine MP3 → ESP AAC 编码器替换**: I2S 采样率从 48kHz 降至 16kHz，录音编码器从 Shine MP3 (128kbps 48kHz) 替换为 ESP AAC (64kbps 16kHz ADTS)。变更: ① `phone_app_audio.hpp/cpp`: 移除 `layer3.h`/`shine_t`，改用 `esp_aac_enc.h`/`esp_audio_enc_handle_t`，AAC 帧大小 1024 samples/ch (原 1152)，文件扩展名 `.aac` (原 `.mp3`) ② `web_config_server.cpp`: 同步替换 Shine→AAC ③ `main/CMakeLists.txt`: `shine_encoder` → `espressif__esp_audio_codec` ④ `main/idf_component.yml`: 新增 `espressif/esp_audio_codec: '^2.5'` 依赖。`idf.py build` 验证通过 |
 | 2026-08-15 | +S340/S341/S342 **代码审查 Round 12 修复 (3 issues: 2 MEDIUM + 1 LOW)**: **S340 (MEDIUM) set_rotation_handler 硬编码 NVS 键**: `nvs_open("settings")`/`nvs_set_i32(h,"cam_rotation")`/`nvs_get_i32_def("cam_rotation")` 使用字符串字面量而非共享宏 (S156)。修复: 新增 `NVS_KEY_CAM_ROTATION` 至 `example_config.h`，全部替换为 `NVS_NAMESPACE_SETTINGS` + `NVS_KEY_CAM_ROTATION` 宏。**S341 (MEDIUM) NVS 返回值未检查**: `nvs_set_i32()`/`nvs_commit()` 返回值未检查 (Section 3.3)。修复: 检查 + `ESP_LOGW`。**S342 (LOW) set_rotation 文档误导**: hpp 注释称 "stops and restarts" 但实现不重启。修复: 更正注释。每个 commit 后 `idf.py build` 验证通过 |
 | 2026-08-15 | **S343 ULog 音频倍速变慢修复**: 根因: I2S 以 48kHz stereo 采集 PCM，但 AAC 编码器配置为 16kHz stereo 且无降采样 → ADTS 头声明 16kHz，播放器以 16kHz 解码 48kHz 数据 → 3x 变慢。初始修复尝试在固件中降采样 (48kHz→16kHz + 动态通道配置)，后改为直接将 I2S 采样率降至 16kHz (见 S344)，无需降采样。最终方案: `audio_ulog_recorder.cpp` 始终使用 stereo (匹配 I2S stereo 配置), `ulog_to_audio.py`/`ulog_to_video.py` 时长计算改用 timestamp span + 新增 `--fix-sample-rate HZ` 选项修补已有 ULog 文件的 ADTS 头。`idf.py build` 验证通过 |
 | 2026-08-15 | +R18 **Camera 图像旋转**: PPA 硬件旋转 0°/90°/180°/270°, `PPAPreprocessor::init()` 新增 `rotation_deg` 参数 (90/270 自动交换输出宽高), `CameraStream::set_rotation()` atomic 存储 + NVS 持久化 (`cam_rotation`), Web UI 旋转按钮 + CSS `transform:rotate()` 即时反馈, `/api/set_rotation` API (port 80), `/api/status` 返回 `cam_rotation`, 启动时从 NVS 恢复旋转设置。pytest 测试覆盖。`idf.py build` 验证通过 |
