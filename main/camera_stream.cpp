@@ -1281,9 +1281,15 @@ static esp_err_t set_rotation_handler(httpd_req_t *req)
 
     /* Persist to NVS */
     nvs_handle_t h;
-    if (nvs_open("settings", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_i32(h, "cam_rotation", (int32_t)cs->rotation());
-        nvs_commit(h);
+    if (nvs_open(NVS_NAMESPACE_SETTINGS, NVS_READWRITE, &h) == ESP_OK) {
+        esp_err_t err = nvs_set_i32(h, NVS_KEY_CAM_ROTATION, (int32_t)cs->rotation());
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "nvs_set_i32 %s failed: %s", NVS_KEY_CAM_ROTATION, esp_err_to_name(err));
+        }
+        err = nvs_commit(h);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "nvs_commit %s failed: %s", NVS_KEY_CAM_ROTATION, esp_err_to_name(err));
+        }
         nvs_close(h);
     }
 

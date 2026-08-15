@@ -2299,7 +2299,7 @@ static void web_config_task(void *arg)
     /* Auto-start camera stream if NVS says it was enabled */
     if (nvs_get_i32_def(NVS_KEY_CAM_STREAM, 0)) {
         /* Restore rotation from NVS before starting stream */
-        int rot = (int)nvs_get_i32_def("cam_rotation", 0);
+        int rot = (int)nvs_get_i32_def(NVS_KEY_CAM_ROTATION, 0);
         if (rot != 0 && rot != 90 && rot != 180 && rot != 270) rot = 0;
         if (rot != 0) {
             CameraStream::instance().set_rotation(rot);

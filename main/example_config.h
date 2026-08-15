@@ -77,6 +77,7 @@ extern _Atomic bool g_has_lcd;
 #define NVS_KEY_VOLUME                "volume"
 #define NVS_KEY_BRIGHTNESS            "brightness"
 #define NVS_KEY_CAM_STREAM            "cam_stream"
+#define NVS_KEY_CAM_ROTATION           "cam_rotation"
 
 /* Volume / Brightness shared constants */
 #define VOLUME_MIN                    0
