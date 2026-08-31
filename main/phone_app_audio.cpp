@@ -35,7 +35,7 @@ PhoneAppAudio::PhoneAppAudio(bool use_status_bar, bool use_navigation_bar) :
     _encoder(nullptr), _record_file(nullptr),
     _pcm_buffer(nullptr), _pcm_buf_count(0),
     _enc_in_buf(nullptr), _enc_out_buf(nullptr),
-    _enc_in_size(0), _enc_out_size(0), _enc_in_count(0),
+    _enc_in_size(0), _enc_out_size(0),
     _record_bytes_written{0}, _record_start_ms{0},
     _rec_pub{ORB_ADVERT_INVALID},
     _recording_count(0),
@@ -422,7 +422,6 @@ void PhoneAppAudio::_start_recording(void)
         _pcm_buffer = nullptr;
         return;
     }
-    _enc_in_count = 0;
 
     /* Open file on SD card */
     if (!PeripheralManager::instance().init_sdcard()) {
@@ -568,7 +567,6 @@ void PhoneAppAudio::_stop_recording(void)
     }
     _enc_in_size = 0;
     _enc_out_size = 0;
-    _enc_in_count = 0;
 
     /* Publish recording_state.active=false for cross-module notification (e.g. Music app) */
     orb_advert_t pub = _rec_pub.load(std::memory_order_acquire);

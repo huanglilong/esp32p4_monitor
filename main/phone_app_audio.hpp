@@ -52,7 +52,6 @@ private:
     uint8_t           *_enc_out_buf;     // AAC encoder output buffer (enc_out_size bytes)
     int                _enc_in_size;     // AAC encoder input frame size (bytes)
     int                _enc_out_size;    // AAC encoder output frame size (bytes)
-    int                _enc_in_count;    // Bytes accumulated in _enc_in_buf
     std::atomic<uint32_t> _record_bytes_written;
     std::atomic<uint32_t> _record_start_ms;
 
