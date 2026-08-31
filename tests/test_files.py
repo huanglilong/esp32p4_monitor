@@ -40,13 +40,13 @@ class TestFilesDownload:
     """File download via GET /api/files/download."""
 
     def test_download_existing_file(self, api):
-        """Download an existing .mp3 file and verify content."""
+        """Download an existing .aac file and verify content."""
         listing = api.files_list("/")
-        mp3 = [f for f in listing["files"] if f["name"].lower().endswith(".mp3")
+        aac = [f for f in listing["files"] if f["name"].lower().endswith(".aac")
                and not f["is_dir"] and f["size"] > 0]
-        if not mp3:
-            pytest.skip("No .mp3 files found on device to download")
-        target = mp3[0]
+        if not aac:
+            pytest.skip("No .aac files found on device to download")
+        target = aac[0]
         filepath = f"/sdcard/{target['name']}"
         resp = api.files_download(filepath)
         assert resp.status_code == 200
@@ -54,7 +54,7 @@ class TestFilesDownload:
 
     def test_download_nonexistent_file(self, api):
         """Downloading a non-existent file returns error text."""
-        resp = api.files_download("/sdcard/nonexistent_file_xyz.mp3")
+        resp = api.files_download("/sdcard/nonexistent_file_xyz.aac")
         assert resp.status_code == 200
         text = resp.text
         assert "Cannot open file" in text or "not a file" in text.lower()
@@ -65,14 +65,14 @@ class TestFilesDelete:
 
     def test_delete_nonexistent_file(self, api):
         """Deleting a non-existent file returns {ok: 0, error: 'File not found'}."""
-        r = api.files_delete("/sdcard/nonexistent_delete_test.mp3")
+        r = api.files_delete("/sdcard/nonexistent_delete_test.aac")
         assert r.get("ok") == 0, f"Expected ok:0, got: {r}"
         assert "error" in r, f"Missing error: {r}"
 
     def test_delete_batch_nonexistent(self, api):
         """delete_batch with nonexistent paths returns {ok: 1, deleted: 0, failed: N}."""
-        r = api.files_delete_batch(["/sdcard/nonexistent_a.mp3",
-                                    "/sdcard/nonexistent_b.mp3"])
+        r = api.files_delete_batch(["/sdcard/nonexistent_a.aac",
+                                    "/sdcard/nonexistent_b.aac"])
         assert r.get("ok") == 1, f"Expected ok:1, got: {r}"
         assert "deleted" in r, f"Missing deleted: {r}"
         assert "failed" in r, f"Missing failed: {r}"
