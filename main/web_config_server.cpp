@@ -156,6 +156,21 @@ static void audio_unlock(void)
 bool web_config_is_aac_recording(void) { return s_is_recording.load(std::memory_order_acquire); }
 bool web_config_is_playing(void) { return s_playing.load(std::memory_order_acquire); }
 
+/* Wait briefly (max 500ms) for the audio task to exit after s_audio_running
+ * was cleared. Used by h_rec_start failure paths so the task lifecycle state
+ * is consistent (s_audio_task_exited=true) before the handler returns —
+ * otherwise an immediate retry hits the "cleanup in progress" gate.
+ * Never force-deletes the task (it may hold the FAT VFS mutex). */
+static void _wait_audio_task_exit_brief(void)
+{
+    for (int i = 0; i < 10 && !s_audio_task_exited.load(std::memory_order_acquire); ++i) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!s_audio_task_exited.load(std::memory_order_acquire)) {
+        ESP_LOGW(TAG, "Audio task still exiting after 500ms — next record_start may retry");
+    }
+}
+
 /* Stop the audio task: set s_audio_running=false and wait briefly for exit.
  * Used by web_config_server_stop() during graceful shutdown.
  * NEVER vTaskDelete the audio task — it may hold the FAT VFS mutex. */
@@ -1195,6 +1210,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!s_pcm_buf) {
         s_audio_running = false;
+        _wait_audio_task_exit_brief();
         audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
@@ -1212,6 +1228,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         heap_caps_free(s_pcm_buf);
         s_pcm_buf = NULL;
         s_audio_running = false;
+        _wait_audio_task_exit_brief();
         audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
@@ -1223,6 +1240,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         heap_caps_free(s_pcm_buf);
         s_pcm_buf = NULL;
         s_audio_running = false;
+        _wait_audio_task_exit_brief();
         audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
@@ -1236,6 +1254,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         heap_caps_free(s_pcm_buf);
         s_pcm_buf = NULL;
         s_audio_running = false;
+        _wait_audio_task_exit_brief();
         audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}");
         return ESP_OK;
@@ -1256,7 +1275,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         if (s_enc_in_buf) { heap_caps_free(s_enc_in_buf); s_enc_in_buf = NULL; }
         if (s_enc_out_buf) { heap_caps_free(s_enc_out_buf); s_enc_out_buf = NULL; }
         heap_caps_free(s_pcm_buf); s_pcm_buf = NULL;
-        s_audio_running = false; audio_unlock();
+        s_audio_running = false; _wait_audio_task_exit_brief(); audio_unlock();
         httpd_resp_sendstr(req, "{\"ok\":0}"); return ESP_OK; }
     s_rec_bytes = 0; s_rec_start_ms.store((uint32_t)(esp_timer_get_time() / 1000), std::memory_order_relaxed);
     s_is_recording = true;
