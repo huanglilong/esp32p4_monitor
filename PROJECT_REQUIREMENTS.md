@@ -391,6 +391,11 @@
 | S340 | **set_rotation_handler 硬编码 NVS 键** | `nvs_open("settings")` / `nvs_set_i32(h, "cam_rotation")` / `nvs_get_i32_def("cam_rotation")` 使用字符串字面量而非共享宏，违反 S156 (NVS 共享键定义)。修复: 新增 `NVS_KEY_CAM_ROTATION` 至 `example_config.h`，全部替换为 `NVS_NAMESPACE_SETTINGS` + `NVS_KEY_CAM_ROTATION` 宏 | ✅ |
 | S341 | **set_rotation_handler NVS 返回值未检查** | `nvs_set_i32()` / `nvs_commit()` 返回值未检查，NVS 写入失败时静默忽略，违反 Section 3.3 "Always check return values of ESP-IDF API calls"。修复: 检查返回值 + `ESP_LOGW` 日志 | ✅ |
 | S342 | **set_rotation 头文件文档误导** | `camera_stream.hpp` 注释称 "If stream is running, stops and restarts"，但实现显式不重启 (见 .cpp NOTE)。修复: 更正为 "Does NOT restart a running stream" | ✅ |
+| S345 | **audio_ulog_recorder 过期 .mp3 注释** | S344 AAC 切换后互斥注释与日志仍称 ".mp3 recording"。修复: 3 处更新为 .aac | ✅ |
+| S346 | **test_files.py 过期 .mp3 引用** | 下载测试筛选 .mp3 文件，设备现录 .aac → 测试永远 skip。修复: 筛选 .aac + fixture 改 .aac | ✅ |
+| S347 | **h_rec_start 失败路径任务状态不一致** | 任务创建后失败 (PCM alloc/encoder open/frame size/buffer alloc/fopen) 立即返回，任务仍在 i2s read (≤50ms) → `s_audio_task_exited` 仍 false，立即重试触发 "cleanup in progress" 假错误。修复: `_wait_audio_task_exit_brief()` (500ms 有界轮询) 应用于全部 5 个失败路径 | ✅ |
+| S348 | **PhoneAppAudio 死成员 `_enc_in_count`** | AAC 切换遗留，仅写 (3 处) 不读。修复: 删除成员及赋值 | ✅ |
+| S349 | **音频缓冲注释时长错误** | 480 interleaved samples @16kHz stereo = 15ms，注释误写 ~30ms。修复: 更正注释 | ✅ |
 
 ### 2.3 系统性能监控
 
@@ -544,6 +549,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-08-31 | +S345~S349 **代码审查 Round 13/14 修复 (5 issues: 1 MEDIUM + 4 LOW)**: 审查对象为未复核的 S344 AAC 编码器替换 commit (15b006f)。**S345 (LOW) audio_ulog_recorder 过期注释**: 互斥注释与日志仍称 ".mp3 recording"，实际已是 .aac。修复: 3 处注释/日志更新为 .aac。**S346 (LOW) test_files.py 过期 .mp3 引用**: 下载测试筛选 .mp3 文件，设备现录 .aac → 测试永远 skip。修复: 筛选 .aac + 不存在文件 fixture 改 .aac。**S347 (MEDIUM) h_rec_start 失败路径任务状态不一致**: 任务创建后失败 (PCM alloc/encoder open/frame size/buffer alloc/fopen) 立即返回，任务仍在 i2s read (≤50ms) 中 → `s_audio_task_exited` 仍 false，立即重试触发 "cleanup in progress" 假错误。修复: 新增 `_wait_audio_task_exit_brief()` (500ms 有界轮询，不强制删除)，5 个失败路径均调用。**S348 (LOW) PhoneAppAudio 死成员 `_enc_in_count`**: AAC 切换遗留，仅写 (3 处) 不读。修复: 删除成员及赋值。**S349 (LOW) 音频缓冲注释时长错误**: 480 interleaved samples @16kHz stereo = 15ms，注释误写 ~30ms。修复: 更正注释。每个 commit 后 `idf.py build` 验证通过 |
 | 2026-08-15 | **ESP-Claw 框架移除** (commit 43c65f1): 删除 AI Agent / MCP 工具 / IM 集成 (WeChat/Feishu/QQ/Telegram) / LLM 配置 / Agent Chat, 共 95,303 行代码删除。`max_uri_handlers` 42→30, web_config_server.cpp ~3500→~2621 行, main.cpp ~775→~530 行。移除依赖: esp-dl, lua, cogent. Flutter `agent_chat_screen.dart` 成为孤儿文件 (后端 API 不存在, 未被导航引用)。PB/PC/PD/PE 标记为已移除 |
 | 2026-08-15 | +S344 **Shine MP3 → ESP AAC 编码器替换**: I2S 采样率从 48kHz 降至 16kHz，录音编码器从 Shine MP3 (128kbps 48kHz) 替换为 ESP AAC (64kbps 16kHz ADTS)。变更: ① `phone_app_audio.hpp/cpp`: 移除 `layer3.h`/`shine_t`，改用 `esp_aac_enc.h`/`esp_audio_enc_handle_t`，AAC 帧大小 1024 samples/ch (原 1152)，文件扩展名 `.aac` (原 `.mp3`) ② `web_config_server.cpp`: 同步替换 Shine→AAC ③ `main/CMakeLists.txt`: `shine_encoder` → `espressif__esp_audio_codec` ④ `main/idf_component.yml`: 新增 `espressif/esp_audio_codec: '^2.5'` 依赖。`idf.py build` 验证通过 |
 | 2026-08-15 | +S340/S341/S342 **代码审查 Round 12 修复 (3 issues: 2 MEDIUM + 1 LOW)**: **S340 (MEDIUM) set_rotation_handler 硬编码 NVS 键**: `nvs_open("settings")`/`nvs_set_i32(h,"cam_rotation")`/`nvs_get_i32_def("cam_rotation")` 使用字符串字面量而非共享宏 (S156)。修复: 新增 `NVS_KEY_CAM_ROTATION` 至 `example_config.h`，全部替换为 `NVS_NAMESPACE_SETTINGS` + `NVS_KEY_CAM_ROTATION` 宏。**S341 (MEDIUM) NVS 返回值未检查**: `nvs_set_i32()`/`nvs_commit()` 返回值未检查 (Section 3.3)。修复: 检查 + `ESP_LOGW`。**S342 (LOW) set_rotation 文档误导**: hpp 注释称 "stops and restarts" 但实现不重启。修复: 更正注释。每个 commit 后 `idf.py build` 验证通过 |
