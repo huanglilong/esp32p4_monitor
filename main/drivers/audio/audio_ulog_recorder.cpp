@@ -53,7 +53,7 @@ static const char *TAG = "audio_ulog";
 
 /* ── External state from web_config_server (for mutual exclusion) ── */
 /* Accessor functions declared in web_config_server.hpp — we check them
- * to avoid conflicting with .mp3 recording or playback (shared I2S). */
+ * to avoid conflicting with .aac recording or playback (shared I2S). */
 #include "web_config_server.hpp"
 
 /* ── AudioUlogRecorder singleton ── */
@@ -286,9 +286,9 @@ esp_err_t AudioUlogRecorder::start()
         return ESP_OK;
     }
 
-    /* Mutual exclusion: cannot run alongside .mp3 recording or playback */
+    /* Mutual exclusion: cannot run alongside .aac recording or playback */
     if (web_config_is_aac_recording()) {
-        ESP_LOGW(TAG, "Cannot start: .mp3 recording is active");
+        ESP_LOGW(TAG, "Cannot start: .aac recording is active");
         return ESP_ERR_INVALID_STATE;
     }
     if (web_config_is_playing()) {
