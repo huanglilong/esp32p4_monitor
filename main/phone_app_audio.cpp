@@ -17,7 +17,7 @@ static const char *TAG = "PhoneAppAudio";
 /* External launcher icon from brookesia */
 extern const lv_image_dsc_t esp_brookesia_image_large_app_launcher_default_112_112;
 
-/* Audio buffer: 480 samples * 2 channels * 2 bytes = 1920 bytes ~30ms @16kHz (100ms timeout) */
+/* Audio buffer: 480 interleaved samples * 2 bytes = 1920 bytes ~15ms @16kHz stereo (100ms timeout) */
 #define AUDIO_BUF_SAMPLES   480
 #define AUDIO_BUF_BYTES     (AUDIO_BUF_SAMPLES * 2 * sizeof(int16_t))
 
