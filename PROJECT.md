@@ -126,12 +126,12 @@ esp32p4_monitor/
 |------|------|------|
 | `espressif/esp-brookesia` | 0.5.0 | ESP Registry |
 | `waveshare/esp32_p4_wifi6_touch_lcd_4b` | 2.0.0 | ESP Registry |
-| `espressif/esp_codec_dev` | 1.5.10 | ESP Registry |
+| `espressif/esp_codec_dev` | 1.5.11 | ESP Registry |
 | `espressif/esp_cam_sensor` | 2.2.0 | ESP Registry |
 | `espressif/esp_sccb_intf` | 0.0.8 | ESP Registry |
 | `espressif/esp_video` | 2.2.0 | ESP Registry |
 | `espressif/esp_new_jpeg` | 1.0.2 | ESP Registry |
-| `espressif/mdns` | 1.11.2 | ESP Registry |
+| `espressif/mdns` | 1.11.3 | ESP Registry |
 | `espressif/cjson` | 1.7.19 | ESP Registry |
 | `protocol_examples_common` | local | IDF examples |
 | `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
@@ -227,40 +227,42 @@ SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独
 |---|--------|--------|-----|------|--------|----------|-----------|
 | 1 | `main` | 1 (默认) | 10KB | 0 | ESP-IDF | **一次性** — setup 后 `vTaskDelete(NULL)` 回收 | — |
 | 2 | `taskLVGL` | 4 | 10KB | 1 | `esp_lvgl_port` | 永久 | 20ms timer |
-| 3 | `audio_echo` | 5 | 12KB (PSRAM) | 0† | `PhoneAppAudio::run()` | App 打开→关闭 | 10ms 循环 |
+| 3 | `audio_echo` | 5 | 48KB (PSRAM) | 0† | `PhoneAppAudio::run()` | App 打开→关闭 | 10ms 循环 |
 | 4 | ~~`detect`~~ | — | — | — | ~~`PhoneAppCamera`~~ | **已移除** (R3 人体检测移除, 检测迁移至 CameraStream 后又整体移除) | — |
-| 5 | `GMF task` | 5 | 8KB (PSRAM) | 0 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
-| 6 | `wifi_scan` | 1 | 6KB | 0† | `Settings` (WiFi ON) / Boot | WiFi ON→OFF | 500ms 轮询 |
-| 7 | `wifi_conn` | 4 | 4KB | 0† | `Settings` (连接点击) | 一次性 | 15s 超时 |
+| 5 | `GMF/ASP task` | 3 | 8KB (PSRAM) | 1 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
+| 6 | `wifi_scan` | 1 | 6KB | 1 | `Settings` (WiFi ON) / Boot | WiFi ON→OFF | 500ms 轮询 |
+| 7 | `wifi_conn` | 4 | 4KB | 1 | `Settings` (连接点击) | 一次性 | 15s 超时 |
 | 8 | `httpd:80` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 |
 | 9 | `httpd:81` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 (MJPEG) |
-| 10 | `capture_task` | — | PSRAM | 0 | `CameraStream::start()` | Stream 打开→关闭 | DQBUF→encode→publish |
-| 11 | `web_config` | 1 | 4KB | 0 (固定) | `web_config_server_start()` | 永久 | 1s 空闲 + HTTP 事件 |
-| 12 | `w_audio` | 1 | 12KB (PSRAM) | 0 (固定) | `web_config_server` (录音时) | 录音→停止 | 100ms 循环 (I2S read) |
+| 10 | `cam_capture` | 5 | 32KB (PSRAM) | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | DQBUF→encode→publish |
+| 11 | `web_config` | 1 | 4KB | 1 | `web_config_server_start()` | 永久 | 1s 空闲 + HTTP 事件 |
+| 12 | `w_audio` | 1 | 12KB | 1 | `web_config_server` (录音时) | 录音→停止 | 100ms 循环 (I2S read) |
 | 13 | ~~`model_load`~~ | — | — | — | ~~`CameraStream::_init_detection()`~~ | **已移除** (R3 人体检测移除, NPU 推理不再使用) | — |
-| 14 | `sys_monitor` | 1 | 可配置 | — | `SystemMonitor::start()` | 永久 | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` |
-| 15 | `ulog_writer` | 1 | 8KB (PSRAM, 静态 TCB) | — | `ulog_writer_start()` | Start→Stop | ring buffer 消费 |
-| 16 | `logger` | — | — | — | `logger_init()` | 永久 | ring buffer → SD 文本文件 |
-| 17 | `audio_ulog` | 1 | PSRAM | 0 | `AudioUlogRecorder::start()` | ULog Start→Stop | I2S read → AAC encode → uORB publish |
+| 14 | `sys_monitor` | 1 | 4KB | 1 | `SystemMonitor::start()` | 永久 | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` |
+| 15 | `ulog_writer` | 5 | 32KB (PSRAM, 静态 TCB) | 0 (固定) | `ulog_writer_start()` | Start→Stop | ring buffer 消费 |
+| 16 | `logger_writer` | 3 | 4KB | 0 (固定) | `logger_init()` | 永久 | ring buffer → SD 文本文件 |
+| 17 | `audio_ulog` | 2 | 32KB (PSRAM) | 1 | `AudioUlogRecorder::start()` | ULog Start→Stop | I2S read → AAC encode → uORB publish |
 
-> † 使用 `xTaskCreate` (未指定核心), FreeRTOS 调度到 core 0 或 core 1
+> † 使用 `xTaskCreate`/`xTaskCreateStatic` (未指定核心), FreeRTOS 调度到 core 0 或 core 1
 
 ### 优先级与核心亲和性
 
 ```
-Priority 5: audio_echo, GMF task     (最高 — 实时音频, PCM 不丢失)
-Priority 4: taskLVGL, wifi_conn      (UI 渲染 / WiFi 连接)
-Priority 1: main, wifi_scan, web_config, w_audio, sys_monitor, ulog, audio_ulog (后台/辅助)
+Priority 5: audio_echo, cam_capture, ulog_writer   (实时音频 / 相机采集编码 / ULog 写入)
+Priority 4: taskLVGL, wifi_conn                    (UI 渲染 / WiFi 连接)
+Priority 3: GMF/ASP task, logger_writer            (音乐解码 / 文本日志写入)
+Priority 2: audio_ulog                             (AAC 音频帧录制)
+Priority 1: main, wifi_scan, web_config, w_audio, sys_monitor (后台/辅助)
 ```
 
 | 核心 | 任务 |
 |------|------|
-| **Core 0** | `main` (一次性), `audio_echo`, `GMF`, `wifi_scan/conn`, `httpd:80/81`, `capture_task`, `web_config`, `w_audio`, `audio_ulog` |
-| **Core 1** | `taskLVGL` (固定) |
+| **Core 0** | `main` (一次性), `audio_echo`†, `cam_capture`, `httpd:80/81`, `ulog_writer`, `logger_writer` |
+| **Core 1** | `taskLVGL` (固定), `GMF/ASP task`, `wifi_scan`, `wifi_conn`, `web_config`, `w_audio`, `sys_monitor`, `audio_ulog` |
 
-- Core 1 专用于 LVGL 渲染, 避免 UI 抖动 (S176: httpd 3 实例绑定 core 0, LVGL timer 5→20ms)。
-- Core 0 承载所有计算密集型任务 (音频编码, 协议栈, HTTP)。
-- 多数大栈任务 (audio/GMF/ulog) 栈分配在 PSRAM, TCB 留 Internal SRAM (见 SRAM 优化)。
+- Core 1 承载 LVGL 渲染 + Music 解码 (GMF/ASP, priority 3) + 轻量后台任务 (priority 1, 均低于 Music 绝不抢占) (S249)。
+- Core 0 承载计算密集型任务 (音频采集/编码、相机采集/编码、HTTP 协议栈、ULog/文本日志写入)。S176 将 httpd 3 实例绑定 core 0 避免与 LVGL 竞争; S249 将 `ulog_writer`/`logger_writer` 移离 Core 1, 避免高优先级写任务抢占 Core 1 的 Music 解码。
+- 多数大栈任务 (audio/GMF/ulog/cam_capture) 栈分配在 PSRAM, TCB 留 Internal SRAM (见 SRAM 优化)。
 - ~~`detect` (NPU 推理) 和 `model_load` (模型加载) 已随 R3 人体检测移除~~。
 - `main` setup 完成后 `vTaskDelete(NULL)` 释放 ~4KB 栈和 TCB。
 
@@ -717,7 +719,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | 懒加载 | SD 卡 + 音频首次访问时才初始化 (`__audio_init()`) |
 | 清理 | `web_config_server_stop()` 刷新编码器、关闭文件、释放 SD/音频 |
 
-**API 端点** (5 core + 6 audio + 4 file mgr + 5 CORS + 3 ULog + 2 system = 25 handlers, `max_uri_handlers=30`):
+**API 端点** (5 core + 6 audio + 4 file mgr + 7 CORS + 3 ULog + 2 system = 27 handlers, `max_uri_handlers=30`):
 - `GET /` — Web UI 首页
 - `GET /api/status` — 设备状态
 - `POST /api/settings` — 保存 WiFi/音量
@@ -738,7 +740,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 - `POST /api/ulog/stop` — 停止 ULog 录制
 - `GET /api/system_stats` — CPU/内存/任务快照
 - `GET /api/system_alerts` — CPU/内存告警状态 + 阈值
-- + 5 个 CORS OPTIONS 预检 handler (settings, camera_stream, factory_reset, files/delete, files/delete_batch, ulog/start, ulog/stop)
+- + 7 个 CORS OPTIONS 预检 handler (settings, camera_stream, factory_reset, files/delete, files/delete_batch, ulog/start, ulog/stop)
 
 > **注意**: ESP-Claw 框架 (AI Agent / MCP 工具 / IM 集成 / LLM 配置) 已移除 (commit 43c65f1)。原 WeChat / Feishu / QQ / Telegram IM 端点和 LLM 配置端点不再存在。
 
@@ -828,7 +830,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 
 运行时内部堆（启动后空闲 **~297 KB**；CameraStream+Music 峰值占用 ~87.7%）主要消耗者：
 - WiFi/LWIP 缓冲区: ~20-30 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096, TCP_SND/WND=32768, pbufs 走 PSRAM)
-- FreeRTOS 任务栈: ~30-40 KB (ASP 8KB PSRAM, audio 12KB×2 PSRAM)
+- FreeRTOS 任务栈: ~30-40 KB (ASP 8KB PSRAM, audio_echo 48KB PSRAM, w_audio 12KB internal)
 - 系统服务 (mDNS/NVS/esp_netif): ~10-20 KB
 - DMA 描述符/USB: ~5-10 KB
 - 剩余可用: **~180 KB+** (ESP-Claw 移除后进一步释放, 原 agent_msgs[16] 74.9KB 等已不在二进制中)
@@ -854,7 +856,7 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 - **2026-07-06**: Audio PCM buffer (phone_app_audio + web_config_server, 共 ~6.5KB) 从 INTERNAL 移入 PSRAM
 - ~~**2026-07-06**: detect task 16KB 栈移入 PSRAM~~ → **detect 任务已随 R3 移除**
 - ~~**2026-07-06**: CameraStream model_load task 8KB 栈移入 PSRAM~~ → **model_load 任务已随 R3 移除**
-- **2026-07-08**: 两个音频任务栈 12KB×2 从 Internal SRAM 移至 PSRAM — `phone_app_audio.cpp` 的 `audio_echo` 与 `web_config_server.cpp` 的 `w_audio` 改用 `xTaskCreateStatic`/`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM|MALLOC_CAP_8BIT)` 分配栈（TCB 留 Internal），任务退出后释放静态缓冲区；运行时节省 **~24 KB** Internal SRAM。
+- **2026-07-08**: 两个音频任务栈 12KB×2 从 Internal SRAM 移至 PSRAM — `phone_app_audio.cpp` 的 `audio_echo` 与 `web_config_server.cpp` 的 `w_audio` 改用 `xTaskCreateStatic`/`xTaskCreateStaticPinnedToCore` + `heap_caps_malloc(SPIRAM|MALLOC_CAP_8BIT)` 分配栈（TCB 留 Internal），任务退出后释放静态缓冲区；运行时节省 **~24 KB** Internal SRAM。**后续 S308 部分回退**: `w_audio` 因跨核栈竞态改回动态栈 (`xTaskCreatePinnedToCore`, 现 internal 12KB)，仅 `audio_echo` 保持 PSRAM 静态栈。
 - **2026-07-08**: SRAM 优化 (S216): 禁用 EAP (`CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED=n`, 省 ~1.1KB IRAM + 21KB PSRAM) + DVP (`CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n`, 此板仅用 MIPI CSI); TCP SND_BUF/WND 64KB→32KB (65536 超 Kconfig range 被钳制为 5760, 32768 无需 WND_SCALE)
 - ~~**2026-07-10**: MbedTLS TLS 修复 (S251): WeChat 证书链修复~~ → **ESP-Claw 移除后不再需要 IM TLS 连接**
 - **2026-07-06**: `SPIRAM_TRY_ALLOCATE_DMA_BUFFER` 在 IDF v6.x 中已不存在，`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` 已覆盖 DMA 分配

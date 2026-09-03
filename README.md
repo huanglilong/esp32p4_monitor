@@ -64,7 +64,7 @@
   - SDMMC/SDSPI:
 
     > **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5), 通过 IO MUX 可配置为 SDMMC 4-bit 或 SDSPI 模式。
-    > **本项目实际使用 SDSPI 模式**: SDMMC_HOST_SLOT_0 被 ESP32-C6 WiFi (SDIO) 占用, 详见 `main/main.cpp:163`。
+    > **本项目实际使用 SDSPI 模式**: SDMMC_HOST_SLOT_0 被 ESP32-C6 WiFi (SDIO) 占用, 详见 `main/main.cpp` (boot 挂载 SDSPI, `SDCardDriver::init()`)。
 
     |   Signal	|   P4 GPIO   |   Phys Pin     |   SD Card     |   Description |
     |:----:|:----:|:----:|:----:|:----:|
