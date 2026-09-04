@@ -177,7 +177,28 @@ bool SDCardDriver::format(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "SD card formatted and remounted at %s", SDMMC_MOUNT_POINT);
+    /* ESP-IDF bug (vfs_fat_sdmmc.c): if the remount after formatting fails,
+     * esp_vfs_fat_sdcard_format still returns ESP_OK — it calls
+     * unmount_card_core() which frees the card and unregisters the diskio,
+     * then returns the (successful) format result. Detect this by checking
+     * whether the mount is actually alive; if not, drop our state so a
+     * later init() can re-mount from scratch. */
+    uint64_t total_bytes = 0, free_bytes = 0;
+    if (esp_vfs_fat_info(SDMMC_MOUNT_POINT, &total_bytes, &free_bytes) != ESP_OK) {
+        ESP_LOGE(TAG, "SD format: remount failed (IDF returned ESP_OK but mount "
+                 "is gone — known IDF bug). Marking SD as uninitialized; "
+                 "next init() will re-mount.");
+        _card = nullptr;
+        _initialized = false;
+        xSemaphoreGive(_init_mutex);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "SD card formatted and remounted at %s "
+             "(total=%llu MB, free=%llu MB)",
+             SDMMC_MOUNT_POINT,
+             (unsigned long long)(total_bytes / (1024 * 1024)),
+             (unsigned long long)(free_bytes / (1024 * 1024)));
     xSemaphoreGive(_init_mutex);
     return true;
 }
