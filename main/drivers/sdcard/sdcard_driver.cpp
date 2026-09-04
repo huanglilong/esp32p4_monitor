@@ -87,7 +87,10 @@ bool SDCardDriver::init(void)
      * does not support shared ownership.  We skip LDO4 here on
      * LCD-4B and let the display init handle it; the caller must
      * retry init_sdcard() after the display is up. */
-    if (!_has_lcd.load(std::memory_order_relaxed)) {
+    if (!_has_lcd.load(std::memory_order_relaxed) && !_pwr_ctrl) {
+        /* Skip if _pwr_ctrl already exists — happens when re-mounting
+         * after a failed format. LDO4 is adjustable, so a second
+         * esp_ldo_acquire_channel would fail with "already in use". */
         sd_pwr_ctrl_ldo_config_t ldo_config = { .ldo_chan_id = 4 };
         ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &_pwr_ctrl);
         if (ret != ESP_OK) {
@@ -97,6 +100,8 @@ bool SDCardDriver::init(void)
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
+    } else if (_pwr_ctrl) {
+        ESP_LOGI(TAG, "LDO4 power already on — reusing for SD remount");
     } else {
         ESP_LOGI(TAG, "LCD-4B: deferring LDO4 to BSP display init");
     }
@@ -126,7 +131,12 @@ bool SDCardDriver::init(void)
         .max_transfer_sz = 4000,
     };
     ret = spi_bus_initialize(SD_SPI_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK) {
+    if (ret == ESP_ERR_INVALID_STATE) {
+        /* Bus already initialized — happens when re-mounting after a failed
+         * format (esp_vfs_fat_sdcard_format frees the card and removes the
+         * SDSPI device but leaves the SPI bus up). Reuse it. */
+        ESP_LOGI(TAG, "SPI bus already initialized — reusing for SD remount");
+    } else if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SPI bus init failed (%s)", esp_err_to_name(ret));
         if (_pwr_ctrl) { sd_pwr_ctrl_del_on_chip_ldo(_pwr_ctrl); _pwr_ctrl = nullptr; }
         xSemaphoreGive(_init_mutex);
@@ -173,6 +183,16 @@ bool SDCardDriver::format(void)
     esp_err_t ret = esp_vfs_fat_sdcard_format(SDMMC_MOUNT_POINT, _card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SD format failed: %s", esp_err_to_name(ret));
+        /* f_mkfs failure path: IDF leaves FatFs unmounted (f_mount(0) was
+         * already done) but the VFS path may still be registered. Verify
+         * the mount state and drop our handles if it is gone, so a later
+         * init() can re-mount cleanly. */
+        uint64_t total_b = 0, free_b = 0;
+        if (esp_vfs_fat_info(SDMMC_MOUNT_POINT, &total_b, &free_b) != ESP_OK) {
+            ESP_LOGE(TAG, "SD mount lost after failed format — marking uninitialized");
+            _card = nullptr;
+            _initialized = false;
+        }
         xSemaphoreGive(_init_mutex);
         return false;
     }
