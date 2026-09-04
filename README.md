@@ -106,7 +106,7 @@
 - **Settings App** Volume/brightness sliders + WiFi + Camera Stream enable/disable (stream persists across app close/open)
 - **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video+audio viewer (parse .ulg frames, slideshow, save)
 - **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
-- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible, auto-start on WiFi+SNTP, camera frame + audio frame recording)
+- **ULog** PX4-compatible binary log format (SD card, SNTP date naming, file rotation, pyulog compatible, auto-start on WiFi+SNTP, camera frame + audio frame recording, capacity-based cleanup at start + each rotation with critical free-space override)
 - **System Monitor** Per-core CPU busy%, heap/PSRAM tracking, resource alerts (uORB + ULog + Web API)
 - **Logger** Text log to SD card (ring buffer + writer task, file rotation, esp_log_set_vprintf interception)
 - **Captive DNS** UDP 53 DNS hijack + DHCP DNS advertisement for headless WiFi provisioning (WIFI6 board)
