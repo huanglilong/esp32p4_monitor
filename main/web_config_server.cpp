@@ -86,7 +86,12 @@ static const char *TAG = "WebConfig";
 /* Backward-compatible local alias for brevity in this file */
 #define NVS_NAMESPACE           NVS_NAMESPACE_SETTINGS
 
-#define TASK_STACK_SIZE         (4 * 1024)
+#define TASK_STACK_SIZE         (8 * 1024)  /* Was 4KB — overflowed (stack protection
+                                             * fault) when ULog auto-start ran
+                                             * cleanup_old_logs (opendir + recursive
+                                             * dir_total_size + FATFS + SDSPI frames)
+                                             * in this task. 8KB matches the deepest
+                                             * FATFS call chains used here. */
 #define TASK_PRIORITY           1
 #define WIFI_CONNECT_TIMEOUT_MS 15000  /* Max wait for STA connection before giving up */
 /* WIFI_CONNECTED_BIT now defined in example_config.h */

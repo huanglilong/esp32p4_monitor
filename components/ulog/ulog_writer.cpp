@@ -85,6 +85,18 @@ static const char *TAG = "ULog";
 #endif
 #endif
 
+/** Critical SD free-space percentage (0-100). When free space drops below
+ *  this, cleanup ignores ULOG_MIN_KEEP_FILES and deletes oldest logs until
+ *  space recovers — a 100%-full FAT filesystem gets corrupted by ongoing
+ *  writes (observed in the field: fwrite "succeeds" but files are 0 bytes). */
+#ifndef ULOG_CRITICAL_FREE_PCT
+#ifdef CONFIG_ULOG_CRITICAL_FREE_PCT
+#define ULOG_CRITICAL_FREE_PCT  CONFIG_ULOG_CRITICAL_FREE_PCT
+#else
+#define ULOG_CRITICAL_FREE_PCT  5
+#endif
+#endif
+
 #define MS_TO_US(ms)  ((ms) * 1000ULL)
 
 /* ------------------------------------------------------------------ */
@@ -273,6 +285,26 @@ static esp_err_t write_subscription_messages(ulog_writer_t *writer);
 static void ensure_log_dir(const char *dir);
 static esp_err_t create_log_path(ulog_writer_t *writer);
 static void cleanup_old_logs(const char *log_root, size_t size_limit);
+
+/** Run capacity-based cleanup for the ULog storage area.
+ *  Computes the size limit from SD capacity (fallback 512KB) and calls
+ *  cleanup_old_logs(). Called at writer start and at each file rotation —
+ *  a long-running session must not wait for a restart to reclaim space. */
+static void ulog_capacity_cleanup(ulog_writer_t *writer)
+{
+    char log_root[MAX_PATH + 8];
+    snprintf(log_root, sizeof(log_root), "%s/%s", writer->sd_mount_path, LOG_DIR_NAME);
+
+    size_t size_limit = 512 * 1024;  /* fallback: 512 KB */
+    struct statvfs vfs;
+    if (statvfs(writer->sd_mount_path, &vfs) == 0) {
+        uint64_t total = (uint64_t)vfs.f_frsize * vfs.f_blocks;
+        size_limit = (size_t)(total * ULOG_MAX_CAPACITY_PCT / 100);
+    }
+
+    cleanup_old_logs(log_root, size_limit);
+}
+
 static esp_err_t rotate_log_file(ulog_writer_t *writer);
 
 /* ------------------------------------------------------------------ */
@@ -415,18 +447,8 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
     snprintf(log_root, sizeof(log_root), "%s/%s", writer->sd_mount_path, LOG_DIR_NAME);
     ensure_log_dir(log_root);
 
-    /* Compute ULog storage limit from SD card total capacity */
-    size_t size_limit = 512 * 1024;  /* fallback: 512 KB */
-    {
-        struct statvfs vfs;
-        if (statvfs(writer->sd_mount_path, &vfs) == 0) {
-            uint64_t total = (uint64_t)vfs.f_frsize * vfs.f_blocks;
-            size_limit = (size_t)(total * ULOG_MAX_CAPACITY_PCT / 100);
-        }
-    }
-
     /* Cleanup old logs if over capacity */
-    cleanup_old_logs(log_root, size_limit);
+    ulog_capacity_cleanup(writer);
 
     /* Create log directory and file path (date-based or session-based) */
     esp_err_t err = create_log_path(writer);
@@ -1182,7 +1204,15 @@ static int cmp_dir_mtime(const void *a, const void *b)
  * Cleanup old log directories if total size exceeds limit.
  * Scans date (YYYY-MM-DD) and session (sessNNN) subdirectories,
  * sorts oldest-first, and deletes directories until under capacity.
- * Respects ULOG_MIN_KEEP_FILES as a floor.
+ *
+ * Deletion policy:
+ *  - ULOG_MIN_KEEP_FILES is a SOFT floor: cleanup stops before deleting
+ *    the directory that would drop the retained file count below it.
+ *  - CRITICAL OVERRIDE: when SD free space falls below ULOG_CRITICAL_FREE_PCT,
+ *    the floor is ignored and logs are deleted until free space recovers —
+ *    a full SD corrupts the FAT filesystem (observed: fwrite reports success
+ *    but files are 0 bytes, directories unreadable), which is far worse than
+ *    losing old logs.
  */
 static void cleanup_old_logs(const char *log_root, size_t size_limit)
 {
@@ -1224,9 +1254,35 @@ static void cleanup_old_logs(const char *log_root, size_t size_limit)
     /* Count total ULog files once (not per-iteration O(n²)) */
     int file_count = count_ulg_files(log_root);
 
-    /* Delete oldest directories until under capacity, respecting file floor */
+    /* Critical free-space check: when the SD card is nearly full, ignore the
+     * MIN_KEEP_FILES floor — keeping the filesystem alive outranks keeping
+     * old logs. A 100%-full FAT gets corrupted by ongoing writes. */
+    bool critical_free = false;
+    {
+        struct statvfs vfs;
+        /* log_root is "<mount>/data" — statvfs works on any path within the mount */
+        if (statvfs(log_root, &vfs) == 0 && vfs.f_blocks > 0) {
+            uint64_t free_b = (uint64_t)vfs.f_bfree * vfs.f_frsize;
+            uint64_t total_b = (uint64_t)vfs.f_blocks * vfs.f_frsize;
+            critical_free = (free_b * 100 / total_b) < ULOG_CRITICAL_FREE_PCT;
+            if (critical_free) {
+                ESP_LOGW(TAG, "Cleanup: SD free space critical (%u%% < %u%%) — "
+                         "ignoring min-keep floor, deleting oldest logs",
+                         (unsigned)(free_b * 100 / total_b), (unsigned)ULOG_CRITICAL_FREE_PCT);
+            }
+        }
+    }
+
+    /* Delete oldest directories until under capacity.
+     * Soft floor: stop when the NEXT deletion would drop the retained
+     * file count below ULOG_MIN_KEEP_FILES (unless critical free space). */
     for (int i = 0; i < dir_count && total_size > size_limit; i++) {
-        if (file_count <= (int)ULOG_MIN_KEEP_FILES) break;
+        if (!critical_free && file_count <= (int)ULOG_MIN_KEEP_FILES) {
+            ESP_LOGI(TAG, "Cleanup: over capacity (%u KB > %u KB) but at min-keep "
+                     "floor (%d files) — keeping remaining logs",
+                     (unsigned)(total_size / 1024), (unsigned)(size_limit / 1024), file_count);
+            break;
+        }
 
         ESP_LOGI(TAG, "Cleanup: removing %s (%u KB)",
                  dirs[i].path, (unsigned)(dirs[i].size / 1024));
@@ -1447,6 +1503,14 @@ static esp_err_t rotate_log_file(ulog_writer_t *writer)
 
     err = write_subscription_messages(writer);
     if (err != ESP_OK) { close(writer->fd); writer->fd = -1; return err; }
+
+    /* Reclaim space at each rotation (every ULOG_MAX_FILE_SIZE bytes).
+     * A long-running session must not wait for a restart to enforce the
+     * capacity limit — the SD card would fill up and corrupt the FAT.
+     * Runs in writer task context (32KB PSRAM stack) — safe for the
+     * heap-allocated dir scan in cleanup_old_logs(). The current file's
+     * date directory is the newest, so it is never the deletion candidate. */
+    ulog_capacity_cleanup(writer);
 
     ESP_LOGI(TAG, "Rotated to new file: %s", writer->filepath);
     return ESP_OK;

@@ -95,6 +95,21 @@ menu "ULog Logger Configuration"
                 Minimum number of .ulog files to keep, even if total
                 size exceeds the capacity percentage.  Prevents wiping
                 all data in a runaway high-rate logging scenario.
+                This is a SOFT floor: it is ignored when SD free space
+                drops below the critical threshold (see
+                ULOG_CRITICAL_FREE_PCT), because a 100%-full FAT
+                filesystem gets corrupted by ongoing writes.
+
+        config ULOG_CRITICAL_FREE_PCT
+            int "Critical SD free space (%) to force cleanup"
+            default 5
+            range 1 50
+            help
+                When SD card free space drops below this percentage,
+                ULog cleanup ignores the min-keep-files floor and
+                deletes oldest logs until space recovers.  Protects
+                the FAT filesystem from corruption caused by writing
+                to a full card.
 
     endif
 
