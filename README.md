@@ -102,7 +102,7 @@
 - **MIPI CSI** OV5647 camera (V4L2, ~5fps sensor via VTS=9840, HW JPEG, PPA-accelerated preprocessing; Camera App is preview-only, Camera Stream PPA resizes to 300×300 for efficient MJPEG encoding)
 - **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, PPA-accelerated 300×300 JPEG encoding, independent capture task, TCP keep-alive, image rotation 0°/90°/180°/270°; toggle in Settings App)
 - **Audio** Dual mic monitoring + AAC recording (ESP AAC encoder, SD card) + Music playback (ESP-GMF)
-- **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording, WiFi recovery httpd restart, captive portal for headless config)
+- **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording + take-a-picture to SD, SD card format (FAT repair), WiFi recovery httpd restart, captive portal for headless config)
 - **Settings App** Volume/brightness sliders + WiFi + Camera Stream enable/disable (stream persists across app close/open)
 - **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video+audio viewer (parse .ulg frames, slideshow, save)
 - **uORB** PX4-style pub/sub message bus (FreeRTOS Queue, .msg auto-generation)
