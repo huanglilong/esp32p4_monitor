@@ -500,6 +500,10 @@ static const char *WEB_UI_HTML =
 "<button class=\"rot-btn\" onclick=\"setRot(180)\" id=\"rot180\" style=\"flex:1;padding:6px 0;font-size:12px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer\">180°</button>"
 "<button class=\"rot-btn\" onclick=\"setRot(270)\" id=\"rot270\" style=\"flex:1;padding:6px 0;font-size:12px;background:#333;color:#fff;border:1px solid #555;border-radius:6px;cursor:pointer\">270°</button>"
 "</div>"
+"<div style=\"margin-top:8px;display:flex;gap:6px;align-items:center\">"
+"<button id=\"btn_capture\" onclick=\"takePicture()\" style=\"flex:1;padding:8px 0;font-size:13px\">📷 Take Picture</button>"
+"</div>"
+"<div id=\"capture_stat\" style=\"font-size:12px;color:#a0a0b0;margin-top:4px;min-height:16px\"></div>"
 "</div>"
 "<div class=\"card\" id=\"audio_card\" style=\"display:none\">"
 "<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:8px\">"
@@ -558,6 +562,7 @@ static const char *WEB_UI_HTML =
 "let cs=document.getElementById('cam_status');"
 "cs.textContent=j.cam_running?(j.cam_recording?'● Streaming + Recording':'● Streaming active'):'○ Stopped';"
 "cs.style.color=j.cam_running?'#4caf50':'#a0a0b0';"
+"updateCaptureBtn(j.cam_running);"
 "document.getElementById('audio_card').style.display='block';"
 "document.getElementById('files_card').style.display='none';"
 "fmMode=false;"
@@ -579,6 +584,7 @@ static const char *WEB_UI_HTML =
 "let cs=document.getElementById('cam_status');"
 "cs.textContent=j.running?(j.recording?'● Streaming + Recording':'● Streaming active'):'○ Stopped';"
 "cs.style.color=j.running?'#4caf50':'#a0a0b0';"
+"updateCaptureBtn(j.running);"
 "document.getElementById('files_card').style.display='none';"
 "fmMode=false;"
 "loadFiles();"
@@ -593,6 +599,22 @@ static const char *WEB_UI_HTML =
 "try{var r=await fetch('http://'+window.location.hostname+':80/api/set_rotation?value='+d);"
 "var j=await r.json();if(j.ok){highlightRot(j.rotation);showStatus('Rotation: '+j.rotation+'°','success')}"
 "else showStatus('Rotation failed','error')}catch(e){showStatus('Connection error','error')}}"
+"function updateCaptureBtn(running){"
+"var b=document.getElementById('btn_capture');"
+"b.disabled=!running;b.style.opacity=running?'1':'.4';b.style.cursor=running?'pointer':'not-allowed'}"
+"async function takePicture(){"
+"var b=document.getElementById('btn_capture');"
+"b.disabled=true;"
+"document.getElementById('capture_stat').textContent='Capturing...';"
+"document.getElementById('capture_stat').style.color='#00d4ff';"
+"try{var r=await fetch('/api/camera/capture');"
+"var j=await r.json();"
+"var s=document.getElementById('capture_stat');"
+"if(j.ok){s.textContent='✅ Saved: '+j.file+' ('+Math.round(j.bytes/1024)+'KB)';s.style.color='#4caf50';"
+"showStatus('Picture saved: '+j.file,'success')}"
+"else{s.textContent='❌ '+(j.error||'Failed');s.style.color='#f44336';showStatus('Capture failed: '+(j.error||''),'error')}}"
+"catch(e){var s2=document.getElementById('capture_stat');s2.textContent='❌ Connection error';s2.style.color='#f44336'}"
+"b.disabled=false;updateCaptureBtn(document.getElementById('cam_stream').checked&&document.getElementById('cam_status').textContent.indexOf('Streaming')>=0)}"
 "var uiTimer=null;"
 "async function loadFiles(){"
 "try{var r=await fetch('/api/audio/list');var j=await r.json();"
@@ -1112,6 +1134,112 @@ static bool __audio_init(void) {
 static bool __sd_ensure(void) {
     if (SDCardDriver::instance().available()) return true;
     return SDCardDriver::instance().init();
+}
+
+/*============================================================================
+ * Take a Picture — capture latest JPEG frame from CameraStream shared buffer
+ * and save it to SD card as /sdcard/<epoch_seconds>.jpg
+ *============================================================================*/
+
+/* GET /api/camera/capture */
+static esp_err_t camera_capture_handler(httpd_req_t *req)
+{
+    CameraStream &cs = CameraStream::instance();
+
+    /* Camera stream must be running — the capture task produces the frames */
+    if (!cs.isRunning()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera stream not running\"}");
+        return ESP_OK;
+    }
+
+    /* SD card must be mounted */
+    if (!__sd_ensure()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD card not available\"}");
+        return ESP_OK;
+    }
+
+    /* Copy the latest JPEG from the shared buffer under its mutex.
+     * The capture task may overwrite the shared buffer at any moment, so a
+     * local PSRAM copy is taken (same pattern as the MJPEG stream handler).
+     * At ~5-8KB per frame this is affordable. */
+    uint8_t *jpeg_copy = nullptr;
+    uint32_t jpeg_size = 0;
+
+    if (!cs._shared_jpeg_mutex ||
+        xSemaphoreTake(cs._shared_jpeg_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Camera busy\"}");
+        return ESP_OK;
+    }
+    if (cs._shared_jpeg_buf && cs._shared_jpeg_size > 0) {
+        jpeg_copy = (uint8_t *)heap_caps_malloc(cs._shared_jpeg_size, MALLOC_CAP_SPIRAM);
+        if (jpeg_copy) {
+            memcpy(jpeg_copy, cs._shared_jpeg_buf, cs._shared_jpeg_size);
+            jpeg_size = cs._shared_jpeg_size;
+        }
+    }
+    xSemaphoreGive(cs._shared_jpeg_mutex);
+
+    if (!jpeg_copy || jpeg_size == 0) {
+        if (jpeg_copy) heap_caps_free(jpeg_copy);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"No frame available yet\"}");
+        return ESP_OK;
+    }
+
+    /* File name: <epoch_seconds>.jpg (matches `date +%s` on the host).
+     * Wall clock comes from SNTP; if not yet synced (year < 2020), fall back
+     * to monotonic milliseconds so files never collide or go backwards. */
+    char fname[32];
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    struct tm tm_buf;
+    time_t t = tv.tv_sec;
+    localtime_r(&t, &tm_buf);
+    if (tm_buf.tm_year + 1900 >= 2020) {
+        snprintf(fname, sizeof(fname), "%lld.jpg", (long long)tv.tv_sec);
+    } else {
+        uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        snprintf(fname, sizeof(fname), "mono_%lu.jpg", (unsigned long)mono_ms);
+        ESP_LOGW(TAG, "Capture: wall clock not synced, using monotonic name %s", fname);
+    }
+
+    char fpath[96];
+    snprintf(fpath, sizeof(fpath), SDMMC_MOUNT_POINT "/%s", fname);
+
+    FILE *f = fopen(fpath, "wb");
+    if (!f) {
+        heap_caps_free(jpeg_copy);
+        ESP_LOGE(TAG, "Capture: cannot open %s for write", fpath);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD write failed\"}");
+        return ESP_OK;
+    }
+
+    size_t written = fwrite(jpeg_copy, 1, jpeg_size, f);
+    heap_caps_free(jpeg_copy);
+    fclose(f);
+
+    if (written != jpeg_size) {
+        ESP_LOGE(TAG, "Capture: short write %u/%u to %s",
+                 (unsigned)written, (unsigned)jpeg_size, fpath);
+        remove(fpath);  /* Don't leave a truncated file behind */
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD write failed\"}");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Picture saved: %s (%u bytes)", fpath, (unsigned)jpeg_size);
+
+    char resp[160];
+    snprintf(resp, sizeof(resp), "{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu}",
+             fname, (unsigned long)jpeg_size);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
 }
 
 /* Sanitize a user-supplied path to ensure it stays within /sdcard.
@@ -2144,11 +2272,13 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_status = { .uri = "/api/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL };
     httpd_uri_t uri_settings = { .uri = "/api/settings", .method = HTTP_POST, .handler = settings_handler, .user_ctx = NULL };
     httpd_uri_t uri_cam = { .uri = "/api/camera_stream", .method = HTTP_POST, .handler = camera_stream_handler, .user_ctx = NULL };
+    httpd_uri_t uri_capture = { .uri = "/api/camera/capture", .method = HTTP_GET, .handler = camera_capture_handler, .user_ctx = NULL };
     httpd_uri_t uri_reset = { .uri = "/api/factory_reset", .method = HTTP_POST, .handler = factory_reset_handler, .user_ctx = NULL };
     REG_URI(&uri_index);
     REG_URI(&uri_status);
     REG_URI(&uri_settings);
     REG_URI(&uri_cam);
+    REG_URI(&uri_capture);
     REG_URI(&uri_reset);
 
     /* Audio recording / playback */

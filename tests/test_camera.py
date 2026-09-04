@@ -92,6 +92,52 @@ class TestDetectionInfo:
         assert "detection_enabled" in info, f"Missing detection_enabled: {info}"
 
 
+class TestCameraCapture:
+    """GET /api/camera/capture on port 8080 — take a picture to SD card."""
+
+    def test_capture_requires_stream(self, client, base_url):
+        """Capture without a running stream returns a JSON error (not a crash)."""
+        r = client.get(f"{base_url}/api/camera/capture", timeout=10)
+        r.raise_for_status()
+        j = r.json()
+        # Either the stream is running (ok=1) or we get a clean error
+        if j.get("ok") not in (1, True):
+            assert "error" in j, f"Expected error message: {j}"
+
+    def test_take_picture(self, api, client, base_url):
+        """Enable stream, capture a picture, verify file exists on SD card."""
+        # Enable the camera stream (requires WiFi)
+        r = api.camera_stream(enable=True)
+        if r.get("ok") not in (1, True):
+            pytest.skip(f"Camera stream could not start: {r}")
+
+        # Wait for the capture task to produce at least one frame
+        import time
+        for _ in range(20):
+            info = api.status()
+            if info.get("cam_running"):
+                break
+            time.sleep(0.5)
+
+        # Take a picture
+        r = client.get(f"{base_url}/api/camera/capture", timeout=15)
+        r.raise_for_status()
+        j = r.json()
+        assert j.get("ok") in (1, True), f"Capture failed: {j}"
+        assert "file" in j, f"Missing file field: {j}"
+        assert j["file"].endswith(".jpg"), f"File should be .jpg: {j['file']}"
+        assert j.get("bytes", 0) > 0, f"Picture should have data: {j}"
+
+        # Verify the file exists via the file manager API
+        listing = api.files_list(dir="/")
+        names = [f["name"] for f in listing.get("files", [])]
+        assert j["file"] in names, f"Captured file {j['file']} not in SD root: {names[:10]}"
+
+        # Cleanup: delete the captured picture
+        d = api.files_delete(path="/" + j["file"])
+        assert d.get("ok") in (1, True), f"Cleanup delete failed: {d}"
+
+
 class TestCameraRotation:
     """GET /api/set_rotation on port 80 — camera image rotation."""
 
