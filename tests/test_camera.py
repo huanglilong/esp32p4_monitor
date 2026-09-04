@@ -95,7 +95,7 @@ class TestDetectionInfo:
 class TestCameraCapture:
     """GET /api/camera/capture on port 8080 — take a picture to SD card."""
 
-    def test_capture_requires_stream(self, client, base_url):
+    def test_capture_requires_stream(self, api, client, base_url):
         """Capture without a running stream returns a JSON error (not a crash)."""
         r = client.get(f"{base_url}/api/camera/capture", timeout=10)
         r.raise_for_status()
@@ -103,6 +103,12 @@ class TestCameraCapture:
         # Either the stream is running (ok=1) or we get a clean error
         if j.get("ok") not in (1, True):
             assert "error" in j, f"Expected error message: {j}"
+        else:
+            # Stream happened to be running — clean up the captured photo
+            # so the test doesn't leave a stray file on the SD card
+            if "file" in j:
+                d = api.files_delete(path="/" + j["file"])
+                assert d.get("ok") in (1, True), f"Cleanup delete failed: {d}"
 
     def test_take_picture(self, api, client, base_url):
         """Enable stream, capture a picture, verify file exists on SD card."""
