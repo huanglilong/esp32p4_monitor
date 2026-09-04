@@ -1461,11 +1461,11 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
     localtime_r(&t, &tm_buf);
     /* Guard against unsynced wall-clock (epoch year < 2020 → overwrite) */
     if (tm_buf.tm_year + 1900 > 2020) {
-        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.aac",
-                 tm_buf.tm_year+1900, tm_buf.tm_mon+1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/%lld.aac",
+                 (long long)tv.tv_sec);
     } else {
         uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/rec_%lu.aac", (unsigned long)mono_ms);
+        snprintf(s_rec_path, sizeof(s_rec_path), SDMMC_MOUNT_POINT "/mono_%lu.aac", (unsigned long)mono_ms);
     }
     s_rec_file = fopen(s_rec_path, "wb");
     if (!s_rec_file) { esp_aac_enc_close(s_aac_enc); s_aac_enc = NULL;

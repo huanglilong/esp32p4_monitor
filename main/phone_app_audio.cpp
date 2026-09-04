@@ -444,13 +444,12 @@ void PhoneAppAudio::_start_recording(void)
      * Before NTP sync, gettimeofday returns epoch (1970), causing
      * all recordings to get the same filename and overwrite each other. */
     if (tm_info.tm_year + 1900 > 2020) {
-        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%04d%02d%02d_%02d%02d%02d.aac",
-                 tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
-                 tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/%lld.aac",
+                 (long long)tv.tv_sec);
     } else {
         /* Fallback: use monotonic timer as unique identifier */
         uint32_t mono_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/rec_%lu.aac", (unsigned long)mono_ms);
+        snprintf(path, sizeof(path), SDMMC_MOUNT_POINT "/mono_%lu.aac", (unsigned long)mono_ms);
     }
 
     _record_file = fopen(path, "wb");
