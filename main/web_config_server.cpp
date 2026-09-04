@@ -65,6 +65,9 @@
 /* ULog writer */
 #include "ulog_writer.h"
 
+/* Text logger (SD card) */
+#include "logger/logger.hpp"
+
 /* SNTP */
 #include "esp_sntp.h"
 
@@ -1283,10 +1286,66 @@ static esp_err_t sdcard_format_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Stop ULog writer first — it holds an open file on the SD card.
-     * The format call unmounts the filesystem; an open fd would block
-     * the unmount or corrupt state. */
+    /* Stop ALL SD card users before unmounting — the format call unmounts
+     * the filesystem; any open FILE or DIR handle would block the unmount
+     * or silently corrupt state after the remount (FatFs invalidates the
+     * old mount). Order matters: audio producers first, then consumers,
+     * then the loggers. */
     ulog_writer_t *ulog = ulog_writer_get();
+    bool ulog_was_running = (ulog_writer_get_state(ulog) == ULOG_STATE_RUNNING);
+    bool logger_was_running = logger_is_running();
+
+    /* 1. Web AAC recording (w_audio task holds s_rec_file on SD).
+     *    Same pattern as h_rec_stop: clear flags, let the task close the
+     *    file itself in its deferred-cleanup path (fclose on SDSPI can
+     *    take ~10s; never block httpd on it). */
+    audio_lock();
+    bool was_recording = s_is_recording.load(std::memory_order_acquire);
+    if (was_recording) {
+        s_is_recording = false;
+        s_audio_running = false;
+        /* Publish recording_state.active=false so PhoneAppMusic can resume */
+        orb_advert_t pub = s_rec_pub.load(std::memory_order_acquire);
+        if (pub >= 0) {
+            struct recording_state_s rs = {};
+            rs.timestamp = esp_timer_get_time();
+            rs.active = false;
+            rs.bytes_written = s_rec_bytes.load(std::memory_order_relaxed);
+            rs.elapsed_ms = (uint32_t)((esp_timer_get_time() / 1000 -
+                                        s_rec_start_ms.load(std::memory_order_relaxed)));
+            orb_publish(ORB_ID(recording_state), pub, &rs);
+        }
+    }
+    audio_unlock();
+    if (was_recording) {
+        /* Wait for the audio task to flush + close the file before we
+         * unmount. It self-deletes after cleanup — never force-delete. */
+        _stop_audio_task_if_running();
+    }
+
+    /* 2. Web music playback (s_asp reads from SD via file:// URIs).
+     *    Same pattern as h_stop: stop + destroy outside audio_lock. */
+    audio_lock();
+    esp_asp_handle_t asp = s_asp;
+    if (asp) {
+        s_asp = NULL;
+        s_playing = false;
+    }
+    audio_unlock();
+    if (asp) {
+        esp_audio_simple_player_stop(asp);
+        esp_audio_simple_player_destroy(asp);
+    }
+
+    /* 3. AudioUlogRecorder (publishes AAC frames from I2S — no direct SD
+     *    writes, but stop it for a clean slate; it is restarted by the
+     *    ULog auto-start path only on the next boot/SNTP cycle). */
+    AudioUlogRecorder::instance().stop();
+
+    /* 4. Text logger (holds an open FILE* on /sdcard/logs/) */
+    logger_deinit();
+
+    /* 5. ULog writer (holds an open fd on /sdcard/data/) */
     ulog_writer_stop(ulog);
 
     ESP_LOGW(TAG, "SD format requested via web UI");
@@ -1302,9 +1361,29 @@ static esp_err_t sdcard_format_handler(httpd_req_t *req)
      * Other httpd requests will queue behind it. */
     bool ok = SDCardDriver::instance().format();
 
-    /* Restart ULog after format (fresh filesystem) */
+    /* Restart only what was running before the format — a user-stopped
+     * ULog must stay stopped (matches the auto-start policy). */
     if (ok) {
-        ulog_writer_start(ulog);
+        if (logger_was_running) {
+            if (!logger_init("/sdcard")) {
+                ESP_LOGE(TAG, "Text logger re-init after format failed");
+            }
+        }
+        if (ulog_was_running) {
+            esp_err_t err = ulog_writer_start(ulog);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "ULog restart after format failed: %s",
+                         esp_err_to_name(err));
+            }
+        }
+    } else {
+        /* Format failed and the mount may be gone (see SDCardDriver::format).
+         * Try to re-mount so file APIs keep working; loggers stay off —
+         * writing into a dead mount would silently lose data. */
+        if (!SDCardDriver::instance().available()) {
+            SDCardDriver::instance().init();
+        }
+        ESP_LOGE(TAG, "SD format failed — loggers not restarted");
     }
 
     ESP_LOGI(TAG, "SD format %s", ok ? "succeeded" : "failed");
