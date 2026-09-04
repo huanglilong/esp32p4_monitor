@@ -22,7 +22,6 @@
 #include <cstdlib>
 
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -35,6 +34,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
+#include "esp_vfs_fat.h"
 #include <inttypes.h>
 #include <atomic>
 
@@ -284,7 +284,7 @@ static esp_err_t write_format_messages(ulog_writer_t *writer);
 static esp_err_t write_subscription_messages(ulog_writer_t *writer);
 static void ensure_log_dir(const char *dir);
 static esp_err_t create_log_path(ulog_writer_t *writer);
-static void cleanup_old_logs(const char *log_root, size_t size_limit);
+static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, size_t size_limit);
 
 /** Run capacity-based cleanup for the ULog storage area.
  *  Computes the size limit from SD capacity (fallback 512KB) and calls
@@ -296,13 +296,15 @@ static void ulog_capacity_cleanup(ulog_writer_t *writer)
     snprintf(log_root, sizeof(log_root), "%s/%s", writer->sd_mount_path, LOG_DIR_NAME);
 
     size_t size_limit = 512 * 1024;  /* fallback: 512 KB */
-    struct statvfs vfs;
-    if (statvfs(writer->sd_mount_path, &vfs) == 0) {
-        uint64_t total = (uint64_t)vfs.f_frsize * vfs.f_blocks;
-        size_limit = (size_t)(total * ULOG_MAX_CAPACITY_PCT / 100);
+    /* statvfs() is an ENOSYS stub on ESP-IDF PICOLIBC builds (IDF-9879) —
+     * use esp_vfs_fat_info() instead (f_getfree based, works on FAT VFS).
+     * Requires the exact mount path, not a subpath. */
+    uint64_t total_bytes = 0, free_bytes = 0;
+    if (esp_vfs_fat_info(writer->sd_mount_path, &total_bytes, &free_bytes) == ESP_OK) {
+        size_limit = (size_t)(total_bytes * ULOG_MAX_CAPACITY_PCT / 100);
     }
 
-    cleanup_old_logs(log_root, size_limit);
+    cleanup_old_logs(log_root, writer->sd_mount_path, size_limit);
 }
 
 static esp_err_t rotate_log_file(ulog_writer_t *writer);
@@ -1214,7 +1216,7 @@ static int cmp_dir_mtime(const void *a, const void *b)
  *    but files are 0 bytes, directories unreadable), which is far worse than
  *    losing old logs.
  */
-static void cleanup_old_logs(const char *log_root, size_t size_limit)
+static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, size_t size_limit)
 {
     /* Allocate on heap — this function is called from httpd task which has a small stack.
      * dir_entry has a 320-byte path, and even 32 entries = ~10KB, too large for 4KB stack. */
@@ -1259,11 +1261,11 @@ static void cleanup_old_logs(const char *log_root, size_t size_limit)
      * old logs. A 100%-full FAT gets corrupted by ongoing writes. */
     bool critical_free = false;
     {
-        struct statvfs vfs;
-        /* log_root is "<mount>/data" — statvfs works on any path within the mount */
-        if (statvfs(log_root, &vfs) == 0 && vfs.f_blocks > 0) {
-            uint64_t free_b = (uint64_t)vfs.f_bfree * vfs.f_frsize;
-            uint64_t total_b = (uint64_t)vfs.f_blocks * vfs.f_frsize;
+        /* statvfs() is an ENOSYS stub on ESP-IDF PICOLIBC builds (IDF-9879) —
+         * use esp_vfs_fat_info() instead. It needs the exact mount path
+         * (strcmp match), not a subpath like log_root. */
+        uint64_t free_b = 0, total_b = 0;
+        if (esp_vfs_fat_info(sd_mount_path, &total_b, &free_b) == ESP_OK && total_b > 0) {
             critical_free = (free_b * 100 / total_b) < ULOG_CRITICAL_FREE_PCT;
             if (critical_free) {
                 ESP_LOGW(TAG, "Cleanup: SD free space critical (%u%% < %u%%) — "
