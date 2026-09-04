@@ -1317,10 +1317,21 @@ static esp_err_t sdcard_format_handler(httpd_req_t *req)
         }
     }
     audio_unlock();
-    if (was_recording) {
+    if (was_recording || s_audio_task.load(std::memory_order_acquire)) {
         /* Wait for the audio task to flush + close the file before we
-         * unmount. It self-deletes after cleanup — never force-delete. */
-        _stop_audio_task_if_running();
+         * unmount. Covers both cases: we just stopped a live recording,
+         * or a previous record_stop's deferred cleanup (final encode +
+         * fclose, ~10s on SDSPI) is still in flight. The task sets
+         * s_audio_task_exited only AFTER closing the file, so waiting
+         * on that flag guarantees no open FILE remains. It self-deletes
+         * after cleanup — never force-delete. */
+        for (int i = 0; i < 240 && !s_audio_task_exited.load(std::memory_order_acquire); ++i) {
+            vTaskDelay(pdMS_TO_TICKS(50));  /* up to 12s */
+        }
+        if (!s_audio_task_exited.load(std::memory_order_acquire)) {
+            ESP_LOGW(TAG, "SD format: audio task still closing file after 12s — "
+                     "proceeding anyway (unmount may fail)");
+        }
     }
 
     /* 2. Web music playback (s_asp reads from SD via file:// URIs).
