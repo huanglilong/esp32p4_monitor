@@ -284,7 +284,7 @@ static esp_err_t write_format_messages(ulog_writer_t *writer);
 static esp_err_t write_subscription_messages(ulog_writer_t *writer);
 static void ensure_log_dir(const char *dir);
 static esp_err_t create_log_path(ulog_writer_t *writer);
-static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, size_t size_limit);
+static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, uint64_t size_limit);
 
 /** Run capacity-based cleanup for the ULog storage area.
  *  Computes the size limit from SD capacity (fallback 512KB) and calls
@@ -295,13 +295,15 @@ static void ulog_capacity_cleanup(ulog_writer_t *writer)
     char log_root[MAX_PATH + 8];
     snprintf(log_root, sizeof(log_root), "%s/%s", writer->sd_mount_path, LOG_DIR_NAME);
 
-    size_t size_limit = 512 * 1024;  /* fallback: 512 KB */
+    uint64_t size_limit = 512 * 1024;  /* fallback: 512 KB */
     /* statvfs() is an ENOSYS stub on ESP-IDF PICOLIBC builds (IDF-9879) —
      * use esp_vfs_fat_info() instead (f_getfree based, works on FAT VFS).
-     * Requires the exact mount path, not a subpath. */
+     * Requires the exact mount path, not a subpath.
+     * 64-bit throughout: 70% of a 16GB card is ~11.2GB, which overflows
+     * a 32-bit size_t. */
     uint64_t total_bytes = 0, free_bytes = 0;
     if (esp_vfs_fat_info(writer->sd_mount_path, &total_bytes, &free_bytes) == ESP_OK) {
-        size_limit = (size_t)(total_bytes * ULOG_MAX_CAPACITY_PCT / 100);
+        size_limit = total_bytes * ULOG_MAX_CAPACITY_PCT / 100;
     }
 
     cleanup_old_logs(log_root, writer->sd_mount_path, size_limit);
@@ -1115,9 +1117,9 @@ static void ensure_log_dir(const char *dir)
 }
 
 /** Recursively get total size of a directory. */
-static size_t dir_total_size(const char *path)
+static uint64_t dir_total_size(const char *path)
 {
-    size_t total = 0;
+    uint64_t total = 0;
     DIR *d = opendir(path);
     if (!d) return 0;
     struct dirent *ent;
@@ -1130,7 +1132,7 @@ static size_t dir_total_size(const char *path)
         if (S_ISDIR(st.st_mode)) {
             total += dir_total_size(full);
         } else {
-            total += (size_t)st.st_size;
+            total += (uint64_t)st.st_size;
         }
     }
     closedir(d);
@@ -1189,7 +1191,7 @@ static void rmtree(const char *path)
 struct dir_entry {
     char     path[ULOG_MAX_PATH + ULOG_MAX_PATH + 16]; /**< log_root + "/" + d_name, max ~520 */
     time_t   mtime;   /**< Directory modification time */
-    size_t   size;    /**< Total size of .ulg files inside */
+    uint64_t size;    /**< Total size of .ulg files inside (64-bit: >4GB possible) */
 };
 
 /** Comparator for sorting directories oldest-first. */
@@ -1216,7 +1218,7 @@ static int cmp_dir_mtime(const void *a, const void *b)
  *    but files are 0 bytes, directories unreadable), which is far worse than
  *    losing old logs.
  */
-static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, size_t size_limit)
+static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, uint64_t size_limit)
 {
     /* Allocate on heap — this function is called from httpd task which has a small stack.
      * dir_entry has a 320-byte path, and even 32 entries = ~10KB, too large for 4KB stack. */
@@ -1225,7 +1227,7 @@ static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, si
     if (!dirs) return;
 
     int dir_count = 0;
-    size_t total_size = 0;
+    uint64_t total_size = 0;  /* 64-bit: capacity limit can exceed 4GB on large cards */
 
     DIR *d = opendir(log_root);
     if (!d) { free(dirs); return; }
@@ -1280,14 +1282,15 @@ static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, si
      * file count below ULOG_MIN_KEEP_FILES (unless critical free space). */
     for (int i = 0; i < dir_count && total_size > size_limit; i++) {
         if (!critical_free && file_count <= (int)ULOG_MIN_KEEP_FILES) {
-            ESP_LOGI(TAG, "Cleanup: over capacity (%u KB > %u KB) but at min-keep "
+            ESP_LOGI(TAG, "Cleanup: over capacity (%llu KB > %llu KB) but at min-keep "
                      "floor (%d files) — keeping remaining logs",
-                     (unsigned)(total_size / 1024), (unsigned)(size_limit / 1024), file_count);
+                     (unsigned long long)(total_size / 1024),
+                     (unsigned long long)(size_limit / 1024), file_count);
             break;
         }
 
-        ESP_LOGI(TAG, "Cleanup: removing %s (%u KB)",
-                 dirs[i].path, (unsigned)(dirs[i].size / 1024));
+        ESP_LOGI(TAG, "Cleanup: removing %s (%llu KB)",
+                 dirs[i].path, (unsigned long long)(dirs[i].size / 1024));
         rmtree(dirs[i].path);
         total_size -= dirs[i].size;
         /* Re-count after deletion (rmtree is O(N) anyway) */
