@@ -200,6 +200,13 @@ CONFIG_EXAMPLE_SELECT_CUSTOMIZED_DEV_BOARD=y
 # ULog
 CONFIG_ULOG_ENABLE=y
 
+# HTTP server — disable ESP_HTTP_SERVER_EVENT dispatch: nothing in this
+# project subscribes to it, and every request posts ~5 events to the
+# default event loop (sys_evt, queue depth 32). Under load the queue
+# saturates and httpd blocks 2s per event (HTTPD_SERVER_EVENT_POST_TIMEOUT),
+# stalling all HTTP responses. Disabling removes the overhead entirely.
+CONFIG_HTTPD_ENABLE_EVENTS=n
+
 # System Monitor
 CONFIG_APP_SYS_MONITOR_MEM_ALERT_PCT=85
 
