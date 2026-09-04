@@ -543,7 +543,9 @@ static const char *WEB_UI_HTML =
 "<div id=\"status\"></div>"
 "<div style=\"margin-top:24px;padding-top:16px;border-top:1px solid #0f3460\">"
 "<button onclick=\"factoryReset()\" style=\"background:linear-gradient(135deg,#ff4444,#cc0000)\">"
-"Factory Reset (Erase NVS)</button></div>"
+"Factory Reset (Erase NVS)</button>"
+"<button onclick=\"formatSD()\" style=\"margin-top:8px;background:linear-gradient(135deg,#ff8800,#cc6600)\">"
+"Format SD Card (Erase ALL Files)</button></div>"
 "</div>"
 "<script>"
 "function updateVol(){"
@@ -748,6 +750,15 @@ static const char *WEB_UI_HTML =
 "try{let r=await fetch('/api/factory_reset',{method:'POST'});"
 "let j=await r.json();showStatus(j.message||'Rebooting...','success')}"
 "catch(e){showStatus('Device is rebooting...','success')}}"
+"async function formatSD(){"
+"if(!confirm('Format SD card? ALL files (photos, recordings, logs) will be ERASED!'))return;"
+"showStatus('Formatting SD card (10-30s)...','info');"
+"try{let r=await fetch('/api/sdcard/format?confirm=1',{method:'POST'});"
+"let j=await r.json();"
+"if(j.ok){showStatus('Formatting... page will auto-check in 30s','success');"
+"setTimeout(function(){loadStatus();loadFileManager('/')},30000)}"
+"else showStatus('Format failed: '+(j.error||''),'error')}"
+"catch(e){showStatus('Format request sent — check back in 30s','success')}}"
 "async function loadUlogStatus(){"
 "try{let r=await fetch('/api/ulog/status');let j=await r.json();"
 "let s=document.getElementById('ulog_stat');"
@@ -1239,6 +1250,59 @@ static esp_err_t camera_capture_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/*============================================================================
+ * Format SD Card — repair corrupted FAT filesystem (erases all data)
+ *============================================================================*/
+
+/* POST /api/sdcard/format */
+static esp_err_t sdcard_format_handler(httpd_req_t *req)
+{
+    /* Confirm via query ?confirm=1 to prevent accidental trigger */
+    char q[64] = {};
+    char confirm[8] = {};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        httpd_query_key_value(q, "confirm", confirm, sizeof(confirm));
+    }
+    if (strcmp(confirm, "1") != 0) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Add ?confirm=1 to format (erases ALL data)\"}");
+        return ESP_OK;
+    }
+
+    if (!SDCardDriver::instance().available()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"SD card not mounted\"}");
+        return ESP_OK;
+    }
+
+    /* Stop ULog writer first — it holds an open file on the SD card.
+     * The format call unmounts the filesystem; an open fd would block
+     * the unmount or corrupt state. */
+    ulog_writer_t *ulog = ulog_writer_get();
+    ulog_writer_stop(ulog);
+
+    ESP_LOGW(TAG, "SD format requested via web UI");
+
+    /* Format takes 10-30s on 16GB — respond to client FIRST so the
+     * browser doesn't time out, then format. Client polls /api/files/list
+     * to see when free space returns. */
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":1,\"message\":\"Formatting... (10-30s), all data erased\"}");
+
+    /* Run format in this handler context (httpd task) — acceptable because
+     * the response is already sent and this is a rare maintenance operation.
+     * Other httpd requests will queue behind it. */
+    bool ok = SDCardDriver::instance().format();
+
+    /* Restart ULog after format (fresh filesystem) */
+    if (ok) {
+        ulog_writer_start(ulog);
+    }
+
+    ESP_LOGI(TAG, "SD format %s", ok ? "succeeded" : "failed");
     return ESP_OK;
 }
 
@@ -2273,12 +2337,14 @@ static void _register_web_config_uris(httpd_handle_t hd)
     httpd_uri_t uri_settings = { .uri = "/api/settings", .method = HTTP_POST, .handler = settings_handler, .user_ctx = NULL };
     httpd_uri_t uri_cam = { .uri = "/api/camera_stream", .method = HTTP_POST, .handler = camera_stream_handler, .user_ctx = NULL };
     httpd_uri_t uri_capture = { .uri = "/api/camera/capture", .method = HTTP_GET, .handler = camera_capture_handler, .user_ctx = NULL };
+    httpd_uri_t uri_sdformat = { .uri = "/api/sdcard/format", .method = HTTP_POST, .handler = sdcard_format_handler, .user_ctx = NULL };
     httpd_uri_t uri_reset = { .uri = "/api/factory_reset", .method = HTTP_POST, .handler = factory_reset_handler, .user_ctx = NULL };
     REG_URI(&uri_index);
     REG_URI(&uri_status);
     REG_URI(&uri_settings);
     REG_URI(&uri_cam);
     REG_URI(&uri_capture);
+    REG_URI(&uri_sdformat);
     REG_URI(&uri_reset);
 
     /* Audio recording / playback */

@@ -38,6 +38,13 @@ public:
     /** @return true if SD card was successfully initialized */
     bool available(void) const { return _initialized; }
 
+    /** Format the SD card FAT filesystem (erases ALL data).
+     *  Card must be mounted (init() called) first.
+     *  Stops ULog/text logger writers is the caller's responsibility —
+     *  this method only unmounts, formats, and remounts.
+     *  @return true on success */
+    bool format(void);
+
     /* Delete copy/move */
     SDCardDriver(const SDCardDriver&) = delete;
     SDCardDriver& operator=(const SDCardDriver&) = delete;

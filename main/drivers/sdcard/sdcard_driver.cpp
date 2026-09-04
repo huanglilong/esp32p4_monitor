@@ -154,3 +154,30 @@ void SDCardDriver::deinit(void)
     /* SD card is never unmounted — kept for API compatibility */
     ESP_LOGI(TAG, "SD card deinit skipped (SD stays mounted permanently)");
 }
+
+bool SDCardDriver::format(void)
+{
+    if (!_init_mutex) return false;
+    xSemaphoreTake(_init_mutex, portMAX_DELAY);
+
+    if (!_initialized || !_card) {
+        ESP_LOGE(TAG, "Cannot format: SD card not mounted");
+        xSemaphoreGive(_init_mutex);
+        return false;
+    }
+
+    ESP_LOGW(TAG, "Formatting SD card — ALL DATA WILL BE ERASED");
+
+    /* esp_vfs_fat_sdcard_format unmounts, formats (f_mkfs), and remounts.
+     * Takes ~10-30s on a 16GB card over SDSPI. */
+    esp_err_t ret = esp_vfs_fat_sdcard_format(SDMMC_MOUNT_POINT, _card);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "SD format failed: %s", esp_err_to_name(ret));
+        xSemaphoreGive(_init_mutex);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "SD card formatted and remounted at %s", SDMMC_MOUNT_POINT);
+    xSemaphoreGive(_init_mutex);
+    return true;
+}
