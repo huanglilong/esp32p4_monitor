@@ -129,15 +129,16 @@ esp32p4_monitor/
 | `espressif/esp_codec_dev` | 1.5.11 | ESP Registry |
 | `espressif/esp_cam_sensor` | 2.2.0 | ESP Registry |
 | `espressif/esp_sccb_intf` | 0.0.8 | ESP Registry |
-| `espressif/esp_video` | 2.2.0 | ESP Registry |
+| `espressif/esp_video` | ==2.2.0 | ESP Registry — **锁定** (S361: ^2.2 候选 2.5.0 manifest 的 `$CONFIG{ESP_VIDEO_USE_CUSTOMIZED_ESP_H264_VERSION}` 门控在 2.2.0 Kconfig 树悬空, CONFIGDEP configure 致命) |
 | `espressif/esp_new_jpeg` | 1.0.2 | ESP Registry |
 | `espressif/mdns` | 1.11.3 | ESP Registry |
 | `espressif/cjson` | 1.7.19 | ESP Registry |
 | `protocol_examples_common` | local | IDF examples |
 | `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
 | `lvgl/lvgl` | 9.2.2 | ESP Registry |
-| `espressif__esp_audio_codec` | ^2.5 | ESP AAC encoder (64kbps 16kHz ADTS, replaced Shine MP3) |
-| `espressif/esp_audio_simple_player` | ^1.0.0 | ESP Registry |
+| `espressif__esp_audio_codec` | ==2.5.0 | ESP AAC encoder (64kbps 16kHz ADTS) — **锁定** (S361: v2.6+ `*_p4_rev_check` 要求 chip rev ≥3.0, 本设备 rev v1.x) |
+| `espressif/esp_audio_simple_player` | ==1.0.0 | ESP Registry — **锁定** (S361: 1.1.x 拉入要求 chip rev ≥3.0 的 gmf/audio_effects 分支) |
+| `espressif/esp_audio_effects` | ==1.3.0 | **锁定** (S361, 间接依赖显式钉版: v1.4+ `*_p4_rev_check` 要求 chip rev ≥3.0) |
 | `espressif/gmf_core` | ^1.0 | (间接依赖, 自动拉入) |
 | `espressif/gmf_audio` | ^1.0 | (间接依赖, 自动拉入) |
 | `espressif/gmf_io` | ^1.0 | (间接依赖, 自动拉入) |
