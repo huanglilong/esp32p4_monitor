@@ -615,7 +615,7 @@ dependencies:
       - if: target != linux
       version: ^1.3.0
     source:
-      path: ../../../.espressif/v6.x/esp-idf/examples/common_components/protocol_examples_common
+      path: ../../../../.espressif/v6.x/esp-idf/examples/common_components/protocol_examples_common
       type: local
     version: '*'
   waveshare/esp32_p4_wifi6_touch_lcd_4b:
