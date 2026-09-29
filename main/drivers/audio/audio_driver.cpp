@@ -555,36 +555,6 @@ void AudioDriver::set_volume(int volume)
     }
 }
 
-void AudioDriver::set_mic_gain(int gain_db)
-{
-    SemaphoreHandle_t cm = _codec_mutex.load(std::memory_order_acquire);
-    if (!cm) return;
-
-    /* WIFI6 boards use _codec_handle for both ADC and DAC;
-     * _codec_mic_handle is NULL on WIFI6. */
-    esp_codec_dev_handle_t mic_h = _codec_mic_handle.load(std::memory_order_acquire);
-    esp_codec_dev_handle_t out_h = _codec_handle.load(std::memory_order_acquire);
-    esp_codec_dev_handle_t h = mic_h ? mic_h : out_h;
-    if (!h) return;
-
-    _codec_ops_in_flight.fetch_add(1, std::memory_order_acq_rel);
-    cm = _codec_mutex.load(std::memory_order_acquire);
-    if (!cm) {
-        _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
-        return;
-    }
-
-    if (xSemaphoreTake(cm, pdMS_TO_TICKS(100)) == pdTRUE) {
-        /* Re-read under mutex */
-        mic_h = _codec_mic_handle.load(std::memory_order_relaxed);
-        out_h = _codec_handle.load(std::memory_order_relaxed);
-        h = mic_h ? mic_h : out_h;
-        if (h) esp_codec_dev_set_in_gain(h, gain_db);
-        xSemaphoreGive(cm);
-    }
-    _codec_ops_in_flight.fetch_sub(1, std::memory_order_acq_rel);
-}
-
 int AudioDriver::codec_write(const uint8_t *data, int size)
 {
     if (size <= 0) return -1;

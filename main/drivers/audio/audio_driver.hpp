@@ -34,18 +34,10 @@ public:
 
     /* ---- Audio handles (read-only access) ---- */
     i2s_chan_handle_t rx_handle(void) const { return _rx_handle.load(std::memory_order_relaxed); }
-    i2s_chan_handle_t tx_handle(void) const { return _tx_handle.load(std::memory_order_relaxed); }
-    esp_codec_dev_handle_t codec_handle(void) const { return _codec_handle.load(std::memory_order_relaxed); }
 
     /* ---- Thread-safe codec operations ---- */
     /** Set speaker output volume (0-100). Publishes volume_state via uORB. */
     void set_volume(int volume);
-
-    /** Get current volume (cached). */
-    int volume(void) const { return _volume.load(std::memory_order_relaxed); }
-
-    /** Set microphone input gain. Thread-safe. */
-    void set_mic_gain(int gain_db);
 
     /** Write PCM data to codec DAC. Thread-safe.
      *  @return data_size on success, -1 on failure */

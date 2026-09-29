@@ -383,9 +383,9 @@ app_main()
 > **注意**: SD 卡在 `app_main()` 中挂载后**永不卸载**。
 >   - 两板统一使用 SDSPI：BSP SDMMC 原生模式与 C6 SDIO 共享 host controller，LCD-4B 无法同时使用
 >   - LCD-4B: BSP display init 已上电 LDO4，SDCardDriver 跳过 LDO 管理，直接用 SDSPI
->   - WIFI6: `SDCardDriver::init()` 通过 `sd_pwr_ctrl` API 管理 LDO4 + SDSPI, `deinit()` 为 no-op
+>   - WIFI6: `SDCardDriver::init()` 通过 `sd_pwr_ctrl` API 管理 LDO4 + SDSPI (无 deinit — SD 永不卸载)
 >   - `SDCardDriver::init()` 支持幂等调用, `_has_lcd` flag 区分板型
->   - `PeripheralManager::init_sdcard()` / `deinit_sdcard()` 保持 API 兼容
+>   - `PeripheralManager::init_sdcard()` 委托 SDCardDriver (死代码清理已移除 no-op deinit 门面)
 >   - **音频 I2S** 仍由 Audio/Music App 在 `run()` 中按需初始化, `close()` 中释放 (引用计数)
 >   - **VFS_MAX_COUNT=16**: SD 常驻 + camera ISP/CSI 需要更多 VFS 槽位 (原 8 不够)
 

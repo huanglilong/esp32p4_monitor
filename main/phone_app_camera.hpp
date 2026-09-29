@@ -13,9 +13,6 @@ public:
     bool back(void) override;
     bool close(void) override;
 
-    /* Public accessor for CameraStream to check if app is active */
-    bool isCameraRunning(void) const { return _cam_running; }
-
 private:
     static void _frame_update_timer_cb(lv_timer_t *timer);
     bool _init_camera(void);

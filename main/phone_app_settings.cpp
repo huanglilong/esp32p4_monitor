@@ -362,16 +362,6 @@ bool PhoneAppSettings::setNvsParam(const char *key, int32_t value)
     return true;
 }
 
-bool PhoneAppSettings::setNvsStr(const char *key, const char *value)
-{
-    nvs_handle_t nvs_handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle) != ESP_OK) return false;
-    nvs_set_str(nvs_handle, key, value);
-    nvs_commit(nvs_handle);
-    nvs_close(nvs_handle);
-    return true;
-}
-
 bool PhoneAppSettings::getNvsStr(const char *key, char *out, size_t max_len)
 {
     nvs_handle_t nvs_handle;
@@ -665,14 +655,6 @@ void PhoneAppSettings::onBrightnessSliderChanged(lv_event_t *e)
             lv_slider_set_value(app->_slider_brightness, app->_nvs.brightness, LV_ANIM_OFF);
         }
     }
-}
-
-void PhoneAppSettings::onMainScreenLoaded(lv_event_t *e)
-{
-    PhoneAppSettings *app = (PhoneAppSettings *)lv_event_get_user_data(e);
-    if (!app) return;
-    app->_screen_index = SCREEN_MAIN;
-    app->updateMainScreenFromNvs();
 }
 
 void PhoneAppSettings::onCamStreamSwitchChanged(lv_event_t *e)

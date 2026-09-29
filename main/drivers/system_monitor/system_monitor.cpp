@@ -84,12 +84,6 @@ bool SystemMonitor::init(void)
         return false;
     }
 
-    /* Track minimum free heap from boot */
-    uint32_t free_int = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    uint32_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    _min_free_internal.store(free_int, std::memory_order_relaxed);
-    _min_free_psram.store(free_psram, std::memory_order_relaxed);
-
     /* Cache total heap sizes (runtime constants — never change) */
     _total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     _total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
@@ -215,16 +209,6 @@ void SystemMonitor::_sample(void)
     uint32_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     uint32_t min_free_int = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     uint32_t min_free_psram = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
-
-    /* Update historical minimums */
-    uint32_t prev_min = _min_free_internal.load(std::memory_order_relaxed);
-    if (min_free_int < prev_min) {
-        _min_free_internal.store(min_free_int, std::memory_order_relaxed);
-    }
-    prev_min = _min_free_psram.load(std::memory_order_relaxed);
-    if (min_free_psram < prev_min) {
-        _min_free_psram.store(min_free_psram, std::memory_order_relaxed);
-    }
 
     /* ── 2. CPU usage via per-core idle runtime (non-blocking).
      * xTaskGetIdleTaskHandleForCore() + vTaskGetInfo() read each core's

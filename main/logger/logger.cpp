@@ -213,19 +213,9 @@ void logger_set_sd_level(logger_level_t level)
     s_log.sd_level.store((int)level, std::memory_order_relaxed);
 }
 
-logger_level_t logger_get_sd_level(void)
-{
-    return (logger_level_t)s_log.sd_level.load(std::memory_order_relaxed);
-}
-
 bool logger_is_running(void)
 {
     return s_log.running.load(std::memory_order_acquire);
-}
-
-const char *logger_get_filepath(void)
-{
-    return s_log.file_path;
 }
 
 /* ── esp_log_set_vprintf hook ──────────────────────────────────── */

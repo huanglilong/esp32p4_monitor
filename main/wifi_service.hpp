@@ -5,9 +5,9 @@
  * @brief Thin C++ facade over the wifi_manager component.
  *
  * Wraps wifi_manager C API, manages uORB wifi_state publication,
- * SNTP startup, and NVS credential persistence. Provides a unified
- * WiFi service that replaces the inline WiFi code previously split
- * across PhoneAppSettings, web_config_server, and main.cpp.
+ * and NVS credential persistence. Provides a unified WiFi service
+ * that replaces the inline WiFi code previously split across
+ * PhoneAppSettings, web_config_server, and main.cpp.
  *
  * Usage:
  *   1. At boot: WifiService::instance().init(nvs_handle_t) — reads
@@ -78,10 +78,6 @@ public:
      * caller should monitor uORB wifi_state for result. */
     esp_err_t connect(const char *ssid, const char *password);
 
-    /* Disconnect from current network. STA interface is stopped
-     * but wifi_manager keeps AP running for provisioning. */
-    esp_err_t disconnect();
-
     /* Get current status snapshot (thread-safe). */
     void get_status(wifi_service_status_t *status);
 
@@ -89,20 +85,9 @@ public:
      * Returns ESP_OK on connect, ESP_ERR_TIMEOUT on timeout. */
     esp_err_t wait_connected(uint32_t timeout_ms);
 
-    /* Get the wifi_manager's AP netif (for captive_dns). */
-    void *get_ap_netif();
-
     /* Hot-swap STA credentials at runtime (no restart required).
      * Saves to NVS immediately. Reconnects with new config. */
     esp_err_t apply_sta_config(const char *ssid, const char *password);
-
-    /* Whether SNTP has been started (called once after first IP). */
-    bool sntp_started() const { return _sntp_started.load(std::memory_order_acquire); }
-    void set_sntp_started() { _sntp_started.store(true, std::memory_order_release); }
-
-    /* Whether SNTP has synced. */
-    bool sntp_synced() const { return _sntp_synced.load(std::memory_order_acquire); }
-    void set_sntp_synced() { _sntp_synced.store(true, std::memory_order_release); }
 
     /* Whether WiFi is initialized (for guard checks). */
     bool initialized() const { return _initialized.load(std::memory_order_acquire); }
@@ -127,9 +112,6 @@ private:
     void _publish_wifi_state(bool connected, const char *ssid, int8_t rssi);
 
     std::atomic<bool> _initialized{false};
-    std::atomic<bool> _started{false};
-    std::atomic<bool> _sntp_started{false};
-    std::atomic<bool> _sntp_synced{false};
     std::atomic<bool> _captive_dns_started{false};
 
     /* uORB wifi_state publisher */

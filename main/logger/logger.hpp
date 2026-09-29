@@ -60,14 +60,8 @@ void logger_deinit(void);
  *  UART output is unaffected.  Default: CONFIG_APP_LOG_SD_LEVEL. */
 void logger_set_sd_level(logger_level_t level);
 
-/** @return current SD-card log level. */
-logger_level_t logger_get_sd_level(void);
-
 /** @return true if the logger is actively writing to an SD file. */
 bool logger_is_running(void);
-
-/** Get the path of the current log file (empty string if not running). */
-const char *logger_get_filepath(void);
 
 #ifdef __cplusplus
 }

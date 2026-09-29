@@ -31,10 +31,6 @@ public:
      *  @return true on success (or already initialized) */
     bool init(void);
 
-    /** No-op — SD card is never unmounted after init.
-     *  Kept for API compatibility. */
-    void deinit(void);
-
     /** @return true if SD card was successfully initialized */
     bool available(void) const { return _initialized; }
 

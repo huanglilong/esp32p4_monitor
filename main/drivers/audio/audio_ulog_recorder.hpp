@@ -42,12 +42,6 @@ public:
     /** @return true if the recording task is currently running */
     bool running() const { return _running.load(std::memory_order_acquire); }
 
-    /** @return total AAC frames published since last start */
-    uint32_t frame_count() const { return _frame_count.load(std::memory_order_relaxed); }
-
-    /** @return total AAC bytes published since last start */
-    uint32_t bytes_published() const { return _bytes_published.load(std::memory_order_relaxed); }
-
     /* Delete copy/move */
     AudioUlogRecorder(const AudioUlogRecorder&) = delete;
     AudioUlogRecorder& operator=(const AudioUlogRecorder&) = delete;

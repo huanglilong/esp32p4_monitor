@@ -159,12 +159,6 @@ bool SDCardDriver::init(void)
     return true;
 }
 
-void SDCardDriver::deinit(void)
-{
-    /* SD card is never unmounted — kept for API compatibility */
-    ESP_LOGI(TAG, "SD card deinit skipped (SD stays mounted permanently)");
-}
-
 bool SDCardDriver::format(void)
 {
     if (!_init_mutex) return false;

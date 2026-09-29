@@ -39,7 +39,6 @@ public:
     /* NVS */
     bool loadNvsParam(void);
     bool setNvsParam(const char *key, int32_t value);
-    bool setNvsStr(const char *key, const char *value);
     bool getNvsStr(const char *key, char *out, size_t max_len);
     void applySettings(void);
 
@@ -68,7 +67,6 @@ public:
     static void onBackClicked(lv_event_t *e);
     static void onVolumeSliderChanged(lv_event_t *e);
     static void onBrightnessSliderChanged(lv_event_t *e);
-    static void onMainScreenLoaded(lv_event_t *e);
 
     /* Camera Stream callback */
     static void onCamStreamSwitchChanged(lv_event_t *e);

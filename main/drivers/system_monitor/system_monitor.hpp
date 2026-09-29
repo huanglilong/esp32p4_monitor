@@ -69,17 +69,8 @@ public:
     /** Stop sampling and join the background task. */
     void stop(void);
 
-    /** @return true if the monitor is actively sampling. */
-    bool is_running(void) const { return _running.load(std::memory_order_relaxed); }
-
     /** Get the latest sample (thread-safe read). */
     system_stats_s get_latest(void) const;
-
-    /** Get historical minimum free internal SRAM since boot. */
-    uint32_t min_free_internal(void) const { return _min_free_internal.load(std::memory_order_relaxed); }
-
-    /** Get historical minimum free PSRAM since boot. */
-    uint32_t min_free_psram(void) const { return _min_free_psram.load(std::memory_order_relaxed); }
 
     /** Get the latest alerts snapshot (thread-safe read). */
     void get_alerts(system_alert_s *cpu_alert, system_alert_s *mem_int_alert, system_alert_s *mem_psram_alert) const;
@@ -121,10 +112,6 @@ private:
     std::atomic<bool> _running{false};
     std::atomic<bool> _initialized{false};
     std::atomic<bool> _task_exited{true};  /* Initial=true (no previous task); set false on start, true on task exit */
-
-    /** Historical minimum free heap (tracked across all samples). */
-    std::atomic<uint32_t> _min_free_internal{UINT32_MAX};
-    std::atomic<uint32_t> _min_free_psram{UINT32_MAX};
 
     /** Latest sampled stats (for get_latest / web API). */
     system_stats_s _latest{};

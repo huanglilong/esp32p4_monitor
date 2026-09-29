@@ -17,8 +17,7 @@ PeripheralManager& PeripheralManager::instance(void)
     return s;
 }
 
-PeripheralManager::PeripheralManager() :
-    _has_lcd(false)
+PeripheralManager::PeripheralManager()
 {
 }
 
@@ -27,7 +26,6 @@ PeripheralManager::PeripheralManager() :
  *============================================================================*/
 void PeripheralManager::set_has_lcd(bool v)
 {
-    _has_lcd.store(v, std::memory_order_release);
     /* Propagate board type to drivers */
     AudioDriver::instance().set_has_lcd(v);
     SDCardDriver::instance().set_has_lcd(v);
@@ -39,12 +37,6 @@ void PeripheralManager::set_has_lcd(bool v)
 bool PeripheralManager::init_sdcard(void)
 {
     return SDCardDriver::instance().init();
-}
-
-void PeripheralManager::deinit_sdcard(void)
-{
-    /* No-op: SD card stays mounted permanently after boot */
-    SDCardDriver::instance().deinit();
 }
 
 /*============================================================================

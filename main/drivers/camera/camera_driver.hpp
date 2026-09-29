@@ -3,7 +3,7 @@
 /*
  * CameraDriver — manages camera hardware mutual exclusion via uORB.
  *
- * Provides camera_available() check and camera claim/release API.
+ * Provides available() check and camera claim/release API.
  * CameraStream and PhoneAppCamera use CameraDriver to coordinate
  * exclusive access to the MIPI CSI hardware.
  *
@@ -43,12 +43,6 @@ public:
      *                    Mismatched caller_id is ignored (defensive).
      *  Thread-safe. */
     void release(const char *caller_id = "unknown");
-
-    /** @return true if camera is currently claimed by any module */
-    bool isClaimed(void) const;
-
-    /** @return the caller_id of the current claimer, or nullptr if unclaimed */
-    const char* claimOwner(void) const;
 
     /* Delete copy/move */
     CameraDriver(const CameraDriver&) = delete;

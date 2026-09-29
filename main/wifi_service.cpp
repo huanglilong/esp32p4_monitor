@@ -17,7 +17,6 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
-#include "esp_sntp.h"
 
 #include "example_config.h"
 #include "wifi_manager.h"
@@ -265,12 +264,6 @@ void WifiService::_state_callback(bool connected, void *user_ctx) {
     } else {
         self->_publish_wifi_state(false, "", 0);
     }
-
-    /* Start SNTP on first connect */
-    if (connected && !self->_sntp_started.load(std::memory_order_acquire)) {
-        self->set_sntp_started();
-        /* Web config server task will detect this and start SNTP */
-    }
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -334,7 +327,6 @@ esp_err_t WifiService::start() {
      * when the AP becomes active (AP_START event). AP startup is
      * asynchronous — the netif IP is not yet assigned here. */
 
-    _started.store(true, std::memory_order_release);
     return ESP_OK;
 }
 
@@ -392,15 +384,6 @@ esp_err_t WifiService::connect(const char *ssid, const char *password) {
     return err;
 }
 
-esp_err_t WifiService::disconnect() {
-    if (!_initialized.load(std::memory_order_acquire)) return ESP_ERR_INVALID_STATE;
-
-    /* Apply empty STA config — wifi_manager will switch to AP-only provision mode */
-    wifi_manager_config_t cfg = {};
-    cfg.ap_behavior = "keep";
-    return wifi_manager_apply_sta_config(&cfg);
-}
-
 esp_err_t WifiService::apply_sta_config(const char *ssid, const char *password) {
     if (!_initialized.load(std::memory_order_acquire)) return ESP_ERR_INVALID_STATE;
 
@@ -440,8 +423,4 @@ void WifiService::get_status(wifi_service_status_t *status) {
 
 esp_err_t WifiService::wait_connected(uint32_t timeout_ms) {
     return wifi_manager_wait_connected(timeout_ms);
-}
-
-void *WifiService::get_ap_netif() {
-    return wifi_manager_get_ap_netif();
 }

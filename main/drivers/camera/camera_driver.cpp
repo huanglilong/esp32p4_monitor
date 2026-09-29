@@ -161,21 +161,3 @@ void CameraDriver::release(const char *caller_id)
     _owner_id = nullptr;
     xSemaphoreGive(_mutex);
 }
-
-bool CameraDriver::isClaimed(void) const
-{
-    if (!_mutex) return false;
-    xSemaphoreTake(_mutex, portMAX_DELAY);
-    bool claimed = _claimed;
-    xSemaphoreGive(_mutex);
-    return claimed;
-}
-
-const char* CameraDriver::claimOwner(void) const
-{
-    if (!_mutex) return nullptr;
-    xSemaphoreTake(_mutex, portMAX_DELAY);
-    const char *owner = _owner_id;
-    xSemaphoreGive(_mutex);
-    return owner;
-}
