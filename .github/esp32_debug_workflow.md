@@ -86,6 +86,7 @@ pytest tests --base-url=http://esp-web.local:8080 -v
 
 **Key points:**
 
+- pytest automatically waits for the device before running tests: `tests/conftest.py` polls `GET /api/status` every 3s for up to **300s** (override with `ESP_CONNECT_TIMEOUT`), then aborts with exit code 2 if the device never becomes reachable.
 - The capture duration (`-t`) must be long enough to cover the full test run. Default 40s is too short — use **`-t 300`** (5 minutes) as a safe default for the full suite.
 - Capture continues until the timer expires, so start pytest promptly after capture begins.
 - If pytest finishes early, the remaining capture time still logs device state — useful for spotting post-test issues.

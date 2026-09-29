@@ -16,8 +16,7 @@ def pytest_addoption(parser):
     )
 
 
-@pytest.fixture(scope="session")
-def base_url(request) -> str:
+def _resolve_base_url(config) -> str:
     """Return the ESP32 base URL.
 
     Precedence (highest first):
@@ -25,13 +24,18 @@ def base_url(request) -> str:
       2. ESP_BASE_URL environment variable
       3. Built-in default
     """
-    cli = request.config.getoption("--base-url")
+    cli = config.getoption("--base-url")
     if cli:
         return cli
     env = os.environ.get("ESP_BASE_URL")
     if env:
         return env
     return "http://esp-web.local:8080"
+
+
+@pytest.fixture(scope="session")
+def base_url(request) -> str:
+    return _resolve_base_url(request.config)
 
 
 @pytest.fixture(scope="session")
@@ -53,9 +57,82 @@ def camera_base_url(base_url: str) -> str:
                        parsed.query, parsed.fragment))
 
 
+CONNECT_TIMEOUT_S = int(os.environ.get("ESP_CONNECT_TIMEOUT", "300"))
+CONNECT_POLL_INTERVAL_S = 3
+
+
+def _wait_for_device(client: requests.Session, base_url: str, config,
+                     timeout: float = CONNECT_TIMEOUT_S) -> None:
+    """Block until the device HTTP API is reachable, or exit the run.
+
+    Polls GET /api/status every CONNECT_POLL_INTERVAL_S seconds for up to
+    `timeout` seconds (default 300). Any HTTP response (even an error status)
+    counts as reachable. Progress is logged live to the terminal (pytest
+    capture is suspended during the wait, so logs appear without `-s`).
+    Calls pytest.exit() with diagnostics if the device never responds, so
+    tests are not run against an offline target.
+    """
+    start = time.monotonic()
+    deadline = start + timeout
+    attempt = 0
+    last_err = None
+    # Suspend pytest output capture so wait logs stream to the terminal live.
+    capman = config.pluginmanager.getplugin("capturemanager")
+    with capman.global_and_fixture_disabled():
+        print(f"\nWaiting for device at {base_url} (timeout {timeout:.0f}s)...",
+              flush=True)
+        while True:
+            attempt += 1
+            try:
+                client.get(f"{base_url}/api/status", timeout=5)
+                print(f"[wait] device reachable after "
+                      f"{time.monotonic() - start:.1f}s "
+                      f"({attempt} attempt{'s' if attempt > 1 else ''})",
+                      flush=True)
+                return
+            except requests.RequestException as e:
+                last_err = e
+                err_brief = str(e).replace("\n", " ")
+                if len(err_brief) > 100:
+                    err_brief = err_brief[:97] + "..."
+                print(f"[wait] {time.monotonic() - start:6.1f}s/{timeout:.0f}s "
+                      f"attempt {attempt}: not reachable — {err_brief}",
+                      flush=True)
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(CONNECT_POLL_INTERVAL_S)
+    pytest.exit(
+        f"Device not reachable at {base_url} after {timeout:.0f}s "
+        f"({attempt} attempts). Last error: {last_err}. "
+        "Check that the device is powered on, flashed, and connected to WiFi "
+        "(mDNS 'esp-web.local' resolvable). Aborting test run.",
+        returncode=2,
+    )
+
+
+def pytest_sessionstart(session):
+    """Check device connectivity BEFORE any test is collected/run.
+
+    Runs as a hook (not a fixture) so the wait happens before pytest prints
+    the first test name in -v mode. Skipped for --collect-only.
+    """
+    if session.config.getoption("--collect-only"):
+        return
+    url = _resolve_base_url(session.config)
+    probe = requests.Session()
+    probe.headers.update({"Accept": "application/json"})
+    try:
+        _wait_for_device(probe, url, session.config)
+    finally:
+        probe.close()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def device_info(client: requests.Session, base_url: str):
-    """Fetch and print target device info at the start of the test run."""
+    """Fetch and print target device info at the start of the test run.
+
+    Connectivity is already guaranteed by pytest_sessionstart.
+    """
     print(f"\n{'='*60}")
     print(f"Target device: {base_url}")
     try:
