@@ -10,15 +10,27 @@ dependencies:
   espressif/esp_sccb_intf:
     version: ^0.0.8
   espressif/esp_audio_simple_player:
-    version: ^1.0.0
+    version: "==1.0.0"   # v1.0.0 — pinned: newer 1.1.x pulls gmf/audio_effects
+                         # branches that require ESP32-P4 chip rev >= 3.0 (this
+                         # device is rev v1.x). Keep the audio cluster on the
+                         # rev-v1.x-compatible versions from the committed lock.
   espressif/esp_audio_codec:
-    version: '^2.5'
+    version: "==2.5.0"   # v2.5.0 — pinned: v2.6+ requires ESP32-P4 chip rev >= 3.0
+                         # (esp_audio_codec_p4_rev_check fails on this rev v1.x device).
+  espressif/esp_audio_effects:
+    version: "==1.3.0"   # v1.3.0 — pinned (transitive): v1.4+ requires ESP32-P4
+                         # chip rev >= 3.0 (esp_audio_effects_p4_rev_check fails).
   espressif/esp_wifi_remote:
     version: '*'
   espressif/esp_hosted:
     version: "==2.12.7"   # v2.12.7 — verified stable on Waveshare P4 (#184, #197)
   espressif/esp_video:
-    version: ^2.2
+    version: "==2.2.0"   # v2.2.0 — pinned: v2.5.0's manifest gates its esp_h264
+                         # dep on $CONFIG{ESP_VIDEO_USE_CUSTOMIZED_ESP_H264_VERSION},
+                         # a symbol undefined in the 2.2.0 Kconfig tree. The component
+                         # manager's CONFIGDEP analysis evaluates the 2.5.0 candidate
+                         # (allowed by ^2.2) and aborts configure with a dangling-symbol
+                         # error. Pinning to 2.2.0 keeps the broken candidate out.
   espressif/esp_new_jpeg:
     version: ^1.0
   espressif/mdns:
