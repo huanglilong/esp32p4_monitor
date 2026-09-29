@@ -13,6 +13,7 @@
 #include "esp_video_ioctl.h"
 #include "example_video_common.h"
 #include "example_config.h"
+#include "board_i2c.h"
 #include "mdns.h"
 #include "cJSON.h"
 #include "lwip/apps/netbiosns.h"
@@ -38,7 +39,7 @@ static const char *TAG = "CameraStream";
  *============================================================================*/
 void ov5647_set_vts_5fps(void)
 {
-    i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
+    i2c_master_bus_handle_t i2c_handle = board_i2c_get_handle();
     if (!i2c_handle) {
         ESP_LOGW(TAG, "I2C bus not available, cannot set OV5647 VTS");
         return;
@@ -616,10 +617,10 @@ void CameraStream::_deinit_video(void)
  * JPEG Encoder Init/Deinit
  *
  * The JPEG hardware encoder's DMA descriptors (rxlink, txlink) require
- * MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL — they MUST be in internal SRAM.
- * On LCD-4B, internal SRAM is scarce because LVGL draw buffers also live
- * there.  Encoder is now initialized upfront in start() (no longer lazy)
- * because the independent capture task needs it immediately.
+ * MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL — they MUST be in internal SRAM,
+ * which is scarce (WiFi/SDIO + camera buffers).  Encoder is initialized
+ * upfront in start() (no longer lazy) because the independent capture
+ * task needs it immediately.
  * Retry with backoff if internal memory is temporarily fragmented.
  *============================================================================*/
 bool CameraStream::_init_encoder(void)
@@ -677,7 +678,7 @@ bool CameraStream::_init_encoder(void)
 
     /* Retry up to 3 times with increasing delay.
      * Internal SRAM may be temporarily fragmented; a short delay lets
-     * other tasks free buffers (e.g., LVGL flush completes). */
+     * other tasks free buffers. */
     const int MAX_RETRIES = 3;
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         ESP_LOGI(TAG, "Encoder init attempt %d/%d: %" PRIu32 "x%" PRIu32 " fmt=0x%08" PRIx32 " quality=%d",
@@ -1374,7 +1375,7 @@ bool CameraStream::_start_http_server(void)
      * Default is 7 — too many for 3 httpd instances. 3 is sufficient for
      * 1 browser tab (parallel API + resource requests). */
     config.max_open_sockets = 3;
-    config.core_id = 0;  /* Pin to Core 0 — Core 1 runs LVGL rendering */
+    config.core_id = 0;  /* Pin httpd to Core 0 */
     /* TCP keep-alive: detect dead connections quickly so sockets don't
      * leak when clients disconnect abruptly (ECONNRESET/EAGAIN). */
     config.keep_alive_enable = true;

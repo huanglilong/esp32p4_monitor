@@ -6,7 +6,7 @@ if(NOT CONFIG_IDF_TARGET_ESP32C61)
 endif()
 
 if(CONFIG_EXAMPLE_SELECT_CUSTOMIZED_DEV_BOARD)
-    list(APPEND inc_dirs "include/boards/waveshare_p4_4b")
+    list(APPEND inc_dirs "include/boards/waveshare_p4_wifi6")
 endif()
 
 idf_component_register(SRCS "${srcs}"

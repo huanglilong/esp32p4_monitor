@@ -33,7 +33,6 @@ SDCardDriver::SDCardDriver() :
     _init_mutex(nullptr),
     _card(nullptr),
     _initialized(false),
-    _has_lcd(false),
     _pwr_ctrl(nullptr)
 {
     _init_mutex = xSemaphoreCreateMutex();
@@ -53,8 +52,7 @@ SDCardDriver::~SDCardDriver()
 
 /*============================================================================
  * SD Card — init-once (never deinit).
- *   LCD-4B: SDSPI via SPI2 (LDO4 pre-powered by BSP display init).
- *   WIFI6:  SDSPI via SPI2 + sd_pwr_ctrl for LDO4 power.
+ *   SDSPI via SPI2 + sd_pwr_ctrl for LDO4 power.
  *   SDMMC native mode is NOT used — host controller conflicts with C6 SDIO.
  *============================================================================*/
 bool SDCardDriver::init(void)
@@ -68,7 +66,7 @@ bool SDCardDriver::init(void)
         return true;
     }
 
-    /* Check if SD is already mounted (e.g. BSP SDMMC on LCD-4B from older code) */
+    /* Check if SD is already mounted */
     {
         struct stat st;
         if (stat(SDMMC_MOUNT_POINT, &st) == 0) {
@@ -82,12 +80,8 @@ bool SDCardDriver::init(void)
     esp_err_t ret;
     ESP_LOGI(TAG, "Initializing SD card via SDSPI...");
 
-    /* Power on SD via LDO4.  On LCD-4B the BSP display init will
-     * also acquire LDO4 via esp_ldo_acquire_channel — but that API
-     * does not support shared ownership.  We skip LDO4 here on
-     * LCD-4B and let the display init handle it; the caller must
-     * retry init_sdcard() after the display is up. */
-    if (!_has_lcd.load(std::memory_order_relaxed) && !_pwr_ctrl) {
+    /* Power on SD via LDO4 */
+    if (!_pwr_ctrl) {
         /* Skip if _pwr_ctrl already exists — happens when re-mounting
          * after a failed format. LDO4 is adjustable, so a second
          * esp_ldo_acquire_channel would fail with "already in use". */
@@ -100,10 +94,8 @@ bool SDCardDriver::init(void)
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
-    } else if (_pwr_ctrl) {
-        ESP_LOGI(TAG, "LDO4 power already on — reusing for SD remount");
     } else {
-        ESP_LOGI(TAG, "LCD-4B: deferring LDO4 to BSP display init");
+        ESP_LOGI(TAG, "LDO4 power already on — reusing for SD remount");
     }
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {

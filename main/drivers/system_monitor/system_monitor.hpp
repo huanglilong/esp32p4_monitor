@@ -6,7 +6,7 @@
  *     and heap memory (via heap_caps_get_free_size) at a configurable interval.
  *   - CPU% is computed per-core from idle task runtime delta vs wall-clock delta:
  *     busy_cpu_pct = 100% - idle_pct. This avoids uxTaskGetSystemState()
- *     which calls vTaskSuspendAll() and disrupts LVGL rendering.
+ *     which calls vTaskSuspendAll() and disrupts real-time tasks.
  *     Per-core idle runtime is read via xTaskGetIdleTaskHandleForCore() +
  *     vTaskGetInfo() (no scheduler suspend).
  *   - Results are published as a uORB `system_stats` topic, enabling:
@@ -133,7 +133,7 @@ private:
 
     /** Previous per-core idle runtime counters and timestamp for delta CPU% calculation.
      * Uses xTaskGetIdleTaskHandleForCore() + vTaskGetInfo() which do NOT call
-     * vTaskSuspendAll(), so they're safe alongside LVGL rendering on core 1. */
+     * vTaskSuspendAll(), so they're safe alongside other tasks on core 1. */
     uint32_t _prev_idle_runtime_core0{0};
     uint32_t _prev_idle_runtime_core1{0};
     int64_t _prev_timestamp_us{0};

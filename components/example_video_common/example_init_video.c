@@ -13,10 +13,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-/* Forward-declare BSP I2C handle getter (provided by Waveshare BSP component).
- * We avoid including bsp/esp-bsp.h here to keep the component self-contained. */
+/* Forward-declare the board I2C handle getter (provided by main/board_i2c.c).
+ * We avoid including board_i2c.h here to keep the component self-contained. */
 #include "driver/i2c_master.h"  /* for i2c_master_bus_handle_t */
-i2c_master_bus_handle_t bsp_i2c_get_handle(void);
+i2c_master_bus_handle_t board_i2c_get_handle(void);
 
 /* Forward-declare internal destroy functions from esp_video.
  * These are needed to force-cleanup stale video devices when esp_video_deinit()
@@ -81,9 +81,9 @@ esp_err_t example_video_init(void)
     const esp_video_init_config_t *cam_config_ptr = &s_cam_config;
 
 #if CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP
-    /* Use the BSP's pre-initialized I2C bus (shared with audio, touch, camera) */
-    s_i2cbus_handle = bsp_i2c_get_handle();
-    ESP_RETURN_ON_FALSE(s_i2cbus_handle, ESP_ERR_INVALID_STATE, TAG, "BSP I2C bus not initialized");
+    /* Use the pre-initialized board I2C bus (shared with audio + camera) */
+    s_i2cbus_handle = board_i2c_get_handle();
+    ESP_RETURN_ON_FALSE(s_i2cbus_handle, ESP_ERR_INVALID_STATE, TAG, "Board I2C bus not initialized");
 
 #if EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR
     esp_video_init_csi_config_t csi_config = s_csi_config;

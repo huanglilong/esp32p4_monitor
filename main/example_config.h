@@ -1,27 +1,9 @@
 #pragma once
 #include "sdkconfig.h"
-#include "driver/i2c_master.h"
-#include <atomic>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Board detection: true = LCD-4B (display + touch + dual codec + PA),
- * false = WIFI6 (headless, single codec). Set in main.cpp at boot. */
-#ifdef __cplusplus
-extern std::atomic<bool> g_has_lcd;
-#else
-#include <stdatomic.h>
-extern _Atomic bool g_has_lcd;
-#endif
-
-/* Display */
-#define EXAMPLE_RGB565_BITS_PER_PIXEL           16
-#define EXAMPLE_RGB565_BYTES_PER_PIXEL          (EXAMPLE_RGB565_BITS_PER_PIXEL / 8)
-#define EXAMPLE_MIPI_DSI_LANE_BITRATE_MBPS      480
-#define EXAMPLE_DISP_HRES                       BSP_LCD_H_RES
-#define EXAMPLE_DISP_VRES                       BSP_LCD_V_RES
 
 /* MIPI CSI Camera */
 #define EXAMPLE_MIPI_CSI_LANE_BITRATE_MBPS      200
@@ -45,7 +27,7 @@ extern _Atomic bool g_has_lcd;
 #define EXAMPLE_AUDIO_MCLK_MULTIPLE   (I2S_MCLK_MULTIPLE_256)
 #define EXAMPLE_AUDIO_MCLK_FREQ_HZ    (EXAMPLE_AUDIO_SAMPLE_RATE * EXAMPLE_AUDIO_MCLK_MULTIPLE)
 #define EXAMPLE_VOICE_VOLUME          CONFIG_EXAMPLE_VOICE_VOLUME
-/* Microphone gain is set directly in code (30dB, main.cpp:309) */
+/* Microphone gain is set directly in code (ES8311 in_gain=24, audio_driver.cpp) */
 
 /* Audio I2C */
 #define AUDIO_I2C_NUM         (0)
@@ -69,25 +51,21 @@ extern _Atomic bool g_has_lcd;
 #define SD_SPI_SCLK_GPIO      43   /* CLK → SCLK */
 #define SD_SPI_CS_GPIO        42   /* D3  → CS */
 
-/* NVS shared keys — used by PhoneAppSettings, PhoneAppMusic, web_config_server.
+/* NVS shared keys — used by web_config_server, camera_stream, wifi_service.
  * All settings use NVS namespace "settings". Keys must match across modules. */
 #define NVS_NAMESPACE_SETTINGS        "settings"
 #define NVS_KEY_WIFI_SSID             "ssid"
 #define NVS_KEY_WIFI_PASS             "pass"
 #define NVS_KEY_VOLUME                "volume"
-#define NVS_KEY_BRIGHTNESS            "brightness"
 #define NVS_KEY_CAM_STREAM            "cam_stream"
 #define NVS_KEY_CAM_ROTATION           "cam_rotation"
 
-/* Volume / Brightness shared constants */
+/* Volume shared constants */
 #define VOLUME_MIN                    0
 #define VOLUME_MAX                    100
 #define VOLUME_DEFAULT                60
-#define BRIGHTNESS_MIN                20
-#define BRIGHTNESS_MAX                100
-#define BRIGHTNESS_DEFAULT            80
 
-/* WiFi event group bits — shared by PhoneAppSettings and web_config_server */
+/* WiFi event group bits — shared by wifi_manager and web_config_server */
 #define WIFI_CONNECTED_BIT            BIT0
 
 /* Shared mDNS initialization guard with reference counting.
@@ -107,9 +85,6 @@ void shared_mdns_update_delegate_ip(void);
 /* Returns the unique mDNS hostname (e.g. "esp-web-a1b2c3").
  * Valid after shared_mdns_ensure() has been called. */
 const char *shared_mdns_hostname(void);
-
-/* BSP I2C bus handle — provided by Waveshare BSP (shared I2C bus for GT911/ES8311/ES7210/OV5647) */
-i2c_master_bus_handle_t bsp_i2c_get_handle(void);
 
 #ifdef __cplusplus
 }

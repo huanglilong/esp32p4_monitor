@@ -89,21 +89,18 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/git_info.h
 )
 
 idf_component_register(
-    SRCS "wifi_service.cpp" "main.cpp" "peripherals.cpp"
+    SRCS "wifi_service.cpp" "main.cpp" "peripherals.cpp" "board_i2c.c"
          "drivers/audio/audio_driver.cpp"
          "drivers/audio/audio_ulog_recorder.cpp"
          "drivers/sdcard/sdcard_driver.cpp"
          "drivers/camera/camera_driver.cpp"
          "drivers/system_monitor/system_monitor.cpp"
          "logger/logger.cpp"
-         "phone_app_camera.cpp" "phone_app_audio.cpp"
-         "phone_app_music.cpp" "phone_app_settings.cpp"
          "camera_stream.cpp"
          "web_config_server.cpp"
          "ppa_preprocessor.cpp"
          "generated/fps_stats.cpp"
          "generated/wifi_state.cpp"
-         "generated/audio_level.cpp"
          "generated/audio_frame.cpp"
          "generated/camera_state.cpp"
          "generated/recording_state.cpp"
@@ -123,26 +120,5 @@ idf_component_register(
 target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
-
-# Get LVGL component library to suppress warnings
-function(get_component_library component_name output_var)
-    idf_build_get_property(build_components BUILD_COMPONENTS)
-    set(TARGET_COMPONENT "")
-    foreach(COMPONENT ${build_components})
-        if(COMPONENT MATCHES "${component_name}" OR COMPONENT MATCHES "espressif__${component_name}")
-            set(TARGET_COMPONENT ${COMPONENT})
-            break()
-        endif()
-    endforeach()
-    if(TARGET_COMPONENT STREQUAL "")
-        message(FATAL_ERROR "Component '${component_name}' not found.")
-    else()
-        idf_component_get_property(COMPONENT_LIB ${TARGET_COMPONENT} COMPONENT_LIB)
-        set(${output_var} ${COMPONENT_LIB} PARENT_SCOPE)
-    endif()
-endfunction()
-
-get_component_library("lvgl" LVGL_LIB)
-target_compile_options(${LVGL_LIB} PRIVATE "-Wno-attributes")
 
 target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

@@ -28,9 +28,6 @@ public:
     /** Singleton access */
     static PeripheralManager& instance(void);
 
-    /* ---- Board detection ---- */
-    void set_has_lcd(bool v);
-
     /* ---- SD Card (delegates to SDCardDriver, init-once) ---- */
     bool init_sdcard(void);
     bool sdcard_available(void) const { return SDCardDriver::instance().available(); }

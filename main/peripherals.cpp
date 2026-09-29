@@ -22,16 +22,6 @@ PeripheralManager::PeripheralManager()
 }
 
 /*============================================================================
- * Board detection — propagates to drivers that need it
- *============================================================================*/
-void PeripheralManager::set_has_lcd(bool v)
-{
-    /* Propagate board type to drivers */
-    AudioDriver::instance().set_has_lcd(v);
-    SDCardDriver::instance().set_has_lcd(v);
-}
-
-/*============================================================================
  * SD Card — delegates to SDCardDriver (init-once, never unmount)
  *============================================================================*/
 bool PeripheralManager::init_sdcard(void)

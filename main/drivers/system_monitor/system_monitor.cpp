@@ -213,7 +213,7 @@ void SystemMonitor::_sample(void)
     /* ── 2. CPU usage via per-core idle runtime (non-blocking).
      * xTaskGetIdleTaskHandleForCore() + vTaskGetInfo() read each core's
      * idle task runtime counter without calling vTaskSuspendAll(), so
-     * they're safe alongside LVGL rendering on core 1.
+     * they're safe alongside other tasks on core 1.
      *   idle_pct  = idle_delta / wall_delta × 10000
      *   busy_pct  = 10000 - idle_pct
      */

@@ -9,7 +9,11 @@
 
 ## 1. 项目愿景
 
-基于 Waveshare ESP32-P4-WiFi6-Touch-LCD-4B 开发板构建一个多功能监控终端，集成摄像头预览、音频录制/播放、WiFi 推流和系统设置，以单一固件适配多款开发板（LCD-4B / WIFI6 基板）。
+基于 Waveshare ESP32-P4-WIFI6 开发板 (headless, 无屏) 构建一个多功能监控终端，集成摄像头推流、音频录制/播放、WiFi 推流和系统设置，通过 Web UI / Flutter App 交互。
+
+> **历史说明**: 项目曾以单一固件同时适配 LCD-4B (4寸 LCD+触摸+Brookesia UI) 与 WIFI6 两板。
+> **2026-09-29 起 LCD-4B 支持已全部移除** (见变更记录)。下文表格中 "适用平台" 列的
+> `LCD-4B` 字样及涉及 UI App/显示/双麦的历史条目均为**存档记录**, 对应代码已不存在。
 
 ---
 
@@ -19,20 +23,20 @@
 
 | # | 需求 | 说明 | 状态 |
 |---|------|------|:----:|
-| R1 | **MIPI DSI 显示** | ST7703 720×720 LCD，LVGL v9.2.2 + ESP-Brookesia Phone UI | ✅ |
+| R1 | ~~**MIPI DSI 显示**~~ | ST7703 720×720 LCD，LVGL + ESP-Brookesia Phone UI — **已移除** (2026-09-29 LCD-4B 板支持删除) | ❌→移除 |
 | R2 | **MIPI CSI 摄像头** | OV5647 RAW8 800×800，ISP RAW8→RGB565 实时预览 (~5fps) | ✅ |
 | R3 | ~~**Camera 人体检测**~~ | ESP-DL + YOLO11n 320×320, ~1.8fps — **已移除**: COCO detection 模型和 esp-dl 依赖已从项目中完全移除 | ❌→移除 |
 | R4 | **Camera V4L2 迁移** | 统一 esp_video 接口，与 Camera Stream 共享 | ✅ |
 | R5 | **Camera 红绿通道修正** | Bayer GBRG + byte_swap_en=1 修复颜色错误 | ✅ |
 | R6 | **Camera Stream WiFi 推流** | HW JPEG MJPEG 流 (port 81) + Web UI (port 80), mDNS 发现 | ✅ |
 | R7 | **Camera Stream 独立 App** | 从 Settings App 分离，独立开关，含 CPU/PSRAM 监控 | ✅ |
-| R8 | **Audio 双 Mic 监控** | I2S RX 16kHz Stereo 直接读取，双声道电平表 (0–100%) | ✅ |
-| R9 | **Audio AAC 录音** | ESP AAC 编码器 64kbps stereo 16kHz ADTS → SD 卡，录制/停止/文件列表 | ✅ |
-| R10 | **Music MP3/WAV 播放器** | ESP-GMF 音频管道，SD 卡音源，音量滑条 | ✅ |
-| R11 | **Settings 音量/亮度** | LVGL Slider (0–100 / 20–100), NVS 持久化，500ms 去抖写入 | ✅ |
-| R12 | **Settings WiFi 管理** | SSID 扫描 + 密码输入 + 连接，后台保持，WiFi 始终启用不可禁用 | ✅ |
+| R8 | ~~**Audio 双 Mic 监控**~~ | 双声道电平表 UI (LCD Audio App) — **已移除** (2026-09-29 LCD-4B 板支持删除; WIFI6 为 ES8311 单麦) | ❌→移除 |
+| R9 | **Audio AAC 录音** | ESP AAC 编码器 64kbps stereo 16kHz ADTS → SD 卡，录制/停止/文件列表 (Web API) | ✅ |
+| R10 | ~~**Music MP3/WAV 播放器**~~ | ESP-GMF 音频管道，SD 卡音源 (LCD Music App) — **已移除** (2026-09-29; Web 端 AAC 播放保留, 见 R16) | ❌→移除 |
+| R11 | ~~**Settings 音量/亮度**~~ | LVGL Slider UI — **已移除** (2026-09-29; 音量经 Web API 设置, 亮度随 LCD 移除) | ❌→移除 |
+| R12 | **Settings WiFi 管理** | ~~SSID 扫描 + 密码输入 UI (LCD Settings App)~~ → UI 已移除 (2026-09-29); WiFi 管理经 Web :8080 / Flutter App, connect-before-save 验证保留 | ✅ |
 | R13 | **Web 配置服务器** | HTTP :8080，WiFi/音量远程设置，connect-before-save 验证 | ✅ |
-| R14 | **多板自动检测** | GT911 I2C (0x5D) 探测，自动适配 LCD-4B / WIFI6，单一固件 | ✅ |
+| R14 | ~~**多板自动检测**~~ | GT911 I2C (0x5D) 探测，自动适配 LCD-4B / WIFI6 — **已移除** (2026-09-29 起仅支持 WIFI6 单板) | ❌→移除 |
 | R15 | **Web 音频录制** | WIFI6 无屏板通过 Web :8080 录制，AAC → SD 卡，Start/End 按钮 | ✅ |
 | R16 | **Web 音频播放** | WIFI6 无屏板通过 Web :8080 播放 SD 卡 AAC，esp_audio_simple_player | ✅ |
 | R17 | **Camera Stream 互斥保护** | ~~Web 音频功能仅在 Camera Stream 未运行时可用，UI 隐藏 + API 阻断~~ → **已移除**: Camera (MIPI CSI) 和 Audio (I2S) 使用独立硬件，无需互斥。所有 `__cam_running()` 检查已移除 | ✅ |
@@ -567,6 +571,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-09-29 | **移除 ESP32-P4-WIFI6-Touch-LCD-4B 板支持 (仅保留 WIFI6 headless)**: ① 删除 4 个 Brookesia Phone App (camera/audio/music/settings, ~2700 行) 及 main.cpp 的显示/Brookesia/GT911 探测初始化路径; ② 删除依赖: waveshare BSP、esp-brookesia、本地 esp_lvgl_port/display_arbiter/esp_painter 组件、protocol_examples_common (无消费者)、sdkconfig.defaults 的 LVGL/BSP 段; ③ 新增 `main/board_i2c.{h,c}` 替代 BSP 共享 I2C (GPIO7/8, ES8311+OV5647 SCCB+esp_video), example_video_common 同步改用 `board_i2c_get_handle()` 且 boards/waveshare_p4_4b → waveshare_p4_wifi6; ④ AudioDriver 移除 ES7210 双芯片路径/_codec_mic_handle/_has_lcd (仅 ES8311 单芯片); SDCardDriver/PeripheralManager 移除 _has_lcd 板型分支; ⑤ 移除死 topic `audio_level` (原 Audio App 电平表专用, 无发布者/订阅者) — proto+generated+topics.h+ULog 注册全链路删除 (11→10 topics); recording_state 保留 (web 录音仍发布, ULog 标记); ⑥ **依赖锁定**: BSP/brookesia 移除后 esp_codec_dev 失去约束被解析到 2.0.0-beta5 (API 破坏 es8311_codec_cfg_t: 无 port/codec_mode 成员) → manifest 钉 ==1.5.11; ⑦ 删除 doc/waveshare_esp32p4_wifi_vs_lcd_4b.md + LCD-4B 原理图 PDF; README/PROJECT.md 全面改写为 WIFI6 单板上文档 (历史章节保留并加注)。验证: fullclean+build 通过, **固件 3.97MB→2.42MB (-39%)**, 分区占用 68%→81% free; 设备启动/WiFi/Web/SNTP/camera stream 正常 (board_i2c 经 SCCB 验证); pytest 非 SD 套件全过 (status/system_monitor/settings/camera 19+11 passed) — SD 相关失败为**硬件问题** (SD 卡接触不良: send_if_cond 0x108 间歇挂载失败 + spi_master DMA TX underflow/CRC 0x109 写失败 + 伴随整板 POWERON 复位, 修改前固件同样复现) |
 | 2026-09-29 | **死代码清理 (精简 code)**: 全仓引用分析后移除 211 行从未被调用的代码 — ① `PeripheralManager` 门面 8 个无调用者的透传方法 (`has_lcd/audio_available/deinit_sdcard/tx_handle/codec_handle/volume/set_mic_gain/camera_available`) + 只写不读的 `_has_lcd` 成员；② `SDCardDriver::deinit()` no-op 桩 (唯一调用者为①的死门面)；③ `WifiService::disconnect()/get_ap_netif()/sntp_started()/set_sntp_started()/sntp_synced()/set_sntp_synced()` + `_started/_sntp_started/_sntp_synced` 成员 — `_state_callback` 中"首次连接启动 SNTP"块为自引用死逻辑 (置位后无人读取, 实际 SNTP 由 web_config_server 自管)；④ `CameraDriver::isClaimed()/claimOwner()`；⑤ `logger_get_sd_level()/logger_get_filepath()`；⑥ `PhoneAppSettings::setNvsStr()/onMainScreenLoaded()`；⑦ `AudioUlogRecorder::frame_count()/bytes_published()` getter (成员保留, 内部日志仍用)；⑧ `PhoneAppCamera::isCameraRunning()`；⑨ `SystemMonitor::is_running()/min_free_internal()/min_free_psram()` + `_min_free_*` 冗余追踪 (stats 直接用 IDF `heap_caps_get_minimum_free_size()`, 自维护副本只写不读)；⑩ `AudioDriver::tx_handle()/codec_handle()/volume()` getter + `set_mic_gain()` (全仓无调用)。验证: `idf.py build` 通过; debug workflow 烧录+抓取正常 (WiFi/Web/SNTP OK); pytest 49 passed/11 skipped/1 xfailed — 4 项 SD 失败确认为硬件问题 (旧固件同样 `send_if_cond 0x108`, SD 卡接触不良, 与本次改动无关) |
 | 2026-09-29 | +S359-S361 **Code Review Round 17 — SD 格式化收尾 + 构建阻断修复**: 审查对象为 Round 16 后未复核的提交 (97d12c1/0b621b7/4a72197/4e8afd0/b50f0f4)。**S359 (MEDIUM)**: `sdcard_format_handler` 步骤 3 停 `AudioUlogRecorder` 后，格式化成功仅重启 `ulog_writer` 未重启 audio_frame 生产者 (注释误称 auto-start 会重启，实则 `ulog_autostart_done` 每 boot 仅一次) → ULog 音频录制静默失效至重启；改为记录 `running()` 并在 `ulog_writer_start` 成功后按 `ulog_start_handler` 模式成对重启。**S360 (LOW)**: `SDCardDriver::format()` 的 f_mkfs 失败路径 (S355) 仅置空 `_card`/`_initialized`，但 IDF 该路径保留 VFS/diskio/card 注册 → card 泄漏 + 残留 VFS 使 `init()` 重挂载复用旧 pdrv；改为确认挂载丢失后先 `esp_vfs_fat_sdcard_unmount()` 完整释放再置空 (ESP_OK-但-挂载丢失路径不 unmount, 避免双重释放)。**S361 (构建阻断)**: b50f0f4 手改 lock 致下次 build 完整重解析 — ① CONFIGDEP 评估 `esp_video ^2.2` 候选 2.5.0 manifest 的 `$CONFIG{ESP_VIDEO_USE_CUSTOMIZED_ESP_H264_VERSION}` 门控 (2.2.0 Kconfig 树中悬空) → configure 致命；② 音频簇漂移 (audio_codec 2.6.2/audio_effects 1.4.3) 触发 `*_p4_rev_check` 要求 chip rev ≥3.0 (设备 rev v1.x) → 编译失败。修复: manifest 精确锁定 esp_video ==2.2.0 + 音频簇 (codec ==2.5.0/effects ==1.3.0/simple_player ==1.0.0)，重新生成一致 lock。`idf.py build` 完整通过 (0 error, 仅 3 处第三方 deprecation warning)。+K8 (Web 格式化未停 LCD-4B UI App SD 使用者, 低优先级已知问题) |
 | 2026-09-04 | +S353-S358 **Code Review Round 15/16 — statvfs 桩根因修复 + SD 格式化健壮性**: **S353 (根因, HIGH)**: `statvfs()` 在 ESP-IDF v6.x PICOLIBC 构建是 ENOSYS 桩 (IDF-9879) — ulog 两处调用全部静默失败，容量限恒 512KB、S350 临界空闲检查永不触发 (满盘 FAT 损坏实际未修复)；改用 `esp_vfs_fat_info()` (需精确挂载路径, cleanup_old_logs 加 sd_mount_path 参数, ulog REQUIRES +fatfs)。**S354**: SD 格式化前未停 web AAC 录音/音乐播放/text logger (跨卸载持句柄, 重挂载后静默失败或损坏新 FAT)；按序全停 + 仅重启原先运行的 (用户手动停的 ULog 不拉起)。**S355**: IDF `esp_vfs_fat_sdcard_format` 重挂载失败仍返回 ESP_OK 且内部 free card → _card 悬垂；format() 后验证挂载存活，连带修复 init() 重挂载能力 (SPI 总线 INVALID_STATE 复用、LDO4 不重获取、f_mkfs 失败路径同样验证)。**S356**: test_capture_requires_stream ok=1 分支清理照片。**S357 (Round 2)**: S353 修复暴露 32 位溢出 — 16GB 卡 70%=11.2GB 溢出 size_t；容量/目录大小/累加全链路 uint64_t。**S358 (Round 2)**: S354 修复暴露等待不足 — 音频任务 fclose ~10s 在 exited 置位前，1.5s 等待不够；直接等 exited (≤12s) 且覆盖前次清理进行中场景。每项修复独立提交并重建验证 |

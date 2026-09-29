@@ -13,10 +13,10 @@ extern "C" {
 #endif
 
 /**
- * @brief Waveshare ESP32-P4-WiFi6-Touch-LCD-4B board configuration
+ * @brief Waveshare ESP32-P4-WIFI6 board configuration
  *
  * MIPI CSI camera (OV5647):
- *   - I2C SCL=8, SDA=7 (shared bus with audio, touch)
+ *   - I2C SCL=8, SDA=7 (shared bus with audio codec)
  *   - No reset pin, no pwdn pin, no xclk pin (MIPI CSI uses internal clock)
  */
 

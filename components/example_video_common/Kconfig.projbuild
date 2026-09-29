@@ -9,7 +9,7 @@ menu "Example Video Configuration"
         config EXAMPLE_SELECT_CUSTOMIZED_DEV_BOARD
             bool "Customized Development Board"
             help
-                Customized development board for Waveshare ESP32-P4-WiFi6-Touch-LCD-4B.
+                Customized development board for Waveshare ESP32-P4-WIFI6.
     endchoice
 
     config EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR

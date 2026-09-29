@@ -5,26 +5,20 @@
 > 📋 硬件接线与规格见 [README.md](README.md)。
 
 ## 项目概述
-基于 ESP32-P4 + Waveshare ESP32-P4-WiFi6-Touch-LCD-4B 开发板的综合监控项目,集成:
-- **MIPI DSI** 显示 (720x720, ST7703, 通过 Waveshare BSP)
+基于 ESP32-P4 + Waveshare ESP32-P4-WIFI6 开发板 (headless, 无屏) 的综合监控项目,集成:
 - **MIPI CSI** 摄像头 (OV5647, ISP 处理 RAW8→RGB565)
 - **SDMMC** SD 卡 (SDSPI 1-bit 模式, SPI 20MHz, FAT 文件系统)
-- **音频输入/输出** (ES8311 DAC + ES7210 ADC, I2S)
-- **UI** ESP-Brookesia Phone 桌面 (LVGL v9.2.2) + 自定义 App
-- **多板支持** 通过 GT911 I2C 自动检测 LCD-4B / WIFI6，单一固件适配
-- **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS, SD 卡文件管理器 (浏览/下载/删除), Take a Picture (拍照存 SD `<epoch>.jpg`), SD 卡格式化 (FAT 修复)
+- **音频输入/输出** (ES8311 单芯片 ADC+DAC, I2S, NS4150B 功放)
+- **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS, SD 卡文件管理器 (浏览/下载/删除), Take a Picture (拍照存 SD `<epoch>.jpg`), SD 卡格式化 (FAT 修复), 音频录制/播放
 - **Camera Frame Recording** JPEG 帧录制到 ULog 文件 (PPA 300×300 路径, ~5-8KB/帧, ~4fps, 自动随 Camera Stream 启停)
 - **Audio Frame Recording** 持续 AAC 音频通过 `audio_frame` uORB topic 录制到 ULog (I2S 16kHz 立体声, 64kbps ADTS, ~15.6fps)
+- **Flutter App** 跨平台客户端 (设备发现/设置/ULog 查看)
 
-### ESP-Brookesia App 列表
-
-| App | 类名 | 功能 |
-|-----|------|------|
-| 📷 Camera | `PhoneAppCamera` | OV5647 实时预览, V4L2 (esp_video) 驱动, 800×800 → 720×720 显示 (纯预览) |
-| 🎤 Audio | `PhoneAppAudio` | 双 Mic 实时电平监控 + **AAC 录音 (SD 卡)** |
-| 🎨 Squareline | `PhoneAppSquareline` | ESP-Brookesia 内置 Squareline 示例 |
-| 🎵 Music | `PhoneAppMusic` | MP3/WAV 播放器, SD 卡, ESP-GMF 音频管道 |
-| ⚙️ **Settings** | `PhoneAppSettings` | **音量/亮度 滑条 + WiFi + Camera Stream 开关** (WiFi 始终启用, 后台运行; Camera Stream 独立于 App 生命周期, 仅开关控制) |
+> **历史说明**: 本项目曾支持 ESP32-P4-WIFI6-Touch-LCD-4B (MIPI DSI 720×720 LCD + GT911 触摸 +
+> ES8311/ES7210 双芯片音频 + ESP-Brookesia Phone UI, GT911 I2C 探测自动区分板型)。
+> LCD-4B 支持已于 2026-09-29 **全部移除** (含 4 个 Phone App、Brookesia/LVGL/BSP 依赖、
+> 双芯片音频路径、显示相关任务)。下文"关键修改和问题解决"中涉及 LCD/UI/Brookesia 的
+> 章节均为**历史记录**, 对应代码已不存在。
 
 ## 开发环境
 - **芯片**: ESP32-P4NRW32
@@ -44,8 +38,10 @@ esp32p4_monitor/
 │   ├── CMakeLists.txt          # 主组件编译配置 (C++)
 │   ├── idf_component.yml       # 组件依赖声明
 │   ├── Kconfig.projbuild           # 项目 Kconfig 菜单
-│   ├── example_config.h        # 引脚/参数/NVS键/音量亮度常量/共享mDNS API 宏定义
-│   ├── main.cpp                    # 主程序 (C++): 多板支持, 按需初始化
+│   ├── example_config.h        # 引脚/参数/NVS键/音量常量/共享mDNS API 宏定义
+│   ├── board_i2c.h                 # 共享 I2C 总线 API (GPIO7/8, ES8311 + OV5647 SCCB)
+│   ├── board_i2c.c                 # 共享 I2C 总线实现 (替代原 BSP bsp_i2c_*)
+│   ├── main.cpp                    # 主程序 (C++): 启动流程, 按需初始化
 │   ├── peripherals.hpp             # PeripheralManager facade — 委托给独立 Driver 模块
 │   ├── peripherals.cpp             # PeripheralManager 实现 (thin facade)
 │   ├── drivers/                    # Driver 模块 (PX4-style 目录结构)
@@ -68,14 +64,6 @@ esp32p4_monitor/
 │   │   └── logger.cpp              # Ring buffer + writer task → SD card text file, 文件轮转
 │   ├── web_config_server.hpp       # Web 配置服务器头文件
 │   ├── web_config_server.cpp       # Web 配置服务器 (HTTP :8080, WiFi/音量设置)
-│   ├── phone_app_camera.hpp        # Camera App 头文件
-│   ├── phone_app_camera.cpp    # Camera App (V4L2 + OV5647 sensor, 纯预览)
-│   ├── phone_app_audio.hpp     # Audio App 头文件
-│   ├── phone_app_audio.cpp     # Audio App (双 Mic 电平监控 + AAC 录音)
-│   ├── phone_app_music.hpp     # Music App 头文件
-│   ├── phone_app_music.cpp     # Music App (MP3/WAV 播放器)
-│   ├── phone_app_settings.hpp     # Settings App 头文件
-│   ├── phone_app_settings.cpp     # Settings App (音量/亮度 + WiFi, WiFi 始终启用)
 │   ├── wifi_service.hpp           # WifiService C++ facade over wifi_manager
 │   ├── wifi_service.cpp           # WifiService 实现 (uORB wifi_state + SNTP + NVS)
 │   ├── camera_stream.hpp          # Camera Stream 核心头文件
@@ -101,12 +89,10 @@ esp32p4_monitor/
 │   ├── ulog_to_audio.py              # ULog audio_frame → WAV extraction
 │   └── ulog_to_video.py              # ULog camera_frame_chunk → JPEG extraction
 ├── doc/
-│   ├── waveshare_esp32p4_wifi_vs_lcd_4b.md  # 两板外设接线对比
 │   ├── ESP32-P4-WIFI6-datasheet.pdf          # WIFI6 基板原理图
-│   └── ESP32-P4-WIFI6-Touch-LCD-4B.pdf       # LCD-4B 原理图
+│   └── pin_analysis_summary.md               # P4 物理引脚 vs GPIO 编号分析
 ├── components/
-│   ├── espressif__esp_lvgl_port/     # 本地补丁版 esp_lvgl_port
-│   ├── example_video_common/         # V4L2 视频初始化 + JPEG 编码
+│   ├── example_video_common/         # V4L2 视频初始化 + JPEG 编码 (boards/waveshare_p4_wifi6)
 │   ├── uorb/                         # uORB for FreeRTOS (pub/sub 消息总线)
 │   │   ├── include/uorb.h
 │   │   ├── uorb.c
@@ -124,18 +110,13 @@ esp32p4_monitor/
 
 | 组件 | 版本 | 来源 |
 |------|------|------|
-| `espressif/esp-brookesia` | 0.5.0 | ESP Registry |
-| `waveshare/esp32_p4_wifi6_touch_lcd_4b` | 2.0.0 | ESP Registry |
-| `espressif/esp_codec_dev` | 1.5.11 | ESP Registry |
+| `espressif/esp_codec_dev` | ==1.5.11 | ESP Registry — **锁定** (LCD-4B BSP/brookesia 移除后无约束, 解析器会选 2.0.0-beta5, 其 API 破坏 es8311_codec_cfg_t) |
 | `espressif/esp_cam_sensor` | 2.2.0 | ESP Registry |
 | `espressif/esp_sccb_intf` | 0.0.8 | ESP Registry |
 | `espressif/esp_video` | ==2.2.0 | ESP Registry — **锁定** (S361: ^2.2 候选 2.5.0 manifest 的 `$CONFIG{ESP_VIDEO_USE_CUSTOMIZED_ESP_H264_VERSION}` 门控在 2.2.0 Kconfig 树悬空, CONFIGDEP configure 致命) |
 | `espressif/esp_new_jpeg` | 1.0.2 | ESP Registry |
 | `espressif/mdns` | 1.11.3 | ESP Registry |
 | `espressif/cjson` | 1.7.19 | ESP Registry |
-| `protocol_examples_common` | local | IDF examples |
-| `espressif/esp_lvgl_port` | 2.8.0~1 | **本地补丁版** |
-| `lvgl/lvgl` | 9.2.2 | ESP Registry |
 | `espressif__esp_audio_codec` | ==2.5.0 | ESP AAC encoder (64kbps 16kHz ADTS) — **锁定** (S361: v2.6+ `*_p4_rev_check` 要求 chip rev ≥3.0, 本设备 rev v1.x) |
 | `espressif/esp_audio_simple_player` | ==1.0.0 | ESP Registry — **锁定** (S361: 1.1.x 拉入要求 chip rev ≥3.0 的 gmf/audio_effects 分支) |
 | `espressif/esp_audio_effects` | ==1.3.0 | **锁定** (S361, 间接依赖显式钉版: v1.4+ `*_p4_rev_check` 要求 chip rev ≥3.0) |
@@ -180,24 +161,25 @@ proto/*.msg  ──→  tools/msg_gen.py  ──→  main/generated/*.h/.cpp
 
 | Topic | 结构体 | 队列深度 | 发布者 | 订阅者 |
 |-------|--------|:-------:|--------|--------|
-| `fps_stats` | `fps_stats_s` | 3 | CameraStream (capture task) | CameraStream App UI |
-| `wifi_state` | `wifi_state_s` | 1 | WifiService | Web Config, UI, Flutter |
-| `audio_level` | `audio_level_s` | 1 | Audio task | UI 电平表 |
-| `camera_state` | `camera_state_s` | 1 | CameraDriver | PeripheralManager, CameraStream, PhoneAppCamera |
-| `recording_state` | `recording_state_s` | 1 | PhoneAppAudio | UI 录制状态, PhoneAppMusic 录制互斥 |
-| `volume_state` | `volume_state_s` | 1 | AudioDriver (via PeripheralManager) | Music Playback |
+| `fps_stats` | `fps_stats_s` | 3 | CameraStream (capture task) | ULog (帧率遥测) |
+| `wifi_state` | `wifi_state_s` | 1 | WifiService | Web Config, ULog, Flutter |
+| `camera_state` | `camera_state_s` | 1 | CameraDriver | CameraStream (claim/release 互斥), ULog |
+| `recording_state` | `recording_state_s` | 1 | web_config_server | ULog (录音标记) |
+| `volume_state` | `volume_state_s` | 1 | AudioDriver (via PeripheralManager) | ULog |
 | `ulog_state` | `ulog_state_s` | 1 | ULog Writer | Web API (/api/ulog/status) |
 | `system_stats` | `system_stats_s` | 3 | SystemMonitor | ULog, Web API (/api/system_stats) |
 | `system_alert` | `system_alert_s` | 5 | SystemMonitor | ULog, Web API (/api/system_alerts) |
 | `camera_frame_chunk` | `camera_frame_chunk_s` | 32 | CameraStream | ULog (camera JPEG chunked recording) |
 | `audio_frame` | `audio_frame_s` | 4 | AudioUlogRecorder | ULog (AAC audio frame recording) |
 
+> `audio_level` topic 已随 LCD-4B Audio App (电平表 UI) 移除。
+
 ## Driver 模块架构 (Phase 3 重构)
 
 PeripheralManager 从 monolithic facade 重构为 thin facade，外设逻辑拆分为独立 Driver 单例:
 
 ```
-App 层 (Audio/Music/Camera/Settings/web_config)
+App 层 (web_config_server / camera_stream / audio_ulog_recorder)
          ↓ 调用 (API 不变)
 PeripheralManager (thin facade)
   ├── AudioDriver::instance()     — I2S + codec 生命周期 + volume uORB
@@ -209,16 +191,16 @@ SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独
 
 | Driver | 目录 | 职责 | 线程安全 |
 |--------|------|------|----------|
-| AudioDriver | `drivers/audio/` | I2S channel + ES8311/ES7210 codec init/deinit, volume/mic_gain/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
+| AudioDriver | `drivers/audio/` | I2S channel + ES8311 codec init/deinit, volume/codec_write, volume_state uORB | lifecycle_mutex + codec_mutex |
 | SDCardDriver | `drivers/sdcard/` | SDSPI init-once (LDO VO4 power-cycle), never unmount, max_files=8 | _init_mutex |
 | CameraDriver | `drivers/camera/` | camera hardware mutual exclusion via uORB, claim/release API with owner tracking | _mutex |
 | SystemMonitor | `drivers/system_monitor/` | Per-core CPU busy% (via idle task runtime, no scheduler suspend) + heap/PSRAM 采样, system_stats uORB, ESP_LOG 摘要, Web API, 资源异常告警 (CPU>90% / Memory>85%) | _latest_mutex + _alert_mutex |
 
 **设计要点**:
-- PeripheralManager API 完全不变，app 模块无需修改
+- PeripheralManager 提供稳定薄门面，app 模块无需直接依赖 Driver
 - 各 Driver 可独立使用 (如 `AudioDriver::instance().set_volume(80)`)
-- CameraDriver 的 `claim(caller_id)/release(caller_id)` 替代了 CameraStream/PhoneAppCamera 中直接发布 camera_state uORB 的代码
-- `claim()` 支持 owner tracking: 同一 caller_id 可重入, 不同 caller_id 互斥 (防止 CameraStream 运行时 Camera App 误操作 V4L2)
+- CameraDriver 的 `claim(caller_id)/release(caller_id)` 替代了各模块直接发布 camera_state uORB 的代码
+- `claim()` 支持 owner tracking: 同一 caller_id 可重入, 不同 caller_id 互斥 (防止多使用者同时操作 V4L2)
 
 ## FreeRTOS 任务调度
 
@@ -227,60 +209,39 @@ SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独
 | # | 任务名 | 优先级 | 栈 | 核心 | 创建者 | 生命周期 | 周期/触发 |
 |---|--------|--------|-----|------|--------|----------|-----------|
 | 1 | `main` | 1 (默认) | 10KB | 0 | ESP-IDF | **一次性** — setup 后 `vTaskDelete(NULL)` 回收 | — |
-| 2 | `taskLVGL` | 4 | 10KB | 1 | `esp_lvgl_port` | 永久 | 20ms timer |
-| 3 | `audio_echo` | 5 | 48KB (PSRAM) | 0† | `PhoneAppAudio::run()` | App 打开→关闭 | 10ms 循环 |
-| 4 | ~~`detect`~~ | — | — | — | ~~`PhoneAppCamera`~~ | **已移除** (R3 人体检测移除, 检测迁移至 CameraStream 后又整体移除) | — |
-| 5 | `GMF/ASP task` | 3 | 8KB (PSRAM) | 1 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
-| 6 | `wifi_scan` | 1 | 6KB | 1 | `Settings` (WiFi ON) / Boot | WiFi ON→OFF | 500ms 轮询 |
-| 7 | `wifi_conn` | 4 | 4KB | 1 | `Settings` (连接点击) | 一次性 | 15s 超时 |
-| 8 | `httpd:80` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 |
-| 9 | `httpd:81` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 (MJPEG) |
-| 10 | `cam_capture` | 5 | 32KB (PSRAM) | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | DQBUF→encode→publish |
-| 11 | `web_config` | 1 | 4KB | 1 | `web_config_server_start()` | 永久 | 1s 空闲 + HTTP 事件 |
-| 12 | `w_audio` | 1 | 12KB | 1 | `web_config_server` (录音时) | 录音→停止 | 100ms 循环 (I2S read) |
-| 13 | ~~`model_load`~~ | — | — | — | ~~`CameraStream::_init_detection()`~~ | **已移除** (R3 人体检测移除, NPU 推理不再使用) | — |
-| 14 | `sys_monitor` | 1 | 4KB | 1 | `SystemMonitor::start()` | 永久 | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` |
-| 15 | `ulog_writer` | 5 | 32KB (PSRAM, 静态 TCB) | 0 (固定) | `ulog_writer_start()` | Start→Stop | ring buffer 消费 |
-| 16 | `logger_writer` | 3 | 4KB | 0 (固定) | `logger_init()` | 永久 | ring buffer → SD 文本文件 |
-| 17 | `audio_ulog` | 2 | 32KB (PSRAM) | 1 | `AudioUlogRecorder::start()` | ULog Start→Stop | I2S read → AAC encode → uORB publish |
+| 2 | `GMF/ASP task` | 3 | 8KB (PSRAM) | 1 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
+| 3 | `httpd:80` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 |
+| 4 | `httpd:81` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 (MJPEG) |
+| 5 | `cam_capture` | 5 | 32KB (PSRAM) | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | DQBUF→encode→publish |
+| 6 | `web_config` | 1 | 8KB | 1 | `web_config_server_start()` | 永久 | 1s 空闲 + HTTP 事件 |
+| 7 | `w_audio` | 1 | 12KB | 1 | `web_config_server` (录音时) | 录音→停止 | 100ms 循环 (I2S read) |
+| 8 | `sys_monitor` | 1 | 4KB | 1 | `SystemMonitor::start()` | 永久 | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` |
+| 9 | `ulog_writer` | 5 | 32KB (PSRAM, 静态 TCB) | 0 (固定) | `ulog_writer_start()` | Start→Stop | ring buffer 消费 |
+| 10 | `logger_writer` | 3 | 4KB | 0 (固定) | `logger_init()` | 永久 | ring buffer → SD 文本文件 |
+| 11 | `audio_ulog` | 2 | 32KB (PSRAM) | 1 | `AudioUlogRecorder::start()` | ULog Start→Stop | I2S read → AAC encode → uORB publish |
 
-> † 使用 `xTaskCreate`/`xTaskCreateStatic` (未指定核心), FreeRTOS 调度到 core 0 或 core 1
+> 历史任务 `taskLVGL`/`audio_echo`/`wifi_scan`/`wifi_conn`/`detect`/`model_load` 已随 LCD-4B UI 与人体检测移除。
 
 ### 优先级与核心亲和性
 
 ```
-Priority 5: audio_echo, cam_capture, ulog_writer   (实时音频 / 相机采集编码 / ULog 写入)
-Priority 4: taskLVGL, wifi_conn                    (UI 渲染 / WiFi 连接)
-Priority 3: GMF/ASP task, logger_writer            (音乐解码 / 文本日志写入)
+Priority 5: cam_capture, ulog_writer               (相机采集编码 / ULog 写入)
+Priority 3: GMF/ASP task, logger_writer            (音频解码 / 文本日志写入)
 Priority 2: audio_ulog                             (AAC 音频帧录制)
-Priority 1: main, wifi_scan, web_config, w_audio, sys_monitor (后台/辅助)
+Priority 1: main, web_config, w_audio, sys_monitor (后台/辅助)
 ```
 
 | 核心 | 任务 |
 |------|------|
-| **Core 0** | `main` (一次性), `audio_echo`†, `cam_capture`, `httpd:80/81`, `ulog_writer`, `logger_writer` |
-| **Core 1** | `taskLVGL` (固定), `GMF/ASP task`, `wifi_scan`, `wifi_conn`, `web_config`, `w_audio`, `sys_monitor`, `audio_ulog` |
+| **Core 0** | `main` (一次性), `cam_capture`, `httpd:80/81`, `ulog_writer`, `logger_writer` |
+| **Core 1** | `GMF/ASP task`, `web_config`, `w_audio`, `sys_monitor`, `audio_ulog` |
 
-- Core 1 承载 LVGL 渲染 + Music 解码 (GMF/ASP, priority 3) + 轻量后台任务 (priority 1, 均低于 Music 绝不抢占) (S249)。
-- Core 0 承载计算密集型任务 (音频采集/编码、相机采集/编码、HTTP 协议栈、ULog/文本日志写入)。S176 将 httpd 3 实例绑定 core 0 避免与 LVGL 竞争; S249 将 `ulog_writer`/`logger_writer` 移离 Core 1, 避免高优先级写任务抢占 Core 1 的 Music 解码。
+- Core 1 承载音频解码 (GMF/ASP, priority 3) + 轻量后台任务 (priority 1, 均低于解码绝不抢占) (S249)。
+- Core 0 承载计算密集型任务 (相机采集/编码、HTTP 协议栈、ULog/文本日志写入)。S176 将 httpd 3 实例绑定 core 0; S249 将 `ulog_writer`/`logger_writer` 移离 Core 1, 避免高优先级写任务抢占 Core 1 的音频解码。
 - 多数大栈任务 (audio/GMF/ulog/cam_capture) 栈分配在 PSRAM, TCB 留 Internal SRAM (见 SRAM 优化)。
-- ~~`detect` (NPU 推理) 和 `model_load` (模型加载) 已随 R3 人体检测移除~~。
 - `main` setup 完成后 `vTaskDelete(NULL)` 释放 ~4KB 栈和 TCB。
 
 ## 引脚分配
-
-### MIPI DSI (2-lane) — 专用接口引脚
-
-> **注意**: MIPI DSI 使用 ESP32-P4 专用接口引脚 (Dedicated Interface Pins, 电源域 VDD_MIPI_DPHY), 不是 GPIO。以下编号为芯片物理引脚号。
-
-| 信号 | Pin | 说明 |
-|------|-----|------|
-| DSI_DATAP1 | 35 | FPC D1+ |
-| DSI_DATAN1 | 36 | FPC D1- |
-| DSI_CLKN | 37 | FPC CLK- |
-| DSI_CLKP | 38 | FPC CLK+ |
-| DSI_DATAP0 | 39 | FPC D0+ |
-| DSI_DATAN0 | 40 | FPC D0- |
 
 ### MIPI CSI (2-lane, OV5647) — 专用接口引脚
 
@@ -300,13 +261,12 @@ Priority 1: main, wifi_scan, web_config, w_audio, sys_monitor (后台/辅助)
 > **注意**: SD 卡使用真实的 GPIO 引脚 (物理引脚 80-86, 电源域 VDD_IO_5)。
 > **重要**: MIPI CSI (物理引脚 42-48) 与 SD 卡 (物理引脚 80-86) 是完全不同的物理引脚, 不存在引脚冲突!
 >
-> **SDSPI 1-bit 模式** (两板统一):
+> **SDSPI 1-bit 模式**:
 > - ESP32-P4 有 2 个 SDMMC Slot: Slot 0 和 Slot 1
 > - **Slot 1**: 被 C6 WiFi 占用 (SDIO 4-bit, 40MHz)
-> - **Slot 0**: BSP SDMMC 原生模式与 C6 SDIO 共享 host controller，初始化冲突。**两板统一使用 SDSPI** (`SPI2_HOST`)
-> - **LCD-4B**: SDSPI (GPIO 39/42/43/44), LDO4 由 BSP display init 上电
-> - **WIFI6**: SDSPI (GPIO 39/42/43/44), LDO4 由 `sd_pwr_ctrl` API 管理
-> - **SD 常驻挂载**: boot 时挂载后永不下电，`SDCardDriver::init()` 幂等, `deinit()` no-op
+> - **Slot 0**: SDMMC 原生模式与 C6 SDIO 共享 host controller，初始化冲突。**使用 SDSPI** (`SPI2_HOST`)
+> - SDSPI (GPIO 39/42/43/44), LDO4 由 `sd_pwr_ctrl` API 管理
+> - **SD 常驻挂载**: boot 时挂载后永不下电，`SDCardDriver::init()` 幂等
 > - VFS 表扩容: `CONFIG_VFS_MAX_COUNT=8→16`，SD 常驻 + camera ISP/CSI 需要更多槽位
 
 | 信号 | GPIO | 物理引脚 | 说明 |
@@ -318,17 +278,17 @@ Priority 1: main, wifi_scan, web_config, w_audio, sys_monitor (后台/辅助)
 | SD_D2 | 41 | 82 | Data 2 (4-bit mode) |
 | SD_D3 | 42 | 83 | Data 3 / SPI CS |
 
-### 音频 I2S + PA (ES8311 + ES7210)
+### 音频 I2S + PA (ES8311 单芯片)
 | 信号 | GPIO | 说明 |
 |------|------|------|
 | I2S_MCLK | 13 | 主时钟 |
 | I2S_BCLK | 12 | 位时钟 |
 | I2S_LRCK | 10 | 左右声道时钟 |
-| I2S_SDIN | 9 | ES8311 DAC 输入 |
-| I2S_SDOUT | 11 | ES7210 ADC 输出 |
+| I2S_SDIN | 9 | ES8311 DAC 输入 (speaker) |
+| I2S_SDOUT | 11 | ES8311 ADC 输出 (mic) |
 | **PA_CTRL** | **53** | **功放使能 (HIGH=ON)** |
 
-### I2C 共享总线 (GT911触摸 + ES8311 + ES7210 + OV5647)
+### I2C 共享总线 (ES8311 + OV5647, `board_i2c` 初始化)
 | 信号 | GPIO | 说明 |
 |------|------|------|
 | I2C_SDA | 7 | 数据 |
@@ -337,9 +297,7 @@ Priority 1: main, wifi_scan, web_config, w_audio, sys_monitor (后台/辅助)
 ### I2C 设备地址
 | 设备 | 地址 |
 |------|------|
-| GT911 触摸 | (BSP 内部处理) |
-| ES8311 DAC | 0x30 |
-| ES7210 ADC | 0x80 |
+| ES8311 (ADC+DAC) | 0x18 |
 | OV5647 Camera | (auto-detect) |
 
 
@@ -348,45 +306,36 @@ Priority 1: main, wifi_scan, web_config, w_audio, sys_monitor (后台/辅助)
 ```
 app_main()
   ├─ 0a. mDNS mutex init (shared_mdns_mutex_init — 提前创建, 消除懒初始化竞态)
-  ├─ 0. NVS Flash (nvs_flash_init + 亮度加载)
-  ├─ 1. MIPI DSI Display (bsp_display_start_with_config)
-  │      → ST7703 720×720 LCD + GT911 Touch
-  │      → LVGL taskLVGL 创建
+  ├─ 0b. uORB init (orb_init) + NVS Flash (nvs_flash_init)
+  ├─ 1. 共享 I2C 总线 (board_i2c_init — GPIO7/8, ES8311 codec + OV5647 SCCB + esp_video)
   │
   ├─ 2. SD 卡挂载 (boot时挂载, 永不下电, WiFi之前)
-  │      → LCD-4B: SDSPI (LDO4由BSP display init上电)
-  │      → WIFI6:  SDSPI (sd_pwr_ctrl API管理LDO4)
+  │      → SDSPI (sd_pwr_ctrl API 管理 LDO4)
   │      → 读取 wifi.txt (首次配置fallback)
   │      → **SD 卡保持挂载, 不再 unmount**
   │
   ├─ 3. WiFi 自动连接 (SD之后 — C6 SDIO争用SDMMC host ctrl)
+  │      → WifiService (wifi_manager): NVS 凭据 → STA, 无凭据 → AP 配网
   │
-  ├─ 4. ESP-Brookesia Phone UI (6 apps installed)
-  │      → PhoneAppSquareline
-  │      → PhoneAppCamera        (CSI camera: run→init, close→deinit)
-  │      → PhoneAppAudio         (音频+SD: run→init SD, close→deinit audio only)
-  │      → PhoneAppMusic         (音频+SD: run→init SD, close→deinit audio only)
-  │      → PhoneAppSettings      (WiFi + Camera Stream: run→init)
+  ├─ 4. Web Config Server (HTTP :8080)
   │
-  ├─ 5. Web Config Server (HTTP :8080)
-  │
-  ├─ 6. ULog Logger (仅当 SD 卡成功挂载时初始化, WiFi+SNTP 同步后自动 Start, Web/Flutter 可手动 Start/Stop)
+  ├─ 5. Text Logger + ULog Logger (仅当 SD 卡成功挂载时初始化, WiFi+SNTP 同步后自动 Start, Web/Flutter 可手动 Start/Stop)
   │    - 自动启动: web_config_server WiFi 连接后启动 SNTP, SNTP 同步后 web_config_task 循环中 ulog_writer_start()
   │    - 竞态保护: SNTP 可能在 ULog init 之前完成同步, 此时 state==UNINIT, 自动启动逻辑会等待下一轮重试直到 state==IDLE
   │    - Web: `POST /api/ulog/start` / `POST /api/ulog/stop` / `GET /api/ulog/status`
-  │    - Web UI: 设置页 "ULog Recording" 卡片, Start/Stop 按钮 + 状态显示
   │    - Flutter: SettingsScreen "ULog Logger" 卡片, Start/Stop 按钮 + 字节/文件路径
+  │
+  ├─ 6. SystemMonitor (CPU/memory 采样 + 告警)
   │
   └─ 7. vTaskDelete(NULL) — 回收 app_main 任务栈
 ```
 
 > **注意**: SD 卡在 `app_main()` 中挂载后**永不卸载**。
->   - 两板统一使用 SDSPI：BSP SDMMC 原生模式与 C6 SDIO 共享 host controller，LCD-4B 无法同时使用
->   - LCD-4B: BSP display init 已上电 LDO4，SDCardDriver 跳过 LDO 管理，直接用 SDSPI
->   - WIFI6: `SDCardDriver::init()` 通过 `sd_pwr_ctrl` API 管理 LDO4 + SDSPI (无 deinit — SD 永不卸载)
->   - `SDCardDriver::init()` 支持幂等调用, `_has_lcd` flag 区分板型
->   - `PeripheralManager::init_sdcard()` 委托 SDCardDriver (死代码清理已移除 no-op deinit 门面)
->   - **音频 I2S** 仍由 Audio/Music App 在 `run()` 中按需初始化, `close()` 中释放 (引用计数)
+>   - 使用 SDSPI：SDMMC 原生模式与 C6 SDIO 共享 host controller，无法同时使用
+>   - `SDCardDriver::init()` 通过 `sd_pwr_ctrl` API 管理 LDO4 + SDSPI (无 deinit — SD 永不卸载)
+>   - `SDCardDriver::init()` 支持幂等调用
+>   - `PeripheralManager::init_sdcard()` 委托 SDCardDriver
+>   - **音频 I2S** 由 Web 音频端点 / AudioUlogRecorder 按需初始化, 用完释放 (引用计数)
 >   - **VFS_MAX_COUNT=16**: SD 常驻 + camera ISP/CSI 需要更多 VFS 槽位 (原 8 不够)
 
 
@@ -413,7 +362,7 @@ app_main()
 **解决**: GPIO 引脚用 `(gpio_num_t)` 显式转换，MCLK 倍频用 `I2S_MCLK_MULTIPLE_384` 枚举值。
 
 ### 4. I2C 总线共享
-GT911 触摸控制器、ES8311、ES7210、OV5647 共享同一物理 I2C 总线 (GPIO7/8)。BSP 初始化 I2C_NUM_0 (`bsp_display_start` 内调用 `bsp_i2c_init`)，音频和摄像头复用 BSP 的 I2C 句柄 `bsp_i2c_get_handle()`。
+ES8311、OV5647 共享同一物理 I2C 总线 (GPIO7/8)。`board_i2c_init()` (main/board_i2c.c) 在 app_main 初始化 I2C_NUM_0，音频和摄像头 (含 esp_video SCCB, `CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP=y`) 复用句柄 `board_i2c_get_handle()`。(历史: 曾由 LCD-4B BSP 的 `bsp_i2c_init()` 提供, LCD-4B 移除后由 board_i2c 替代。)
 
 ### 5. ~~MIPI CSI 与 SDMMC 引脚冲突~~ (已勘误: 不存在引脚冲突)
 > **勘误**: 经过对照 [ESP32-P4 数据手册](../doc/esp32-p4_datasheet_En.pdf) Table 2-1 (Pin Overview) 和 Table 2-9 (Dedicated Interface Pins) 确认:

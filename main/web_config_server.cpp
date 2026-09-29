@@ -2,10 +2,10 @@
  * Web Config Server — HTTP-based settings UI with mDNS discovery.
  *
  * Provides a web page to configure WiFi credentials, speaker volume,
- * and other settings normally set through the LCD UI on LCD-4B boards.
+ * and other device settings.
  * All settings are persisted to NVS namespace "settings".
  *
- * Serves on port 8080 on both boards (coexists with CameraStream port 80/81).
+ * Serves on port 8080 (coexists with CameraStream port 80/81).
  * Advertised via mDNS as <hostname>.local (unique per device, shared with CameraStream).
  *
  * Assumption: NVS already contains WiFi SSID/password.
@@ -85,7 +85,7 @@ static const char *TAG = "WebConfig";
 #define WEB_CONFIG_PORT         8080
 
 /* NVS keys now defined in example_config.h (NVS_NAMESPACE_SETTINGS, NVS_KEY_*) */
-/* Volume/Brightness constants now defined in example_config.h (VOLUME_MIN/MAX/DEFAULT, BRIGHTNESS_MIN/MAX/DEFAULT) */
+/* Volume constants now defined in example_config.h (VOLUME_MIN/MAX/DEFAULT) */
 /* Backward-compatible local alias for brevity in this file */
 #define NVS_NAMESPACE           NVS_NAMESPACE_SETTINGS
 
@@ -136,7 +136,7 @@ static std::atomic<bool>    s_playing{false};
 /* Mutual exclusion flag — file manager sets this to block audio ops during download/delete */
 static std::atomic<bool>    s_fm_busy{false};
 
-/* uORB recording_state publisher — notifies PhoneAppMusic when web recording is active */
+/* uORB recording_state publisher — marks web AAC recording active/idle (recorded in ULog) */
 static std::atomic<orb_advert_t> s_rec_pub{ORB_ADVERT_INVALID};
 
 /* Mutex to serialize audio operations across concurrent HTTP handlers.
@@ -1304,7 +1304,7 @@ static esp_err_t sdcard_format_handler(httpd_req_t *req)
     if (was_recording) {
         s_is_recording = false;
         s_audio_running = false;
-        /* Publish recording_state.active=false so PhoneAppMusic can resume */
+        /* Publish recording_state.active=false (recording ended marker) */
         orb_advert_t pub = s_rec_pub.load(std::memory_order_acquire);
         if (pub >= 0) {
             struct recording_state_s rs = {};
@@ -1603,7 +1603,7 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
         }
     }
 
-    /* Publish recording_state.active=true so PhoneAppMusic can stop its playback */
+    /* Publish recording_state.active=true (recording started marker) */
     orb_advert_t pub = s_rec_pub.load(std::memory_order_acquire);
     if (pub < 0) {
         orb_advert_t new_pub = orb_advertise(ORB_ID(recording_state));
@@ -2650,7 +2650,7 @@ static void web_config_task(void *arg)
     config.max_open_sockets = 12;  /* Headroom for Web UI keep-alive connections; lru_purge keeps accept() always active */
     config.stack_size = 16384;     /* default 4096 overflows with complex handlers */
     config.lru_purge_enable = true;
-    config.core_id = 0;  /* Pin to Core 0 — Core 1 runs LVGL rendering */
+    config.core_id = 0;  /* Pin httpd to Core 0 */
     /* TCP keep-alive: detect dead connections quickly so sockets don't
      * leak when clients disconnect abruptly (ECONNRESET/EAGAIN).  Without
      * keep-alive, a half-closed TCP can block select() indefinitely,

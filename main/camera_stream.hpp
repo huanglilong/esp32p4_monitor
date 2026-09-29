@@ -96,7 +96,7 @@ public:
     bool _init_encoder(void);
     void _deinit_encoder(void);
 
-    /* FPS tracking — cross-core: capture task writes, LVGL timer reads */
+    /* FPS tracking — cross-core: capture task writes, status/API readers read */
     std::atomic<uint32_t>  _frame_count;       /* Total frames captured */
     std::atomic<uint32_t>  _fps_frame_count;   /* Frames in current FPS window */
     struct timespec        _fps_window_start;  /* Start of current FPS window */

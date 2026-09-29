@@ -22,7 +22,7 @@ public:
     static AudioDriver& instance(void);
 
     /** Initialize audio I2S + codec (refcounted). Thread-safe.
-     *  Configures ES8311+ES7210 (LCD-4B) or ES8311 single-chip (WIFI6). */
+     *  Configures the ES8311 single-chip codec (ADC + DAC). */
     void init(void);
 
     /** Deinitialize audio (refcounted). Thread-safe.
@@ -43,9 +43,6 @@ public:
      *  @return data_size on success, -1 on failure */
     int codec_write(const uint8_t *data, int size);
 
-    /** Set board type (LCD-4B vs WIFI6). Must be called before init(). */
-    void set_has_lcd(bool v) { _has_lcd.store(v, std::memory_order_release); }
-
     /* Delete copy/move */
     AudioDriver(const AudioDriver&) = delete;
     AudioDriver& operator=(const AudioDriver&) = delete;
@@ -57,12 +54,10 @@ private:
     SemaphoreHandle_t       _lifecycle_mutex;
     std::atomic<SemaphoreHandle_t> _codec_mutex;  /* atomic: TOCTOU-safe reads in codec ops */
 
-    std::atomic<bool>       _has_lcd;        /* atomic: set before init, read from init path */
     std::atomic<int>        _refcount;       /* atomic: available() reads without lock */
     std::atomic<int>        _volume;
 
     std::atomic<esp_codec_dev_handle_t> _codec_handle;      /* atomic: TOCTOU-safe reads */
-    std::atomic<esp_codec_dev_handle_t> _codec_mic_handle;  /* atomic: TOCTOU-safe reads */
     std::atomic<i2s_chan_handle_t> _rx_handle;               /* atomic: read from audio_ulog_recorder (core 1), written from httpd (core 0) */
     std::atomic<i2s_chan_handle_t> _tx_handle;               /* atomic: cross-core safe */
 

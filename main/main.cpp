@@ -7,24 +7,10 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/i2c_master.h"
-#include "driver/gpio.h"
-#include "driver/spi_common.h"
-#include "driver/sdmmc_host.h"
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
-#include "esp_ldo_regulator.h"
 #include "nvs_flash.h"
 #include "nvs.h"
-#include "bsp/esp-bsp.h"
-#include "bsp/display.h"
-#include "esp_brookesia.hpp"
-#include "private/esp_brookesia_utils.h"
+#include "board_i2c.h"
 #include "peripherals.hpp"
-#include "phone_app_camera.hpp"
-#include "phone_app_audio.hpp"
-#include "phone_app_music.hpp"
-#include "phone_app_settings.hpp"
 #include "web_config_server.hpp"
 #include "wifi_service.hpp"
 #include "logger/logger.hpp"
@@ -40,11 +26,6 @@
 
 
 static const char *TAG = "monitor";
-
-/* Auto-detected: true if GT911 touch (I2C 0x5D) responds → LCD-4B board.
- * atomic: written once in app_main (core 0), read from web_config_server
- * task (any core). std::atomic ensures cross-core visibility. */
-std::atomic<bool> g_has_lcd{false};
 
 /*============================================================================
  * mDNS hostnames:
@@ -207,141 +188,6 @@ void shared_mdns_update_delegate_ip(void)
     if (mtx) xSemaphoreGive(mtx);
 }
 
-/* Forward declarations */
-static void monitor_init_display(lv_display_t **disp);
-static void monitor_init_brookesia(lv_display_t *disp);
-static void on_clock_update_timer_cb(struct _lv_timer_t *t);
-
-/* LVGL port config — pin to core 1 (core 0 reserved for detection/NPU inference) */
-#define LVGL_PORT_INIT_CONFIG() \
-    {                               \
-        .task_priority = 4,       \
-        .task_stack = 10 * 1024,  \
-        .task_affinity = 1,       \
-        .task_max_sleep_ms = 500, \
-        .timer_period_ms = 20,    \
-    }
-
-/*============================================================================
- * MIPI DSI Display + ESP-Brookesia
- *============================================================================*/
-static void monitor_init_display(lv_display_t **disp)
-{
-    bsp_display_cfg_t cfg = {
-        .lvgl_port_cfg = LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
-        .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
-        .flags = {
-#if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
-            .buff_dma = false,
-#else
-            /* ESP32-P4 PSRAM is DMA-capable (SOC_PSRAM_DMA_CAPABLE=y).
-             * Allocating draw buffers from PSRAM frees ~72KB internal SRAM
-             * for JPEG encoder DMA descriptors (rxlink/txlink). */
-            .buff_dma = true,
-#endif
-            .buff_spiram = true,
-            .sw_rotate = false,
-        }
-    };
-    *disp = bsp_display_start_with_config(&cfg);
-    if (!*disp) {
-        ESP_LOGE(TAG, "bsp_display_start_with_config failed — display unavailable");
-        return;
-    }
-    bsp_display_backlight_on();
-    ESP_LOGI(TAG, "MIPI DSI display initialized (%dx%d)", BSP_LCD_H_RES, BSP_LCD_V_RES);
-}
-
-static void monitor_init_brookesia(lv_display_t *disp)
-{
-    ESP_Brookesia_Phone *phone = nullptr;
-    ESP_Brookesia_PhoneStylesheet_t *stylesheet = nullptr;
-
-    bsp_display_lock(0);
-
-    phone = new (std::nothrow) ESP_Brookesia_Phone(disp);
-    if (!phone) { ESP_LOGE(TAG, "Create phone failed"); goto cleanup; }
-
-    if ((BSP_LCD_H_RES == 1024) && (BSP_LCD_V_RES == 600)) {
-        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET());
-    } else if ((BSP_LCD_H_RES == 800) && (BSP_LCD_V_RES == 480)) {
-        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_480_DARK_STYLESHEET());
-    } else if ((BSP_LCD_H_RES == 480) && (BSP_LCD_V_RES == 480)) {
-        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_480_480_DARK_STYLESHEET());
-    } else if ((BSP_LCD_H_RES == 800) && (BSP_LCD_V_RES == 1280)) {
-        stylesheet = new (std::nothrow) ESP_Brookesia_PhoneStylesheet_t(ESP_BROOKESIA_PHONE_800_1280_DARK_STYLESHEET());
-    }
-
-    if (stylesheet != nullptr) {
-        ESP_LOGI(TAG, "Using stylesheet (%s)", stylesheet->core.name);
-        if (!phone->addStylesheet(stylesheet) || !phone->activateStylesheet(stylesheet)) {
-            ESP_LOGE(TAG, "Add/activate stylesheet failed");
-            delete stylesheet;
-            goto cleanup;
-        }
-        delete stylesheet;
-    } else {
-        ESP_LOGW(TAG, "No matching stylesheet for %dx%d, using default", BSP_LCD_H_RES, BSP_LCD_V_RES);
-    }
-
-    if (!phone->setTouchDevice(bsp_display_get_input_dev())) { ESP_LOGE(TAG, "Set touch device failed"); goto cleanup; }
-    phone->registerLvLockCallback((ESP_Brookesia_GUI_LockCallback_t)(bsp_display_lock), 0);
-    phone->registerLvUnlockCallback((ESP_Brookesia_GUI_UnlockCallback_t)(bsp_display_unlock));
-    if (!phone->begin()) { ESP_LOGE(TAG, "Begin failed"); goto cleanup; }
-
-    {
-        PhoneAppSquareline *app_squareline = PhoneAppSquareline::getInstance();
-        if (!app_squareline || phone->installApp(app_squareline) < 0) { ESP_LOGE(TAG, "Install app squareline failed"); goto cleanup; }
-    }
-
-    {
-        PhoneAppCamera *app_camera = new (std::nothrow) PhoneAppCamera(false, false);
-        if (!app_camera || phone->installApp(app_camera) < 0) { ESP_LOGE(TAG, "Install camera app failed"); delete app_camera; goto cleanup; }
-    }
-
-    {
-        PhoneAppAudio *app_audio = new (std::nothrow) PhoneAppAudio(false, false);
-        if (!app_audio || phone->installApp(app_audio) < 0) { ESP_LOGE(TAG, "Install audio app failed"); delete app_audio; goto cleanup; }
-    }
-
-    {
-        PhoneAppMusic *app_music = new (std::nothrow) PhoneAppMusic(false, false);
-        if (!app_music || phone->installApp(app_music) < 0) { ESP_LOGE(TAG, "Install music app failed"); delete app_music; goto cleanup; }
-    }
-
-    {
-        PhoneAppSettings *app_settings = new (std::nothrow) PhoneAppSettings(false, false);
-        if (!app_settings || phone->installApp(app_settings) < 0) { ESP_LOGE(TAG, "Install settings app failed"); delete app_settings; goto cleanup; }
-    }
-
-    lv_timer_create(on_clock_update_timer_cb, 1000, phone);
-    bsp_display_unlock();
-    ESP_LOGI(TAG, "ESP-Brookesia Phone UI initialized");
-    return;
-
-cleanup:
-    if (phone) {
-        delete phone;
-        phone = nullptr;
-    }
-    bsp_display_unlock();
-    ESP_LOGE(TAG, "ESP-Brookesia Phone UI initialization failed");
-}
-
-static void on_clock_update_timer_cb(struct _lv_timer_t *t)
-{
-    time_t now;
-    struct tm timeinfo;
-    ESP_Brookesia_Phone *phone = (ESP_Brookesia_Phone *)t->user_data;
-    time(&now);
-    localtime_r(&now, &timeinfo);
-    ESP_BROOKESIA_CHECK_FALSE_EXIT(
-        phone->getHome().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min),
-        "Refresh status bar failed"
-    );
-}
-
 /*============================================================================
  * SD Card WiFi Config (first-boot fallback)
  * If NVS has no WiFi SSID, try reading wifi.txt from SD card.
@@ -420,32 +266,6 @@ static void boot_sdcard_wifi_config(void)
 }
 
 /*============================================================================
- * Auto-detect LCD via GT911 I2C probe
- *============================================================================*/
-static bool detect_lcd_via_i2c(void)
-{
-    /* BSP I2C must be initialized first */
-    bsp_i2c_init();
-    i2c_master_bus_handle_t i2c = bsp_i2c_get_handle();
-    if (!i2c) return false;
-
-    i2c_master_dev_handle_t dev = NULL;
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = 0x5D,  /* GT911 default */
-        .scl_speed_hz = 100000,
-    };
-    esp_err_t ret = i2c_master_bus_add_device(i2c, &dev_cfg, &dev);
-    if (ret != ESP_OK) return false;
-
-    /* Probe: write 1 byte, check for ACK (null buffer not allowed) */
-    uint8_t dummy = 0;
-    ret = i2c_master_transmit(dev, &dummy, 1, pdMS_TO_TICKS(50));
-    i2c_master_bus_rm_device(dev);
-    return (ret == ESP_OK);
-}
-
-/*============================================================================
  * Main
  *============================================================================*/
 extern "C" void app_main(void)
@@ -467,53 +287,16 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(nvs_err);
     ESP_LOGI(TAG, "NVS initialized");
 
-    /* 0b. Auto-detect LCD via GT911 I2C probe */
-    bool has_lcd = detect_lcd_via_i2c();
-    g_has_lcd.store(has_lcd, std::memory_order_release);
-    PeripheralManager::instance().set_has_lcd(has_lcd);
-    ESP_LOGI(TAG, "LCD detected: %s", has_lcd ? "YES (LCD-4B)" : "NO (WIFI6)");
+    /* 0b. Shared I2C bus (ES8311 codec + OV5647 SCCB + esp_video) */
+    ESP_ERROR_CHECK(board_i2c_init());
 
-    if (has_lcd) {
-        /* === LCD-4B: BSP display init (powers LDO4), then SD before WiFi === */
-        lv_display_t *disp = NULL;
-        monitor_init_display(&disp);
-
-        /* Mount SD via SDSPI (LDO4 already powered by BSP display init above).
-         * SDMMC native mode not used — host controller conflicts with C6 SDIO. */
-        ESP_LOGI(TAG, "Mounting SD card (SDSPI, LDO4 from BSP)...");
-        if (!PeripheralManager::instance().init_sdcard()) {
-            ESP_LOGW(TAG, "SD card init failed at boot, continuing without SD");
-        }
-
-        /* Try SD wifi.txt AFTER SD is mounted */
-        boot_sdcard_wifi_config();
-
-        /* Apply saved brightness */
-        {
-            nvs_handle_t nvs_h;
-            if (nvs_open("settings", NVS_READONLY, &nvs_h) == ESP_OK) {
-                int32_t brightness = 80;
-                nvs_get_i32(nvs_h, "brightness", &brightness);
-                if (brightness < 20) brightness = 20;
-                if (brightness > 100) brightness = 100;
-                bsp_display_brightness_set((int)brightness);
-                ESP_LOGI(TAG, "Brightness loaded from NVS: %ld", brightness);
-                nvs_close(nvs_h);
-            }
-        }
-
-        monitor_init_brookesia(disp);
-        ESP_LOGI(TAG, "=== LCD-4B mode initialized ===");
-    } else {
-        /* === WIFI6: mount SD via SDSPI (SDCardDriver powers LDO4), then WiFi === */
-        if (!PeripheralManager::instance().init_sdcard()) {
-            ESP_LOGW(TAG, "SD card init failed at boot, continuing without SD");
-        }
-        boot_sdcard_wifi_config();
-        ESP_LOGI(TAG, "=== WIFI6 mode (no display) ===");
+    /* Mount SD via SDSPI (SDCardDriver powers LDO4), then WiFi */
+    if (!PeripheralManager::instance().init_sdcard()) {
+        ESP_LOGW(TAG, "SD card init failed at boot, continuing without SD");
     }
+    boot_sdcard_wifi_config();
 
-    /* Boot WiFi — use WifiService (wifi_manager) instead of inline PhoneAppSettings code.
+    /* Boot WiFi — use WifiService (wifi_manager) instead of inline code.
      * WifiService reads NVS credentials, starts STA, and auto-reconnects forever.
      * On boards without stored credentials, it starts an AP for provisioning. */
     ESP_ERROR_CHECK(WifiService::instance().init());
@@ -575,8 +358,7 @@ extern "C" void app_main(void)
         cfg.has_wall_clock = has_rtc;
         strlcpy(cfg.sys_name, "esp32p4_monitor", sizeof(cfg.sys_name));
         snprintf(cfg.ver_sw, sizeof(cfg.ver_sw), "IDF %s", esp_get_idf_version());
-        snprintf(cfg.ver_hw, sizeof(cfg.ver_hw), "%s",
-                 g_has_lcd.load(std::memory_order_acquire) ? "ESP32-P4-WIFI6-LCD-4B" : "ESP32-P4-WIFI6");
+        strlcpy(cfg.ver_hw, "ESP32-P4-WIFI6", sizeof(cfg.ver_hw));
         strlcpy(cfg.sys_uuid, sys_uuid, sizeof(cfg.sys_uuid));
         strlcpy(cfg.sys_os_name, "FreeRTOS", sizeof(cfg.sys_os_name));
         strlcpy(cfg.sys_os_ver, esp_get_idf_version(), sizeof(cfg.sys_os_ver));
@@ -599,7 +381,6 @@ extern "C" void app_main(void)
 
             ulog_writer_add_topic(ulog, ORB_ID(fps_stats), 0);       /* default 100ms */
             ulog_writer_add_topic(ulog, ORB_ID(wifi_state), 500);     /* 500ms */
-            ulog_writer_add_topic(ulog, ORB_ID(audio_level), 100);    /* same as UI refresh */
             ulog_writer_add_topic(ulog, ORB_ID(camera_state), 0);     /* default 100ms */
             ulog_writer_add_topic(ulog, ORB_ID(recording_state), 0);  /* default 100ms */
             ulog_writer_add_topic(ulog, ORB_ID(volume_state), 0);     /* default 100ms */
@@ -608,7 +389,7 @@ extern "C" void app_main(void)
             ulog_writer_add_topic(ulog, ORB_ID(system_alert), 0);     /* alerts on event */
             ulog_writer_add_topic(ulog, ORB_ID(camera_frame_chunk), 30);   /* camera JPEG chunks, 30ms to capture all chunks per frame */
             ulog_writer_add_topic(ulog, ORB_ID(audio_frame), 30);       /* audio AAC frames, 30ms = ~15.6fps */
-            ESP_LOGI(TAG, "ULog writer initialized with %d topics", 11);
+            ESP_LOGI(TAG, "ULog writer initialized with %d topics", 10);
         }
     } else {
         ESP_LOGW(TAG, "SD card not available, skipping ULog writer init");
@@ -620,6 +401,6 @@ extern "C" void app_main(void)
 
     /* All setup complete — delete this task to reclaim its stack/TCB.
      * The FreeRTOS idle task will clean up. All work continues in
-     * dedicated tasks (LVGL, WiFi, httpd, ULog, etc.). */
+     * dedicated tasks (WiFi, httpd, ULog, camera, etc.). */
     vTaskDelete(NULL);
 }

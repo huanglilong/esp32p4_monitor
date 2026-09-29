@@ -1,10 +1,10 @@
 dependencies:
-  espressif/esp-brookesia:
-    version: '*'
-  waveshare/esp32_p4_wifi6_touch_lcd_4b:
-    version: '*'
   espressif/esp_codec_dev:
-    version: ^1.3.4
+    version: "==1.5.11"  # v1.5.11 — pinned: with the LCD-4B BSP/brookesia gone
+                         # nothing constrains this dep anymore and the resolver
+                         # picks 2.0.0-beta5, whose API breaks es8311_codec_cfg_t
+                         # (no codec_mode/port members). 1.5.11 is the version
+                         # this code was verified against.
   espressif/esp_cam_sensor:
     version: ^2.2
   espressif/esp_sccb_intf:
@@ -37,7 +37,5 @@ dependencies:
     version: ^1.0
   espressif/cjson:
     version: ^1.7
-  protocol_examples_common:
-    path: ${IDF_PATH}/examples/common_components/protocol_examples_common
   idf:
     version: '>=5.3'
