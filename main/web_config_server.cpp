@@ -1349,8 +1349,9 @@ static esp_err_t sdcard_format_handler(httpd_req_t *req)
     }
 
     /* 3. AudioUlogRecorder (publishes AAC frames from I2S — no direct SD
-     *    writes, but stop it for a clean slate; it is restarted by the
-     *    ULog auto-start path only on the next boot/SNTP cycle). */
+     *    writes, but stop it for a clean slate; restarted below together
+     *    with ULog — the boot auto-start won't re-run (once per boot)). */
+    bool audio_rec_was_running = AudioUlogRecorder::instance().running();
     AudioUlogRecorder::instance().stop();
 
     /* 4. Text logger (holds an open FILE* on /sdcard/logs/) */
@@ -1385,6 +1386,16 @@ static esp_err_t sdcard_format_handler(httpd_req_t *req)
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "ULog restart after format failed: %s",
                          esp_err_to_name(err));
+            } else if (audio_rec_was_running) {
+                /* Match ulog_start_handler: ULog and its audio_frame
+                 * producer start as a pair — otherwise audio recording
+                 * to ULog stays dead until the next reboot. */
+                PeripheralManager::instance().init_audio();
+                esp_err_t aerr = AudioUlogRecorder::instance().start();
+                if (aerr != ESP_OK) {
+                    ESP_LOGW(TAG, "Audio ULog recorder restart after format "
+                             "failed: %s", esp_err_to_name(aerr));
+                }
             }
         }
     } else {
