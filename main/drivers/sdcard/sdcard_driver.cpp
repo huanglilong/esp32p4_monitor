@@ -184,12 +184,21 @@ bool SDCardDriver::format(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SD format failed: %s", esp_err_to_name(ret));
         /* f_mkfs failure path: IDF leaves FatFs unmounted (f_mount(0) was
-         * already done) but the VFS path may still be registered. Verify
-         * the mount state and drop our handles if it is gone, so a later
-         * init() can re-mount cleanly. */
+         * already done) but keeps the VFS path, diskio pdrv and the card
+         * allocated. Verify the mount state; if it is gone, fully tear down
+         * via esp_vfs_fat_sdcard_unmount() so the card struct + SDSPI host
+         * are freed and the stale VFS registration does not confuse the
+         * re-mount (esp_vfs_fat_register would return INVALID_STATE and
+         * reuse the old pdrv). A later init() then re-mounts from scratch. */
         uint64_t total_b = 0, free_b = 0;
         if (esp_vfs_fat_info(SDMMC_MOUNT_POINT, &total_b, &free_b) != ESP_OK) {
-            ESP_LOGE(TAG, "SD mount lost after failed format — marking uninitialized");
+            ESP_LOGE(TAG, "SD mount lost after failed format — unmounting fully "
+                     "and marking uninitialized");
+            esp_err_t uerr = esp_vfs_fat_sdcard_unmount(SDMMC_MOUNT_POINT, _card);
+            if (uerr != ESP_OK) {
+                ESP_LOGW(TAG, "unmount after failed format returned %s",
+                         esp_err_to_name(uerr));
+            }
             _card = nullptr;
             _initialized = false;
         }
