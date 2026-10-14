@@ -315,8 +315,15 @@ static void audio_task(void *arg)
     if (s_enc_out_buf) { heap_caps_free(s_enc_out_buf); s_enc_out_buf = NULL; }
     if (s_pcm_buf) { heap_caps_free(s_pcm_buf); s_pcm_buf = NULL; }
 
-    s_audio_task.store(nullptr, std::memory_order_release);
+    /* S368: publish the exit signal BEFORE clearing the handle.
+     * h_rec_start() requires (s_audio_task == nullptr && s_audio_task_exited)
+     * to create a new task. With the old order there was a window where the
+     * handle was already null while the exited flag was still false, so a
+     * concurrent record_start skipped task creation but allocated buffers and
+     * set s_is_recording — leaving recording reported as active with no task
+     * consuming samples and a 0-byte .aac file. */
     s_audio_task_exited.store(true, std::memory_order_release);
+    s_audio_task.store(nullptr, std::memory_order_release);
     vTaskDelete(NULL);
 }
 
