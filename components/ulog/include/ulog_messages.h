@@ -105,10 +105,13 @@ typedef struct {
 typedef struct {
     uint16_t msg_size;   /**< = 8 */
     uint8_t  msg_type;   /**< ULOG_MSG_TYPE_SYNC */
-    uint8_t  sync_magic[8]; /**< = {0x2F, 0x73, 0x13, 0x26, 0xDD, 0x7A, 0x79, 0x4F} */
+    uint8_t  sync_magic[8]; /**< = {0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12} */
 } ulog_message_sync_s;
 
-#define ULOG_SYNC_MAGIC  {0x2F, 0x73, 0x13, 0x26, 0xDD, 0x7A, 0x79, 0x4F}
+/* Canonical PX4 sync marker. pyulog searches for exactly these bytes
+ * (SYNC_BYTES in pyulog/core.py) to resynchronize after a corrupt message —
+ * any other value silently disables that recovery path. */
+#define ULOG_SYNC_MAGIC  {0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12}
 
 /** Dropout message — data loss due to buffer overflow. */
 typedef struct {
