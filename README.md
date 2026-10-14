@@ -71,8 +71,8 @@
 > 现仅支持无屏的 ESP32-P4-WIFI6 (headless, Web/Flutter App 交互)。
 
 ### Software Features
-- **MIPI CSI** OV5647 camera (V4L2, ~5fps sensor via VTS=9840, HW JPEG, PPA-accelerated preprocessing; Camera Stream PPA resizes to 300×300 for efficient MJPEG encoding)
-- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, PPA-accelerated 300×300 JPEG encoding, independent capture task, TCP keep-alive, image rotation 0°/90°/180°/270°; toggle via Web API)
+- **MIPI CSI** OV5647 camera (V4L2, ~5fps sensor via VTS=9840, HW JPEG, PPA-accelerated preprocessing; Camera Stream PPA resizes to 400×400 for efficient MJPEG encoding)
+- **Camera Stream** MJPEG WiFi streaming (HTTP port 80/81, mDNS, PPA-accelerated 400×400 JPEG encoding, independent capture task, TCP keep-alive, image rotation 0°/90°/180°/270°; toggle via Web API)
 - **Audio** ES8311 single-chip codec (mic input + speaker output), AAC recording (ESP AAC encoder, SD card) + playback (ESP-GMF simple player), all controlled via Web API
 - **Web Config** HTTP :8080 (WiFi/volume/settings, audio record/play, file manager, ULog control, system stats/alerts, camera stream + auto frame recording + take-a-picture to SD, SD card format (FAT repair), WiFi recovery httpd restart, captive portal for headless config)
 - **Flutter App** Cross-platform (macOS/iOS/Linux/Android) with device discovery, settings, ULog video+audio viewer (parse .ulg frames, slideshow, save)

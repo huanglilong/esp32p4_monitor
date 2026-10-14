@@ -10,7 +10,7 @@
 - **SDMMC** SD 卡 (SDSPI 1-bit 模式, SPI 20MHz, FAT 文件系统)
 - **音频输入/输出** (ES8311 单芯片 ADC+DAC, I2S, NS4150B 功放)
 - **Web 配置** (端口 8080) WiFi/音量网页设置, WiFi 连接验证后写 NVS, SD 卡文件管理器 (浏览/下载/删除), Take a Picture (拍照存 SD `<epoch>.jpg`), SD 卡格式化 (FAT 修复), 音频录制/播放
-- **Camera Frame Recording** JPEG 帧录制到 ULog 文件 (PPA 300×300 路径, ~5-8KB/帧, ~4fps, 自动随 Camera Stream 启停)
+- **Camera Frame Recording** JPEG 帧录制到 ULog 文件 (PPA 400×400 路径, ~5-8KB/帧, ~4fps, 自动随 Camera Stream 启停)
 - **Audio Frame Recording** 持续 AAC 音频通过 `audio_frame` uORB topic 录制到 ULog (I2S 16kHz 立体声, 64kbps ADTS, ~15.6fps)
 - **Flutter App** 跨平台客户端 (设备发现/设置/ULog 查看)
 
@@ -212,15 +212,17 @@ SystemMonitor::instance()         — CPU/memory 采样 + system_stats uORB (独
 | 2 | `GMF/ASP task` | 3 | 8KB (PSRAM) | 1 | `esp_audio_simple_player` | 按需创建/销毁 | 事件驱动 |
 | 3 | `httpd:80` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 |
 | 4 | `httpd:81` | 默认 | 6KB | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | 事件驱动 (MJPEG) |
-| 5 | `cam_capture` | 5 | 32KB (PSRAM) | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | DQBUF→encode→publish |
+| 5 | `cam_capture` | 5 | 32KB (PSRAM, **跨 start/stop 保留**, S362) | 0 (固定) | `CameraStream::start()` | Stream 打开→关闭 | DQBUF→encode→publish |
 | 6 | `web_config` | 1 | 8KB | 1 | `web_config_server_start()` | 永久 | 1s 空闲 + HTTP 事件 |
 | 7 | `w_audio` | 1 | 12KB | 1 | `web_config_server` (录音时) | 录音→停止 | 100ms 循环 (I2S read) |
 | 8 | `sys_monitor` | 1 | 4KB | 1 | `SystemMonitor::start()` | 永久 | `CONFIG_APP_SYS_MONITOR_INTERVAL_MS` |
 | 9 | `ulog_writer` | 5 | 32KB (PSRAM, 静态 TCB) | 0 (固定) | `ulog_writer_start()` | Start→Stop | ring buffer 消费 |
-| 10 | `logger_writer` | 3 | 4KB | 0 (固定) | `logger_init()` | 永久 | ring buffer → SD 文本文件 |
-| 11 | `audio_ulog` | 2 | 32KB (PSRAM) | 1 | `AudioUlogRecorder::start()` | ULog Start→Stop | I2S read → AAC encode → uORB publish |
+| 10 | `logger_writer` | 3 | 4KB | 0 (固定) | `logger_init()` | 常驻 (SD 格式化时 `logger_deinit()` 可停止并重启) | ring buffer → SD 文本文件 |
+| 11 | `audio_ulog` | 2 | 32KB (PSRAM, **跨 start/stop 保留**, S363) | 1 | `AudioUlogRecorder::start()` | ULog Start→Stop | I2S read → AAC encode → uORB publish |
 
 > 历史任务 `taskLVGL`/`audio_echo`/`wifi_scan`/`wifi_conn`/`detect`/`model_load` 已随 LCD-4B UI 与人体检测移除。
+>
+> **大栈任务生命周期约定 (S362/S363)**: `cam_capture` 与 `audio_ulog` 的 PSRAM 栈与 TCB 一样在多次 start/stop 间保留复用，仅由析构函数释放。任务在 `vTaskDelete()` **之前**发布 "已退出" 标志，任何调用方都无法证明任务已离开该栈 — 释放它必然是 use-after-free。若前一个任务被强杀 (未确认退出)，旧栈被弃用 (记录日志、绝不释放) 并新分配。
 
 ### 优先级与核心亲和性
 
@@ -422,19 +424,20 @@ Sensor: stop stream → del_dev  →  SCCB: del_i2c_io  →  CSI: stop → disab
 V4L2 buffer RGB565 (800×800)
         ↓ PPA DMA 直接读取 (无需 memcpy)
    PPA SRM (hardware):
-        ├── resize: 800×800 → 300×300  (scale 0.375, 4-bit frac quantized from 0.375)
-        └── format: RGB565LE → BGR888  (PPA outputs BGR24 in memory)
-        ↓ _out_buf (BGR888, 300×300 contiguous)
+        ├── resize: 800×800 → 400×400  (scale 0.5)
+        └── format/rotation: RGB565 → RGB565 (contiguous output buffer)
+        ↓ _out_buf (RGB565, 400×400 contiguous)
         └──→ JPEG encoder (hardware):
-                ├── input: 300×300 BGR24 (= JPEG_ENCODE_IN_FORMAT_RGB888)
-                └── encode: ~30ms (vs ~200ms for 800×800 RGB565)
+                ├── input: 400×400 RGB565 (= JPEG_ENCODE_IN_FORMAT_RGB565)
+                └── encode: ~30ms (vs ~200ms for 800×800)
 ```
 - PPA 将 resize + 格式转换从 CPU 卸载到硬件 (~1ms vs CPU ~30ms)
-- PPA 4-bit frac 量化: 0.375, 实际输出 300×300
-- PPA `pic_w/pic_h` 设为 actual 300×300 确保行步长连续
-- **JPEG 编码优化**: PPA 输出 BGR24 = `JPEG_ENCODE_IN_FORMAT_RGB888`, 编码时间 ~200ms → ~30ms, JPEG 体积 ~30-50KB → ~5-8KB
+- PPA 4-bit frac 量化: 0.5, 实际输出 400×400
+- PPA `pic_w/pic_h` 设为 actual 400×400 确保行步长连续
+- **JPEG 编码优化**: PPA 输出 400×400 RGB565 供硬件编码器直接消费, 编码时间 ~200ms → ~30ms, JPEG 体积 ~30-50KB → ~5-8KB
 - **V4L2 buffer 直接 DMA**: PPA 直接从 V4L2 mmap buffer DMA 读取, 无需 memcpy
 - 自动降级: PPA 初始化失败时回退到 camera 原生分辨率编码
+- 分辨率来源: `camera_stream.cpp:793` `_ppa->init(..., 400, 400, rot)`; 设备启动日志 `PPA scale: 800×800 → 400×400`
 
 **PhoneAppCamera (Camera App) — 纯预览模式**:
 - Camera App 不做任何预处理, 仅做 V4L2 DQBUF → memcpy → canvas 显示
@@ -582,8 +585,8 @@ Camera Stream 通过 Settings App 的开关控制, 退出 Settings App 不会停
 |------|------|
 | 传感器 | OV5647, VTS=9840 (~5fps) |
 | 编码 | **HW JPEG** (`CONFIG_EXAMPLE_SELECT_JPEG_HW_DRIVER=y`, esp_driver_jpeg), CPU 几乎无负载 |
-| 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~5-8KB/帧 @ 300×300) |
-| 推流分辨率 | 300×300 BGR24 (PPA 输出, 非 800×800 RGB565) |
+| 编码质量 | 30 (降低 JPEG 体积 → 减少 WiFi/SDIO 负载, ~5-8KB/帧 @ 400×400) |
+| 推流分辨率 | 400×400 RGB565 (PPA 输出, 非 800×800 原生 buffer) |
 | 帧率实测 | **~4fps** @ 5fps sensor, CPU ~5% |
 | HTTP 架构 | 端口 80: Web UI + API (`/api/get_camera_info`, `/api/set_quality`, `/api/get_detection_info`, `/api/set_camera_config`, `/api/set_rotation`), 端口 81: MJPEG `/stream` |
 | Web UI | `<img>` 标签 + JavaScript 动态设置 `src` 至 `:81/stream`, AJAX 统计面板 (分辨率/帧率/帧数/画质滑块 + 旋转按钮 0°/90°/180°/270°) |
@@ -600,7 +603,7 @@ Camera Stream 通过 Settings App 的开关控制, 退出 Settings App 不会停
 - **JPEG 编码器 OOM (LCD-4B)**: HW JPEG 编码器的 DMA 描述符 (rxlink/txlink) 需要 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` (内部 SRAM)。LCD-4B 的 LVGL 绘制缓冲区 (720×50×2B ≈ 72KB) 也在内部 SRAM, 导致编码器分配失败。修复: ① LVGL 绘制缓冲区改用 PSRAM (`buff_spiram=true`, ESP32-P4 PSRAM 支持 DMA) ② JPEG 编码器在 start() 时直接初始化 (capture task 需要立即使用, 含 3 次重试) ③ `CONFIG_SPIRAM_TRY_ALLOCATE_DMA_BUFFER=y` 允许 DMA 缓冲区分配到 PSRAM。
 - **JPEG 编码器初始化竞态**: `_encoder_init_in_progress` atomic flag + `_encoder_initialized` atomic 双阶段保护, 防止并发初始化。
 - **独立 capture task 架构**: 帧采集/编码/uORB 发布从 stream_handler 分离到独立 `_capture_task` (FreeRTOS task)。即使无 HTTP 客户端连接, capture task 仍持续运行 → DQBUF → encode → publish (`fps_stats`, `camera_frame_chunk`) → store shared JPEG, 确保 ULog 录制模块始终能接收到 uORB topic。stream_handler 变为纯消费者: 等待 `_frame_ready_sem` → 从 `_shared_jpeg_buf` 读取最新 JPEG → 发送 MJPEG part。
-- **PPA 分辨率优化**: CameraStream 使用 PPA 硬件将 800×800 RGB565 resize 到 300×300 BGR24, JPEG 编码器直接消费 PPA 输出, 编码时间从 ~200ms 降至 ~30ms, JPEG 体积从 ~30-50KB 降至 ~5-8KB。V4L2 buffer 在 PPA 处理后立即归还 (~1ms), 不再持有到编码完成。
+- **PPA 分辨率优化**: CameraStream 使用 PPA 硬件将 800×800 RGB565 resize 到 400×400 RGB565, JPEG 编码器直接消费 PPA 输出, 编码时间从 ~200ms 降至 ~30ms, JPEG 体积从 ~30-50KB 降至 ~5-8KB。V4L2 buffer 在 PPA 处理后立即归还 (~1ms), 不再持有到编码完成。
 - **V4L2 QBUF 延迟 (JPEG sensor)**: JPEG sensor 路径中 `jpeg_data` 直接指向 V4L2 mmap buffer，QBUF 必须延迟至所有消费者 (`_publish_camera_frame`/`_store_shared_jpeg`) 完成后。PPA 路径 (PPA 输出独立) 和 CPU fallback 路径 (编码后 `jpeg_data` 指向 `_jpeg_out_buf`) 可安全提前 QBUF。
 - **start()/stop() 竞态条件**: Settings App 的 cam_start/cam_stop 在独立 FreeRTOS task 中运行。若 stop() 尚未完成清理 (释放 CameraDriver、停止 httpd、释放 V4L2/PPA/SPI 资源) 时 start() 被调用, start() 的 `_running` CAS 成功 (stop 已将其设 false), CameraDriver re-entrant claim 成功 (同 owner "stream"), 但 httpd 端口 80 仍被旧实例占用 → EADDRINUSE → start() 失败 → 部分清理与 stop() 的清理并发 → V4L2/PPA/SPI 资源 double-free → SPI DMA memcpy 空指针 → Guru Meditation (Load access fault)。修复: 添加 `_start_stop_mutex` 互斥锁, 确保 start()/stop() 串行执行。
 - **stop() 无限等待 capture task**: `VIDIOC_STREAMOFF` 失败时 capture task 卡在 `VIDIOC_DQBUF` 永不退出, stop() 的 `while (_capture_task != nullptr)` 无限轮询 → start() 阻塞在 `_start_stop_mutex` → 系统卡死。修复: stop() 等待 capture task 加 5s timeout + force-kill fallback; start() mutex take 加 20s timeout (防御层); start() HTTP 失败路径同样加 3s timeout。
@@ -663,7 +666,7 @@ ESP32-P4 通过 SDIO 连接 ESP32-C6 实现 WiFi。高 DMA 负载下已知 SDIO 
 | 编码器 | ESP AAC, 64kbps, 16kHz Stereo, ADTS mode |
 | 帧大小 | 1024 samples/channel |
 | PCM 缓冲 | PSRAM, 2048 int16_t interleaved |
-| 录音任务 | `w_audio` (core 0, prio 1, **12KB** stack) |
+| 录音任务 | `w_audio` (core 1, prio 1, **12KB** 内部 SRAM 动态栈) |
 | 播放器 | `esp_audio_simple_player` → ES8311 DAC (`s_codec_handle`) |
 | 录音文件 | `/sdcard/rec_YYYYMMDD_HHMMSS.aac` |
 | 懒加载 | SD 卡 + 音频首次访问时才初始化 (`__audio_init()`) |
@@ -780,12 +783,13 @@ ESP32-P4 内置 768 KB HP L2MEM，由 SRAM 和 L2 Cache 共享：
 
 运行时内部堆（启动后空闲 **~297 KB**；CameraStream+Music 峰值占用 ~87.7%）主要消耗者：
 - WiFi/LWIP 缓冲区: ~20-30 KB (SPIRAM_MALLOC_ALWAYSINTERNAL=4096, TCP_SND/WND=32768, pbufs 走 PSRAM)
-- FreeRTOS 任务栈: ~30-40 KB (ASP 8KB PSRAM, audio_echo 48KB PSRAM, w_audio 12KB internal)
+- FreeRTOS 任务栈: ~30-40 KB (ASP 8KB PSRAM, w_audio 12KB internal; `audio_echo` 已随 LCD-4B 移除)
 - 系统服务 (mDNS/NVS/esp_netif): ~10-20 KB
 - DMA 描述符/USB: ~5-10 KB
 - 剩余可用: **~180 KB+** (ESP-Claw 移除后进一步释放, 原 agent_msgs[16] 74.9KB 等已不在二进制中)
 
 **最近优化**:
+- **2026-10-15**: +S362-S374 **代码审查 Round 18 (13 issues, 每项独立 commit)** — 大栈任务生命周期约定 (采集/录音任务 PSRAM 栈跨 start/stop 保留, 消除任务自删后释放自身栈的 use-after-free)、`example_video_init()` 持锁早退死锁、`orb_copy()` 句柄越界、ULog `sub_handle` 误退订他人订阅 + start/stop 互斥、Web 录音任务退出标志顺序、ULog SYNC 魔数更正为 PX4 规范值、logger 强杀后释放资源、WiFi AP 配置 `ESP_ERROR_CHECK` abort、SystemMonitor 初始化标志、WiFi 改配失败摧毁可用凭据 (设备网络锁死)、web_config 无界等 STA 导致 httpd 永不启动。详见 [PROJECT_REQUIREMENTS.md](PROJECT_REQUIREMENTS.md) §2.2 与 §7
 - **2026-08-15**: +S344 **Shine MP3 → ESP AAC 编码器替换** — I2S 采样率 48kHz→16kHz, 录音编码器从 Shine MP3 (128kbps 48kHz) 替换为 ESP AAC (64kbps 16kHz ADTS), 文件扩展名 `.mp3`→`.aac`。移除 `shine_encoder` 依赖, 新增 `espressif/esp_audio_codec` 依赖
 - **2026-08-15**: **ESP-Claw 框架移除** (commit 43c65f1) — 删除 AI Agent / MCP 工具 / IM 集成 (WeChat/Feishu/QQ/Telegram) / LLM 配置 / Agent Chat, 共 95,303 行代码。`max_uri_handlers` 42→30, web_config_server.cpp 从 ~3500 行降至 ~2600 行。Flutter `agent_chat_screen.dart` 成为孤儿文件 (后端 API 不存在)
 - **2026-08-15**: +S340/S341/S342 **代码审查 Round 12 修复** — set_rotation_handler NVS 键宏化 + 返回值检查 + 文档修正
