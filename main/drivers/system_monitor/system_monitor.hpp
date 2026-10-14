@@ -111,6 +111,11 @@ private:
     /** Running flag (atomic for cross-core safety). */
     std::atomic<bool> _running{false};
     std::atomic<bool> _initialized{false};
+    /* S372: one-shot init-in-progress guard. _initialized used to double as
+     * both the guard and the "ready" flag, so a second init() caller returned
+     * true while the first was still creating the mutexes (and the failing
+     * path reset the flag under it). */
+    std::atomic<bool> _initializing{false};
     std::atomic<bool> _task_exited{true};  /* Initial=true (no previous task); set false on start, true on task exit */
 
     /** Latest sampled stats (for get_latest / web API). */

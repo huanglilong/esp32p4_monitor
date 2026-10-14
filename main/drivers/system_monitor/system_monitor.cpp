@@ -60,18 +60,26 @@ SystemMonitor::SystemMonitor()
  *============================================================================*/
 bool SystemMonitor::init(void)
 {
-    /* Use CAS to prevent double-init — two concurrent init() calls
-     * must not both create mutexes and leak the duplicate. */
+    if (_initialized.load(std::memory_order_acquire)) {
+        return true;  /* Already initialized */
+    }
+
+    /* S372: one-shot guard — _initialized is published only after both mutexes
+     * exist. Using _initialized as the CAS target (and returning true to the
+     * loser) let a concurrent caller proceed with half-built state. */
     bool expected = false;
-    if (!_initialized.compare_exchange_strong(expected, true,
-            std::memory_order_acq_rel)) {
-        return true;  /* Another thread already initialized */
+    if (!_initializing.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        /* Another thread is initializing — wait briefly for it to publish. */
+        for (int i = 0; i < 100 && !_initialized.load(std::memory_order_acquire); ++i) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        return _initialized.load(std::memory_order_acquire);
     }
 
     _latest_mutex = xSemaphoreCreateMutex();
     if (!_latest_mutex) {
         ESP_LOGE(TAG, "Failed to create latest_mutex");
-        _initialized.store(false, std::memory_order_release);
+        _initializing.store(false, std::memory_order_release);
         return false;
     }
 
@@ -80,7 +88,7 @@ bool SystemMonitor::init(void)
         ESP_LOGE(TAG, "Failed to create alert_mutex");
         vSemaphoreDelete(_latest_mutex);
         _latest_mutex = nullptr;
-        _initialized.store(false, std::memory_order_release);
+        _initializing.store(false, std::memory_order_release);
         return false;
     }
 
@@ -89,6 +97,7 @@ bool SystemMonitor::init(void)
     _total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
 
     _initialized.store(true, std::memory_order_release);
+    _initializing.store(false, std::memory_order_release);
 
     ESP_LOGI(TAG, "Initialized (interval=%dms, log_every=%d samples, "
              "cpu_alert=%d%%, mem_alert=%d%%, cooldown=%ds)",
