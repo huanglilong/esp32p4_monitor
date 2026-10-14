@@ -2626,7 +2626,16 @@ static void web_config_task(void *arg)
      * for first-boot provisioning via captive portal. */
     if (!wifi_sta_is_connected()) {
         ESP_LOGI(TAG, "Waiting for WiFi (STA or AP)...");
-        while (1) {
+        /* S374: bound the wait. An unreachable stored SSID (router off,
+         * password rotated, unsupported band) used to spin here forever, so
+         * httpd_start() was never reached: port 8080 stayed dead for the whole
+         * boot while the provisioning AP (ap_behavior="keep") was up and its
+         * captive portal redirected to 192.168.4.1:8080 — nothing listening,
+         * no serial-free recovery. The provisioning AP stays up regardless of
+         * STA state, so after the bound we start httpd anyway and remain
+         * reachable over the AP to fix the credentials. */
+        const int kMaxWaitTicks = 120;  /* 120 x 500 ms = 60 s */
+        for (int i = 0; i < kMaxWaitTicks; i++) {
             if (!s_running) { stop_requested = true; break; }
             if (wifi_sta_is_connected()) break;
 
@@ -2641,6 +2650,11 @@ static void web_config_task(void *arg)
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        if (!stop_requested && !wifi_sta_is_connected()) {
+            ESP_LOGW(TAG, "STA not connected after %d s — starting web server anyway "
+                     "(reachable via provisioning AP)",
+                     (int)(kMaxWaitTicks * 500 / 1000));
         }
     }
 
@@ -2759,11 +2773,15 @@ static void web_config_task(void *arg)
 
         bool wifi_up = wifi_sta_is_connected();
         /* Also consider AP-only mode as "up" — web server must stay
-         * running for captive portal provisioning even without STA. */
+         * running for captive portal provisioning even without STA.
+         * S374: the provisioning AP also stays up while a *stored* SSID is
+         * unreachable, so it counts as reachable too — otherwise the httpd
+         * we started after the bounded STA wait would be stopped again by
+         * the "WiFi down" branch below and the device would be unreachable. */
         if (!wifi_up) {
             wifi_service_status_t st;
             WifiService::instance().get_status(&st);
-            wifi_up = !st.sta_configured;  /* AP provisioning mode */
+            wifi_up = !st.sta_configured || st.ap_active;  /* AP provisioning mode */
         }
 
         /* When WiFi goes down, stop httpd to flush stale TCP sessions.

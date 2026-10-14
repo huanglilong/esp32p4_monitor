@@ -45,6 +45,11 @@ struct wifi_scan_result_t {
 struct wifi_service_status_t {
     bool sta_connected;
     bool sta_configured;
+    /* S374: provisioning AP state. Used to decide whether the web server has
+     * to stay up even without a STA link (the AP stays enabled with
+     * ap_behavior="keep", so it is a recovery path when the stored SSID is
+     * unreachable). */
+    bool ap_active;
     char sta_ip[16];
     char sta_ssid[33];
     int8_t sta_rssi;

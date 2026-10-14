@@ -413,6 +413,7 @@ void WifiService::get_status(wifi_service_status_t *status) {
 
     status->sta_connected = st.sta_connected;
     status->sta_configured = st.sta_configured;
+    status->ap_active = st.ap_active;
     strlcpy(status->sta_ip, st.sta_ip, sizeof(status->sta_ip));
     strlcpy(status->sta_ssid, st.sta_ssid ? st.sta_ssid : _current_ssid, sizeof(status->sta_ssid));
     status->sta_rssi = 0;
