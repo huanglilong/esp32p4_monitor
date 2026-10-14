@@ -81,6 +81,14 @@ static struct {
     vprintf_like_t   orig_vprintf;  /* saved original for UART */
 } s_log;
 
+/* S370: set when the writer task had to be force-killed. The zombie task can
+ * still read/write the s_log globals (fd, buf, mutexes), so re-running
+ * logger_init() would hand it a *new* ring buffer, mutex and FILE* that it
+ * would then use concurrently with the new writer — and fclose() from under
+ * it. Refuse to re-init until reboot instead; the cost is a disabled SD text
+ * log on a path that already indicates a wedged writer. */
+static std::atomic<bool> s_writer_killed{false};
+
 /* ── Forward declarations ───────────────────────────────────────── */
 static void _logger_writer_task(void *arg);
 static void _logger_push(const char *data, int len);
@@ -94,6 +102,14 @@ static int  _strip_ansi(char *str, int len);
 bool logger_init(const char *sd_base)
 {
     if (s_log.running.load(std::memory_order_acquire)) return true;
+
+    /* S370: never re-init after a forced writer kill — the zombie task still
+     * touches the s_log globals we are about to overwrite. */
+    if (s_writer_killed.load(std::memory_order_acquire)) {
+        ESP_LOGE("logger", "Refusing to re-init: writer task was force-killed earlier "
+                 "(SD text logging disabled until reboot)");
+        return false;
+    }
 
     /* Sanity: SD path must be a valid mount */
     struct stat st;
@@ -211,6 +227,7 @@ void logger_deinit(void)
     if (!s_log.writer_exited) {
         ESP_LOGE("logger", "Writer task force-killed — leaking fd/ring buffer/mutexes "
                  "rather than freeing them under the running task");
+        s_writer_killed.store(true, std::memory_order_release);
         s_log.writer_task = nullptr;
         return;
     }
