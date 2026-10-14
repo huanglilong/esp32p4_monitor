@@ -81,9 +81,13 @@ esp_err_t example_video_init(void)
     const esp_video_init_config_t *cam_config_ptr = &s_cam_config;
 
 #if CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP
-    /* Use the pre-initialized board I2C bus (shared with audio + camera) */
+    /* Use the pre-initialized board I2C bus (shared with audio + camera).
+     * NOTE: must GOTO (not ESP_RETURN_ON_FALSE) — s_init_mutex is held here,
+     * and a bare return would never give it back, deadlocking every later
+     * example_video_init()/example_video_deinit() on portMAX_DELAY. */
     s_i2cbus_handle = board_i2c_get_handle();
-    ESP_RETURN_ON_FALSE(s_i2cbus_handle, ESP_ERR_INVALID_STATE, TAG, "Board I2C bus not initialized");
+    ESP_GOTO_ON_FALSE(s_i2cbus_handle, ESP_ERR_INVALID_STATE, release_mutex,
+                      TAG, "Board I2C bus not initialized");
 
 #if EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR
     esp_video_init_csi_config_t csi_config = s_csi_config;
@@ -178,6 +182,7 @@ failed_1:
     s_xclk_handle = NULL;
 failed_0:
 #endif
+release_mutex:
     if (s_init_mutex) xSemaphoreGive(s_init_mutex);
     return ret;
 }
