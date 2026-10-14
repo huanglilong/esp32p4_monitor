@@ -67,9 +67,14 @@ AudioUlogRecorder& AudioUlogRecorder::instance()
 AudioUlogRecorder::AudioUlogRecorder() = default;
 AudioUlogRecorder::~AudioUlogRecorder()
 {
-    /* Free TCB if allocated (stack is freed in stop() on clean exit).
-     * On embedded devices the static singleton destructor never runs,
-     * but this ensures correctness if the object is ever stack-allocated. */
+    /* On embedded devices the static singleton destructor never runs,
+     * but this ensures correctness if the object is ever stack-allocated.
+     * S363: the PSRAM stack is retained across start/stop cycles (stop()
+     * cannot prove the task is off it), so it is released here. */
+    if (_task_stack) {
+        heap_caps_free(_task_stack);
+        _task_stack = nullptr;
+    }
     if (_task_tcb) {
         heap_caps_free(_task_tcb);
         _task_tcb = nullptr;
@@ -322,10 +327,21 @@ esp_err_t AudioUlogRecorder::start()
         }
     }
 
-    /* Allocate stack from PSRAM */
-    _task_stack = (StackType_t *)heap_caps_malloc(
-                      AUDIO_ULOG_TASK_STACK_SIZE * sizeof(StackType_t),
-                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* Allocate stack from PSRAM. Reuse the retained stack when the previous
+     * task confirmed its exit (S363): _task_exited is published *before*
+     * vTaskDelete(), so no caller can ever prove the task is off the stack —
+     * freeing it there is a use-after-free. The stack is therefore retained
+     * across start/stop cycles and only released in the destructor. */
+    bool prev_exited = _task_exited.load(std::memory_order_acquire);
+    if (_task_stack && !prev_exited) {
+        ESP_LOGE(TAG, "Previous task not confirmed exited — abandoning its PSRAM stack");
+        _task_stack = nullptr;
+    }
+    if (!_task_stack) {
+        _task_stack = (StackType_t *)heap_caps_malloc(
+                          AUDIO_ULOG_TASK_STACK_SIZE * sizeof(StackType_t),
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
     if (!_task_stack) {
         ESP_LOGE(TAG, "Failed to allocate task stack");
         heap_caps_free(_task_tcb);
@@ -362,41 +378,25 @@ esp_err_t AudioUlogRecorder::start()
 void AudioUlogRecorder::stop()
 {
     if (!_running.load(std::memory_order_acquire)) {
-        /* Task may have failed during init (PCM alloc, encoder open, ...).
-         * Such a task publishes _task_exited, clears _running and then calls
-         * vTaskDelete() — so it is still executing for a few instructions
-         * after _running went false. S363: wait for the real exit signal
-         * before releasing the PSRAM stack, otherwise the task's remaining
-         * epilogue runs on freed memory (use-after-free). */
-        if (_task_stack) {
-            for (int i = 0; i < 20 && !_task_exited.load(std::memory_order_acquire); ++i) {
-                vTaskDelay(pdMS_TO_TICKS(10));
-            }
-            if (_task_exited.load(std::memory_order_acquire)) {
-                heap_caps_free(_task_stack);
-                _task_stack = nullptr;
-            } else {
-                /* Task never confirmed exited — detach, do not free. */
-                ESP_LOGE(TAG, "Task did not exit — leaking %u byte PSRAM stack",
-                         (unsigned)(AUDIO_ULOG_TASK_STACK_SIZE * sizeof(StackType_t)));
-                _task_stack = nullptr;
-            }
-        }
+        /* The task failed during init (PCM alloc, encoder open, ...) and
+         * self-deleted, or it never started. S363: the PSRAM stack is
+         * retained for reuse (start() reclaims it once the task confirmed
+         * its exit), because _task_exited is published *before*
+         * vTaskDelete() and can therefore never prove the task is off the
+         * stack. Nothing to wait for and nothing to free here. */
         return;
     }
 
     ESP_LOGI(TAG, "Stopping audio ULog recorder...");
     _running.store(false, std::memory_order_release);
 
-    /* Wait for task to self-delete (it releases resources).
-     * Use a generous timeout — i2s_channel_read can block briefly.
-     * Per convention, do NOT force-delete — the task holds encoder
+    /* Wait for task to self-delete (it releases encoder + buffers).
+     * Per convention, do NOT force-delete — the task holds an encoder
      * handle + 3 heap buffers that would be leaked.
-     * Wait for _task_exited (not _task_handle) to ensure the task
-     * has fully stopped before freeing the PSRAM stack — the task
-     * sets _task_exited before vTaskDelete, preventing the cross-core
-     * race where stop() frees the stack while the task is still
-     * executing between _task_handle=nullptr and vTaskDelete. */
+     * S363: the wait is only used to learn whether the task confirmed its
+     * exit; the PSRAM stack is never freed here (it is retained for reuse
+     * and released in the destructor), because _task_exited is published
+     * before vTaskDelete() and cannot prove the task is off the stack. */
     for (int i = 0; i < 60 && !_task_exited.load(std::memory_order_acquire); ++i) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -406,15 +406,9 @@ void AudioUlogRecorder::stop()
         /* Do NOT call vTaskDelete(h) — the task holds encoder + 3 heap buffers.
          * Force-deleting would leak all of them (PSRAM + encoder handle).
          * The task will eventually see _running=false and self-delete.
-         * Do NOT free the stack — the task is still using it.
-         * Detach so next start() allocates a fresh stack. */
+         * Detach the stack so next start() allocates a fresh one instead of
+         * reusing memory the old task may still be running on. */
         _task_stack = nullptr;
-    } else {
-        /* Task exited cleanly — safe to free the stack (TCB is reused) */
-        if (_task_stack) {
-            heap_caps_free(_task_stack);
-            _task_stack = nullptr;
-        }
     }
 
     ESP_LOGI(TAG, "Audio ULog recorder stopped");

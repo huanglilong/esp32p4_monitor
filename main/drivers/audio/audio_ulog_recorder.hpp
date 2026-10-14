@@ -59,6 +59,6 @@ private:
     std::atomic<uint32_t>  _bytes_published{0};
 
     std::atomic<TaskHandle_t> _task_handle{nullptr};
-    StackType_t           *_task_stack{nullptr};
+    StackType_t           *_task_stack{nullptr};  /* PSRAM, retained across start/stop (S363), freed in ~AudioUlogRecorder */
     StaticTask_t          *_task_tcb{nullptr};
 };
