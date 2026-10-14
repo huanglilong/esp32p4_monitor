@@ -393,12 +393,14 @@ esp_err_t WifiService::apply_sta_config(const char *ssid, const char *password) 
     /* Keep AP running for provisioning */
     cfg.ap_behavior = "keep";
 
+    /* S373: do NOT persist here. Persisting before the connection is verified
+     * destroys the last-known-good credentials: settings_handler then reads
+     * the *old* SSID back from NVS for its rollback, finds the newly stored
+     * (failing) credentials there, and "reconnects" to the network that just
+     * failed — leaving the device unreachable with no serial recovery. */
     esp_err_t err = wifi_manager_apply_sta_config(&cfg);
-    if (err == ESP_OK) {
-        if (ssid && strlen(ssid) > 0) {
-            _save_nvs_creds(ssid, password);
-            strlcpy(_current_ssid, ssid, sizeof(_current_ssid));
-        }
+    if (err == ESP_OK && ssid && strlen(ssid) > 0) {
+        strlcpy(_current_ssid, ssid, sizeof(_current_ssid));
     }
     return err;
 }

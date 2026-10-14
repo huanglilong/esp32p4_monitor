@@ -1001,6 +1001,11 @@ static esp_err_t settings_handler(httpd_req_t *req)
                                    ? j_pass->valuestring : "";
         ESP_LOGI(TAG, "Trying WiFi connection to %s before saving...", target_ssid);
 
+        /* S373: snapshot the current credentials BEFORE applying the new ones —
+         * NVS must still hold the last-known-good pair at rollback time. */
+        char old_ssid[33] = {}; nvs_get_str(NVS_KEY_WIFI_SSID, old_ssid, sizeof(old_ssid));
+        char old_pass[65] = {}; nvs_get_str(NVS_KEY_WIFI_PASS, old_pass, sizeof(old_pass));
+
         /* Use WifiService to apply STA config and wait for connection.
          * wifi_manager handles disconnect + set_config + connect internally. */
         esp_err_t err = WifiService::instance().apply_sta_config(target_ssid, target_pass);
@@ -1018,11 +1023,11 @@ static esp_err_t settings_handler(httpd_req_t *req)
             ESP_LOGW(TAG, "WiFi connect to %s failed: %s — NOT saving to NVS",
                      target_ssid, esp_err_to_name(err));
             wifi_ok = false;
-            /* Reconnect to old credentials if any */
-            char old_ssid[33] = {}; nvs_get_str(NVS_KEY_WIFI_SSID, old_ssid, sizeof(old_ssid));
+            /* Reconnect to the credentials captured above (not NVS: NVS was
+             * never overwritten, but reading it here would re-read the new,
+             * failing pair — see S373). */
             if (strlen(old_ssid) > 0) {
                 ESP_LOGI(TAG, "Reconnecting to previous SSID: %s", old_ssid);
-                char old_pass[65] = {}; nvs_get_str(NVS_KEY_WIFI_PASS, old_pass, sizeof(old_pass));
                 WifiService::instance().apply_sta_config(old_ssid, old_pass);
             }
         }

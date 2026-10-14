@@ -86,7 +86,10 @@ public:
     esp_err_t wait_connected(uint32_t timeout_ms);
 
     /* Hot-swap STA credentials at runtime (no restart required).
-     * Saves to NVS immediately. Reconnects with new config. */
+     * Reconnects with the new config but does NOT touch NVS: persisting is the
+     * caller's decision, so a failed attempt can be rolled back with the
+     * previous (still valid) credentials. Use connect() to apply *and* persist
+     * only after a successful connection. */
     esp_err_t apply_sta_config(const char *ssid, const char *password);
 
     /* Whether WiFi is initialized (for guard checks). */
