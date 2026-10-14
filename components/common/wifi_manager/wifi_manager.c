@@ -189,7 +189,7 @@ static void compose_ap_ssid(void)
  * ESP_ERR_WIFI_NOT_STARTED / ESP_ERR_WIFI_IF / ESP_ERR_INVALID_ARG during
  * mode transitions — all recoverable. Aborting there killed the whole device
  * on a transient WiFi state. Report the error and let callers degrade. */
-static esp_err_t apply_ap_config(void)
+static void apply_ap_config(void)
 {
     wifi_config_t ap_cfg = {0};
     ap_cfg.ap.ssid_len = strlen(s_ap_ssid);
@@ -206,7 +206,6 @@ static esp_err_t apply_ap_config(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "esp_wifi_set_config(AP) failed: %s", esp_err_to_name(err));
     }
-    return err;
 }
 
 static void refresh_ap_ip_str(void)
@@ -278,8 +277,11 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
         atomic_store_explicit(&s_mode, WM_STATE_APSTA, memory_order_release);
         err = esp_wifi_set_mode(WIFI_MODE_APSTA);
         if (err != ESP_OK) return err;
-        err = apply_ap_config();
-        if (err != ESP_OK) return err;
+        /* S371: AP config is auxiliary — log and continue. Returning here
+         * would leave STA unconfigured while s_sta_configured/s_mode are
+         * already published, so the device would be silently
+         * un-connectable (no esp_wifi_connect, no reconnect retry). */
+        apply_ap_config();
         err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         if (err != ESP_OK) return err;
         return ESP_OK;
@@ -288,7 +290,8 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
     atomic_store_explicit(&s_mode, WM_STATE_PROVISION_AP, memory_order_release);
     err = esp_wifi_set_mode(WIFI_MODE_AP);
     if (err != ESP_OK) return err;
-    return apply_ap_config();
+    apply_ap_config();  /* best-effort — error already logged (S371) */
+    return ESP_OK;
 }
 
 static void arm_reconnect(void)
