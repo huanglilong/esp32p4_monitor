@@ -2,6 +2,7 @@
 
 import time
 import pytest
+import requests as req_mod
 
 
 class TestStatus:
@@ -15,11 +16,15 @@ class TestStatus:
                 status = api.status()
                 assert isinstance(status, dict)
                 return
-            except Exception as e:
+            except req_mod.RequestException as e:
                 if attempt == 0:
                     time.sleep(5)
                 else:
                     pytest.fail(f"Device unreachable after retry: {e}")
+            except (AssertionError, ValueError):
+                # Malformed body is a firmware problem — surface it, do not
+                # retry it as if the device were merely unreachable.
+                raise
 
     def test_status_has_wifi_fields(self, api):
         """Response includes ssid (string) and has_pass (bool)."""

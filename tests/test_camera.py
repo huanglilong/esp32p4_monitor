@@ -97,33 +97,45 @@ class TestCameraCapture:
 
     def test_capture_requires_stream(self, api, client, base_url):
         """Capture without a running stream returns a JSON error (not a crash)."""
+        # Make "not running" deterministic — otherwise this test silently
+        # degrades into a capture-and-delete whenever the stream happens to be up.
+        api.camera_stream(enable=False)
         r = client.get(f"{base_url}/api/camera/capture", timeout=10)
         r.raise_for_status()
         j = r.json()
-        # Either the stream is running (ok=1) or we get a clean error
-        if j.get("ok") not in (1, True):
-            assert "error" in j, f"Expected error message: {j}"
-        else:
-            # Stream happened to be running — clean up the captured photo
-            # so the test doesn't leave a stray file on the SD card
-            if "file" in j:
-                d = api.files_delete(path="/" + j["file"])
-                assert d.get("ok") in (1, True), f"Cleanup delete failed: {d}"
+        assert j.get("ok") not in (1, True), \
+            f"Capture must fail while the stream is stopped: {j}"
+        assert "error" in j, f"Expected error message: {j}"
 
-    def test_take_picture(self, api, client, base_url):
+    def test_take_picture(self, api, client, base_url, camera_base_url):
         """Enable stream, capture a picture, verify file exists on SD card."""
+        import time
         # Enable the camera stream (requires WiFi)
         r = api.camera_stream(enable=True)
         if r.get("ok") not in (1, True):
             pytest.skip(f"Camera stream could not start: {r}")
 
-        # Wait for the capture task to produce at least one frame
-        import time
-        for _ in range(20):
-            info = api.status()
-            if info.get("cam_running"):
+        # Wait for the capture task to produce an actual encoded frame.
+        # /api/status sets cam_running at the START of start() — it says nothing
+        # about frames, so polling it returned immediately and the capture below
+        # raced the first frame ("No frame available yet").
+        info = {}
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                info = client.get(
+                    f"{camera_base_url}/api/get_camera_info", timeout=5
+                ).json()
+            except Exception:
+                info = {}
+            if info.get("total_frames", 0) > 0:
                 break
             time.sleep(0.5)
+        else:
+            pytest.fail(
+                f"camera produced no frame within 30s "
+                f"(cam_running={api.status().get('cam_running')}, info={info})"
+            )
 
         # Take a picture
         r = client.get(f"{base_url}/api/camera/capture", timeout=15)

@@ -1,5 +1,22 @@
 """Tests for system monitoring endpoints — /api/system_stats and /api/system_alerts."""
 
+import time
+
+
+def _stats_with_samples(api, timeout_s=15):
+    """Return /api/system_stats once SystemMonitor has produced a sample.
+
+    task_count / cpu_pct only become non-zero after the first periodic sample
+    (CONFIG_APP_SYS_MONITOR_INTERVAL_MS), so a test run immediately after boot
+    would see task_count == 0.
+    """
+    deadline = time.monotonic() + timeout_s
+    stats = api.system_stats()
+    while stats.get("task_count", 0) <= 0 and time.monotonic() < deadline:
+        time.sleep(1.0)
+        stats = api.system_stats()
+    return stats
+
 
 class TestSystemStats:
     """GET /api/system_stats — system performance snapshot."""
@@ -25,7 +42,7 @@ class TestSystemStats:
 
     def test_cpu_fields(self, api):
         """CPU fields are present and within reasonable range."""
-        stats = api.system_stats()
+        stats = _stats_with_samples(api)
         assert "task_count" in stats, f"Missing task_count: {stats}"
         assert stats["task_count"] > 0, f"task_count should be > 0: {stats}"
         for key in ("cpu_pct", "core0_cpu_pct", "core1_cpu_pct"):

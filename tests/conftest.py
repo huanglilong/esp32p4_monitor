@@ -23,13 +23,16 @@ def _resolve_base_url(config) -> str:
       1. --base-url CLI argument
       2. ESP_BASE_URL environment variable
       3. Built-in default
+
+    A trailing slash is stripped so callers can append "/api/..." without
+    producing a "//" path the httpd server would answer with 404.
     """
     cli = config.getoption("--base-url")
     if cli:
-        return cli
+        return cli.rstrip("/")
     env = os.environ.get("ESP_BASE_URL")
     if env:
-        return env
+        return env.rstrip("/")
     return "http://esp-web.local:8080"
 
 
@@ -165,7 +168,7 @@ def device_info(client: requests.Session, base_url: str):
 
 
 @pytest.fixture
-def api(client: requests.Session, base_url: str):
+def api(client: requests.Session, base_url: str, camera_base_url: str):
     """Namespace-like fixture with helper methods for common API calls.
     
     Usage:
@@ -203,36 +206,45 @@ def api(client: requests.Session, base_url: str):
             return r.json()
 
         @staticmethod
-        def record_start(timeout=30):
+        def record_start(timeout=60):
             """Start recording, retrying if previous recording cleanup is in progress."""
-            deadline = time.time() + timeout
+            deadline = time.monotonic() + timeout
+            last = {}
             while True:
-                r = client.get(f"{base_url}/api/audio/record_start", timeout=10)
+                r = client.get(f"{base_url}/api/audio/record_start", timeout=30)
                 r.raise_for_status()
                 j = r.json()
                 if j.get("ok") in (1, True):
                     return j
-                retry = j.get("retry_after", 0)
-                if retry > 0 and time.time() + retry < deadline:
-                    time.sleep(min(retry, 2))
-                    continue
-                return j  # return error response
+                last = j
+                # Only "cleanup in progress" is retried — anything else
+                # (init failure, SD write failure) is a firmware problem.
+                if "cleanup" not in str(j.get("error", "")):
+                    raise AssertionError(
+                        f"record_start failed after {time.monotonic() - (deadline - timeout):.1f}s: {j}"
+                    )
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"record_start still in cleanup after {timeout}s: {last}"
+                    )
+                retry = float(j.get("retry_after", 5))
+                time.sleep(min(max(retry, 1.0), 10.0))
 
         @staticmethod
         def record_stop():
-            r = client.get(f"{base_url}/api/audio/record_stop", timeout=10)
+            r = client.get(f"{base_url}/api/audio/record_stop", timeout=30)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def record_status():
-            r = client.get(f"{base_url}/api/audio/record_status", timeout=5)
+            r = client.get(f"{base_url}/api/audio/record_status", timeout=10)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def audio_list():
-            r = client.get(f"{base_url}/api/audio/list", timeout=10)
+            r = client.get(f"{base_url}/api/audio/list", timeout=30)
             r.raise_for_status()
             return r.json()
 
@@ -248,7 +260,10 @@ def api(client: requests.Session, base_url: str):
 
         @staticmethod
         def audio_stop():
-            r = client.get(f"{base_url}/api/audio/stop", timeout=5)
+            # esp_audio_simple_player_destroy() blocks until the GMF task
+            # reaches STOPPED — the firmware's own /api/audio/stop releases
+            # audio_lock before calling it, but the call itself is slow.
+            r = client.get(f"{base_url}/api/audio/stop", timeout=30)
             r.raise_for_status()
             return r.json()
 
@@ -293,46 +308,51 @@ def api(client: requests.Session, base_url: str):
 
         @staticmethod
         def ulog_status():
-            r = client.get(f"{base_url}/api/ulog/status", timeout=5)
+            r = client.get(f"{base_url}/api/ulog/status", timeout=15)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def ulog_start():
-            r = client.post(f"{base_url}/api/ulog/start", timeout=10)
+            # start() does SD open + file header + topic subscription writes.
+            r = client.post(f"{base_url}/api/ulog/start", timeout=30)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def ulog_stop():
-            r = client.post(f"{base_url}/api/ulog/stop", timeout=5)
+            # stop() = AudioUlogRecorder::stop() (up to 3s task join) +
+            # ulog_writer_stop() (up to 2s join + ring drain + fsync/close)
+            # => ~5.1s worst case on SDSPI; the previous 5s timed out.
+            r = client.post(f"{base_url}/api/ulog/stop", timeout=30)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def system_stats():
-            r = client.get(f"{base_url}/api/system_stats", timeout=5)
+            r = client.get(f"{base_url}/api/system_stats", timeout=15)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def system_alerts():
-            r = client.get(f"{base_url}/api/system_alerts", timeout=5)
+            r = client.get(f"{base_url}/api/system_alerts", timeout=15)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def get_camera_info():
-            r = client.get(f"{base_url}/api/get_camera_info", timeout=5)
+            # Registered by CameraStream on port 80 only (camera_base_url).
+            r = client.get(f"{camera_base_url}/api/get_camera_info", timeout=15)
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def set_quality(value: int):
             r = client.get(
-                f"{base_url}/api/set_quality",
+                f"{camera_base_url}/api/set_quality",
                 params={"value": value},
-                timeout=5,
+                timeout=15,
             )
             r.raise_for_status()
             return r.json()
@@ -340,16 +360,16 @@ def api(client: requests.Session, base_url: str):
         @staticmethod
         def set_camera_config(**kw):
             r = client.post(
-                f"{base_url}/api/set_camera_config",
+                f"{camera_base_url}/api/set_camera_config",
                 json=kw,
-                timeout=10,
+                timeout=15,
             )
             r.raise_for_status()
             return r.json()
 
         @staticmethod
         def get_detection_info():
-            r = client.get(f"{base_url}/api/get_detection_info", timeout=5)
+            r = client.get(f"{camera_base_url}/api/get_detection_info", timeout=15)
             r.raise_for_status()
             return r.json()
 
