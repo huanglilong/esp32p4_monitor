@@ -173,7 +173,8 @@ CameraStream::~CameraStream()
         vSemaphoreDelete(_encoder_lock);
         _encoder_lock = nullptr;
     }
-    /* Defensive: stop() should have freed stacks, but ensure no leak */
+    /* Defensive: stop() retains the capture stack for reuse (S362) — release
+     * it here, at singleton destruction, where no task can be running. */
     if (_capture_stack.load(std::memory_order_acquire)) {
         heap_caps_free(_capture_stack.load(std::memory_order_acquire));
         _capture_stack.store(nullptr, std::memory_order_release);
@@ -249,12 +250,29 @@ bool CameraStream::start(void)
     /* Start independent capture task — runs DQBUF/encode/publish loop
      * regardless of HTTP client connections.
      * Use static task creation with PSRAM stack to save ~32KB internal SRAM. */
+    /* S362: the PSRAM stack is retained across start/stop cycles (like the
+     * TCB) instead of being freed in stop(). The capture task signals
+     * _capture_task_exited and only afterwards calls vTaskDelete(), so
+     * stop() can observe the flag while the task is still executing a few
+     * instructions on that stack — freeing it there was a use-after-free.
+* Reuse is only safe when the previous task really exited; if a
+     * force-kill left _capture_task_exited false, the old stack may still
+     * be in use and must be abandoned (leaked, never freed). */
+    bool prev_task_exited = _capture_task_exited.load(std::memory_order_acquire);
     _capture_task_exited.store(false, std::memory_order_release);
-    StackType_t *capture_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    _capture_stack.store(capture_stack, std::memory_order_release);
+    StackType_t *capture_stack = _capture_stack.load(std::memory_order_acquire);
+    if (capture_stack && !prev_task_exited) {
+        ESP_LOGE(TAG, "Previous capture task not confirmed exited — abandoning its PSRAM stack");
+        capture_stack = nullptr;
+        _capture_stack.store(nullptr, std::memory_order_release);
+    }
+    if (!capture_stack) {
+        capture_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t),
+                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        _capture_stack.store(capture_stack, std::memory_order_release);
+    }
     if (!capture_stack || !_capture_tcb) {
         ESP_LOGE(TAG, "Capture task PSRAM stack alloc failed or TCB is null");
-        if (capture_stack) { heap_caps_free(capture_stack); _capture_stack.store(nullptr, std::memory_order_release); }
         _deinit_encoder();
         _deinit_video();
         _deinit_ppa();
@@ -304,13 +322,10 @@ bool CameraStream::start(void)
             if (t) vTaskDelete(t);
             vTaskDelay(pdMS_TO_TICKS(20));
         }
-        /* Free the capture task's PSRAM stack. stop() will NOT free it:
-         * _running is already false, so its CAS guard fails and it returns
-         * immediately — leaking 32KB PSRAM per failed start. */
-        StackType_t *leaked_stack = _capture_stack.exchange(nullptr, std::memory_order_acq_rel);
-        if (leaked_stack) {
-            heap_caps_free(leaked_stack);
-        }
+        /* S362: do NOT free the capture task's PSRAM stack here — the task
+         * may still be executing on it (it only signals _capture_task_exited
+         * before vTaskDelete()). The stack is retained for the next start();
+         * freeing it here was a use-after-free (S336 leak fix superseded). */
         _deinit_encoder();
         _deinit_video();
         _deinit_ppa();
@@ -402,14 +417,12 @@ void CameraStream::stop(void)
     _deinit_ppa();
     _deinit_video();
 
-    /* Free capture task PSRAM stack.
-     * TCB is pre-allocated and reused — not freed here.
-     * Stack is safe to free immediately: FreeRTOS doesn't reference it
-     * after the task exits (idle task only reclaims the TCB). */
-    StackType_t *capture_stack = _capture_stack.exchange(nullptr, std::memory_order_acq_rel);
-    if (capture_stack) {
-        heap_caps_free(capture_stack);
-    }
+    /* S362: capture task PSRAM stack is NOT freed here.
+     * The task publishes _capture_task_exited *before* its vTaskDelete(),
+     * so this thread can reach this point while the task is still running
+     * final instructions on that very stack — freeing it was a
+     * use-after-free. The stack (like the TCB) is retained and reused by
+     * the next start(); only ~CameraStream() releases it. */
 
     /* Reset shared JPEG buffer */
     if (_shared_jpeg_mutex && xSemaphoreTake(_shared_jpeg_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -1073,14 +1086,15 @@ capture_done:
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    /* Task is exiting — signal exit then clear handle so stop() knows we're done.
+    /* Task is exiting — log first, then signal exit so that no code that
+     * touches the stack runs after the flag is published (S362).
      * _capture_task_exited MUST be set before vTaskDelete — stop() on Core 1
-     * waits for this flag before freeing the PSRAM stack. Without it, stop()
-     * could free the stack while this task is still executing between
-     * _capture_task=nullptr and vTaskDelete (cross-core race). */
-    cs->_capture_task_exited.store(true, std::memory_order_release);
-    cs->_capture_task.store(nullptr, std::memory_order_release);
+     * waits for this flag before tearing down V4L2/PPA resources.
+     * The last statement is vTaskDelete(): it never returns, so no further
+     * stack access happens after stop() considers the task gone. */
     ESP_LOGI(TAG, "Capture task exiting");
+    cs->_capture_task.store(nullptr, std::memory_order_release);
+    cs->_capture_task_exited.store(true, std::memory_order_release);
     vTaskDelete(nullptr);
 }
 
