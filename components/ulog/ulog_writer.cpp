@@ -248,6 +248,12 @@ typedef struct ulog_writer {
     StaticTask_t *task_tcb;            /**< Internal SRAM TCB (freed on stop) */
     std::atomic<bool> task_should_run{false};
     std::atomic<bool> task_exited{false};  /* Set before vTaskDelete by writer task */
+    /* S367: serializes start()/stop(). Both are called from different tasks
+     * (web_config auto-start, /api/ulog/{start,stop}, SD format handler); a
+     * concurrent pair would both pass the `state == RUNNING` check, leak one
+     * of two PSRAM stacks and create two tasks sharing this single
+     * task_tcb -> FreeRTOS list/TCB corruption. */
+    SemaphoreHandle_t lifecycle_mutex;
 
     /* Timing */
     uint64_t      last_flush_us;
@@ -285,6 +291,8 @@ static esp_err_t write_subscription_messages(ulog_writer_t *writer);
 static void ensure_log_dir(const char *dir);
 static esp_err_t create_log_path(ulog_writer_t *writer);
 static void cleanup_old_logs(const char *log_root, const char *sd_mount_path, uint64_t size_limit);
+static esp_err_t ulog_writer_start_locked(ulog_writer_t *writer);
+static esp_err_t ulog_writer_stop_locked(ulog_writer_t *writer);
 
 /** Run capacity-based cleanup for the ULog storage area.
  *  Computes the size limit from SD capacity (fallback 512KB) and calls
@@ -365,6 +373,17 @@ esp_err_t ulog_writer_init(ulog_writer_t *writer, const char *sd_mount_path,
         return ESP_FAIL;
     }
 
+    /* S367: lifecycle mutex created eagerly (never lazily) so start()/stop()
+     * from different tasks can never race. */
+    writer->lifecycle_mutex = xSemaphoreCreateMutex();
+    if (!writer->lifecycle_mutex) {
+        ESP_LOGE(TAG, "Failed to allocate lifecycle mutex");
+        heap_caps_free(writer->task_tcb);
+        writer->task_tcb = nullptr;
+        writer->state = ULOG_STATE_ERROR;
+        return ESP_ERR_NO_MEM;
+    }
+
     /* Copy config from application */
     writer->session_counter = config->session_counter;
     writer->has_wall_clock = config->has_wall_clock;
@@ -434,9 +453,21 @@ esp_err_t ulog_writer_add_topic(ulog_writer_t *writer, orb_id_t meta,
     return ESP_OK;
 }
 
+/* S367: serialized entry points — the bodies below assume no other task is
+ * inside start()/stop(). Without this, the web_config auto-start task, the
+ * /api/ulog/{start,stop} handlers and the SD format handler can interleave
+ * and create two writer tasks sharing one task_tcb. */
 esp_err_t ulog_writer_start(ulog_writer_t *writer)
 {
-    if (!writer) return ESP_ERR_INVALID_ARG;
+    if (!writer || !writer->lifecycle_mutex) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(writer->lifecycle_mutex, portMAX_DELAY);
+    esp_err_t ret = ulog_writer_start_locked(writer);
+    xSemaphoreGive(writer->lifecycle_mutex);
+    return ret;
+}
+
+static esp_err_t ulog_writer_start_locked(ulog_writer_t *writer)
+{
     if (writer->state == ULOG_STATE_RUNNING) {
         ESP_LOGW(TAG, "Already logging");
         return ESP_OK;
@@ -559,7 +590,15 @@ esp_err_t ulog_writer_start(ulog_writer_t *writer)
 
 esp_err_t ulog_writer_stop(ulog_writer_t *writer)
 {
-    if (!writer) return ESP_ERR_INVALID_ARG;
+    if (!writer || !writer->lifecycle_mutex) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(writer->lifecycle_mutex, portMAX_DELAY);
+    esp_err_t ret = ulog_writer_stop_locked(writer);
+    xSemaphoreGive(writer->lifecycle_mutex);
+    return ret;
+}
+
+static esp_err_t ulog_writer_stop_locked(ulog_writer_t *writer)
+{
     /* Allow stop() to clean up subscriptions even after a failed start().
      * Only skip if already idle (fully stopped). */
     if (writer->state == ULOG_STATE_IDLE) {
