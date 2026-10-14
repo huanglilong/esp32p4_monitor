@@ -381,6 +381,15 @@ int orb_copy(orb_id_t meta, orb_sub_t handle, void *buffer)
     const int MAX_RETRIES = 3;
     while (retries < MAX_RETRIES) {
         lock();
+        /* Validate the handle against the allocated subscriber table before
+         * indexing it — orb_check()/orb_unsubscribe() already do this. A
+         * stale/foreign handle would otherwise read a zeroed entry (queue ==
+         * NULL) and call xQueueReceive(NULL, ...) or read past the array. */
+        if (handle >= s_num_subs) {
+            unlock();
+            ESP_LOGE("uORB", "orb_copy: invalid handle %d (num_subs=%d)", (int)handle, (int)s_num_subs);
+            return -1;
+        }
         orb_sub_entry_t *sub = &s_subs[handle];
         if (sub->topic_idx < 0) {
             unlock();
