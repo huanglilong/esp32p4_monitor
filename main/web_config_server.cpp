@@ -223,7 +223,7 @@ static void audio_task(void *arg)
 {
     (void)arg;
     int16_t *buf = (int16_t *)heap_caps_calloc(1, REC_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) { s_audio_running = false; s_audio_task.store(nullptr, std::memory_order_release); s_audio_task_exited.store(true, std::memory_order_release); vTaskDelete(NULL); return; }
+    if (!buf) { s_audio_running = false; s_audio_task_exited.store(true, std::memory_order_release); s_audio_task.store(nullptr, std::memory_order_release); vTaskDelete(NULL); return; }
     int loop_count = 0;
     while (s_audio_running) {
         /* Guard: if audio driver was deinitialized (e.g., by PhoneAppAudio::close()),
@@ -1516,6 +1516,16 @@ static esp_err_t h_rec_start(httpd_req_t *req) {
             s_audio_task_exited.store(true, std::memory_order_release);  /* Reset — no task was created */
             audio_unlock(); httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Task create fail\"}"); return ESP_OK;
         }
+    } else {
+        /* S368: transient state — the previous task's handle and exit flag
+         * disagree (e.g. _stop_audio_task_if_running() cleared the handle
+         * after its 1.5 s wait while the task is still finishing fclose()).
+         * Recording without a consumer task would allocate buffers, open a
+         * 0-byte .aac and report recording=1 with nobody sampling. Tell the
+         * client to retry instead. */
+        audio_unlock();
+        httpd_resp_sendstr(req, "{\"ok\":0,\"error\":\"Previous recording cleanup in progress\",\"retry_after\":2}");
+        return ESP_OK;
     }
     s_pcm_buf = (int16_t*)heap_caps_calloc(1, PCM_BUF_SAMPLES*sizeof(int16_t), MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!s_pcm_buf) {
