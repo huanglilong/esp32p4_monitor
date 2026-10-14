@@ -362,14 +362,25 @@ esp_err_t AudioUlogRecorder::start()
 void AudioUlogRecorder::stop()
 {
     if (!_running.load(std::memory_order_acquire)) {
-        /* Task may have failed during init — clean up stack if still allocated.
-         * When the task fails early (PCM alloc, encoder open, etc.), it sets
-         * _running=false and _task_handle=nullptr then self-deletes, but
-         * _task_stack (32KB PSRAM) is never freed because stop() previously
-         * returned immediately here. */
+        /* Task may have failed during init (PCM alloc, encoder open, ...).
+         * Such a task publishes _task_exited, clears _running and then calls
+         * vTaskDelete() — so it is still executing for a few instructions
+         * after _running went false. S363: wait for the real exit signal
+         * before releasing the PSRAM stack, otherwise the task's remaining
+         * epilogue runs on freed memory (use-after-free). */
         if (_task_stack) {
-            heap_caps_free(_task_stack);
-            _task_stack = nullptr;
+            for (int i = 0; i < 20 && !_task_exited.load(std::memory_order_acquire); ++i) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            if (_task_exited.load(std::memory_order_acquire)) {
+                heap_caps_free(_task_stack);
+                _task_stack = nullptr;
+            } else {
+                /* Task never confirmed exited — detach, do not free. */
+                ESP_LOGE(TAG, "Task did not exit — leaking %u byte PSRAM stack",
+                         (unsigned)(AUDIO_ULOG_TASK_STACK_SIZE * sizeof(StackType_t)));
+                _task_stack = nullptr;
+            }
         }
         return;
     }
