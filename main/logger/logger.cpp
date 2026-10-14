@@ -194,12 +194,29 @@ void logger_deinit(void)
          * or skip the handle. */
         vTaskDelay(pdMS_TO_TICKS(10));
         if (!s_log.writer_exited) {
+            ESP_LOGE("logger", "Writer task did not exit — force-killing");
             vTaskDelete(s_log.writer_task);
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
+    }
+
+    /* S370: after a force-kill the task may still be running (it can be
+     * inside fflush/fsync/fwrite or _rotate_file()/_cleanup_old_logs() on the
+     * SD card). Releasing the resources it is using here — fclose(fd),
+     * vSemaphoreDelete(buf_mutex/data_sem), free(buf) — is a use-after-free
+     * (double fclose on a live stream, deleting a held mutex, writing into
+     * freed memory). Detach instead; the next logger_init() sees running ==
+     * false and re-creates everything, so only these few allocations are
+     * leaked, on a path that should never happen in the first place. */
+    if (!s_log.writer_exited) {
+        ESP_LOGE("logger", "Writer task force-killed — leaking fd/ring buffer/mutexes "
+                 "rather than freeing them under the running task");
+        s_log.writer_task = nullptr;
+        return;
     }
     s_log.writer_task = nullptr;
 
-    /* Writer may have already closed fd in its clean exit path */
+    /* Writer already closed fd in its clean exit path (or will not touch it) */
     if (s_log.fd) { fclose(s_log.fd); s_log.fd = nullptr; }
 
     if (s_log.buf_mutex) { vSemaphoreDelete(s_log.buf_mutex); s_log.buf_mutex = nullptr; }
