@@ -420,6 +420,12 @@ esp_err_t ulog_writer_add_topic(ulog_writer_t *writer, orb_id_t meta,
     entry->last_poll_us = 0;
     entry->msg_id = writer->next_msg_id++;
     entry->active = true;
+    /* S366: memset(0) in ulog_writer_init() leaves sub_handle == 0, which is
+     * a *valid* uORB handle. If start() fails before subscribing (no topics,
+     * create_log_path()/open() error), stop() would run
+     * `if (entry->sub_handle >= 0) orb_unsubscribe(0)` and destroy another
+     * module's subscription (e.g. CameraDriver's camera_state). */
+    entry->sub_handle = -1;
 
     writer->num_topics++;
 
