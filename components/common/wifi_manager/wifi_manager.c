@@ -183,7 +183,13 @@ static void compose_ap_ssid(void)
     ESP_LOGI(TAG, "Provisioning AP SSID: %s", s_ap_ssid);
 }
 
-static void apply_ap_config(void)
+/* S371: must not ESP_ERROR_CHECK/abort here. apply_ap_config() runs at runtime
+ * from the esp_event task (reopen_ap_if_needed) and from the httpd task
+ * (configure_sta_mode), and esp_wifi_set_config() routinely returns
+ * ESP_ERR_WIFI_NOT_STARTED / ESP_ERR_WIFI_IF / ESP_ERR_INVALID_ARG during
+ * mode transitions — all recoverable. Aborting there killed the whole device
+ * on a transient WiFi state. Report the error and let callers degrade. */
+static esp_err_t apply_ap_config(void)
 {
     wifi_config_t ap_cfg = {0};
     ap_cfg.ap.ssid_len = strlen(s_ap_ssid);
@@ -196,7 +202,11 @@ static void apply_ap_config(void)
     } else {
         ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
     }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_config(AP) failed: %s", esp_err_to_name(err));
+    }
+    return err;
 }
 
 static void refresh_ap_ip_str(void)
@@ -268,7 +278,8 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
         atomic_store_explicit(&s_mode, WM_STATE_APSTA, memory_order_release);
         err = esp_wifi_set_mode(WIFI_MODE_APSTA);
         if (err != ESP_OK) return err;
-        apply_ap_config();
+        err = apply_ap_config();
+        if (err != ESP_OK) return err;
         err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         if (err != ESP_OK) return err;
         return ESP_OK;
@@ -277,8 +288,7 @@ static esp_err_t configure_sta_mode(const wifi_manager_config_t *config)
     atomic_store_explicit(&s_mode, WM_STATE_PROVISION_AP, memory_order_release);
     err = esp_wifi_set_mode(WIFI_MODE_AP);
     if (err != ESP_OK) return err;
-    apply_ap_config();
-    return ESP_OK;
+    return apply_ap_config();
 }
 
 static void arm_reconnect(void)
@@ -305,7 +315,7 @@ static void reopen_ap_if_needed(void)
         ESP_LOGW(TAG, "Failed to reopen AP: %s", esp_err_to_name(err));
         return;
     }
-    apply_ap_config();
+    apply_ap_config();  /* best-effort — error already logged (S371) */
     atomic_store_explicit(&s_mode, WM_STATE_APSTA, memory_order_release);
 }
 
